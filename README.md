@@ -225,7 +225,7 @@ cp env.local.example .env.local   # then fill in the STAGING project's values (s
 npm test          # 131 tests: billing, ledger, permissions, API authorization, QR pages, public page, CSP, WhatsApp gateway
 npm run dev       # http://localhost:5176 — real app + real /api handlers; prints which database it uses
 npm run dev:demo  # http://localhost:5177 — same source, no database: made-up data in the browser, demo logins on the login screen
-npm run release   # before every deploy: stamps a new service-worker VERSION so phones update at once
+npm run release   # not needed for deploys: Vercel runs it as the build command (vercel.json) so phones update at once
 ```
 **Never develop against production.** With `SUPABASE_URL` + `SUPABASE_ANON_KEY` (and the staging
 service-role key) in `.env.local`, `npm run dev` serves the whole app against the staging project

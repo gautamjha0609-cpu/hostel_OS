@@ -1,5 +1,9 @@
 .env*
 node_modules
 tests
-scripts
+# the build command needs scripts/release.js; the rest stay local (a test keeps this list complete)
+scripts/dev-server.js
+scripts/loadtest.js
+scripts/restore.js
+scripts/set-domain.js
 env.local.example

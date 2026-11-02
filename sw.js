@@ -3,8 +3,8 @@
 // Cost note: a network-first worker re-requests every file on every app open — about 15
 // requests per open, which across a few hundred phones is millions of Vercel edge requests a
 // month. So the app's own files are served from the cache, and refreshed in the background at
-// most once every 12 hours. A deploy is picked up immediately when VERSION changes:
-// run `npm run release` before deploying (it stamps a new VERSION here).
+// most once every 12 hours. A deploy is picked up immediately when VERSION changes; Vercel stamps a new
+// VERSION on every deploy (build command in vercel.json), no manual step.
 // API, Supabase and Google calls are never cached.
 const VERSION = 'hostelos-202611021743';
 const REFRESH_MS = 12 * 3600e3;
