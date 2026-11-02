@@ -14,7 +14,7 @@ window.HOSTELOS_CONFIG = {
   // The domain a hostel's public page is advertised on. Set it once the domain points at this
   // deployment, and every owner's link becomes https://sarvlekh.in/h/<their-hostel-name>.
   // Left empty, the page is still reachable by hostel id, so nothing waits on DNS.
-  PUBLIC_SITE_BASE: 'https://app.sarvlekh.in',
+  PUBLIC_SITE_BASE: 'https://hostel.sarvlekh.in',
   // With a domain here (no https://, e.g. 'sarvlekh.in') every hostel's page is https://<hostel-name>.sarvlekh.in.
   // Set it with `npm run domain -- sarvlekh.in`, which also adds the matching rewrite to vercel.json.
   PUBLIC_SITE_DOMAIN: '',

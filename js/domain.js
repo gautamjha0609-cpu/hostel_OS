@@ -461,7 +461,7 @@ const siteBase = () => String(CFG.PUBLIC_SITE_BASE || '').replace(/\/+$/, '');
 // With PUBLIC_SITE_DOMAIN set, a hostel's page is <its name>.<domain> (npm run domain -- sarvlekh.in).
 const siteDomain = () => String(CFG.PUBLIC_SITE_DOMAIN || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 // Names that are the app, mail, the API...: never a hostel's address. Same list as api/_lib.js and scripts/set-domain.js.
-const SITE_RESERVED = ['www', 'app', 'admin', 'api', 'mail', 'smtp', 'ftp', 'cdn', 'static', 'assets', 'dashboard', 'login', 'support', 'help', 'blog', 'docs', 'status', 'staging', 'test', 'dev', 'h', 'join', 'visit', 'pay', 'site', 'public', 'ns1', 'ns2'];
+const SITE_RESERVED = ['www', 'app', 'admin', 'api', 'mail', 'smtp', 'ftp', 'cdn', 'static', 'assets', 'dashboard', 'login', 'support', 'help', 'blog', 'docs', 'status', 'staging', 'test', 'dev', 'h', 'join', 'visit', 'pay', 'site', 'public', 'ns1', 'ns2', 'hostel'];
 const siteSlugProblem = sl => !/^[a-z0-9]([a-z0-9-]{0,58}[a-z0-9])?$/.test(sl) ? 'The web address can only use lowercase letters, numbers and dashes' : SITE_RESERVED.includes(sl) ? 'This name is kept for Sarvlekh itself. Choose another.' : '';
 function siteUrl() {
   const base = siteBase(), sl = siteSlug(), dom = siteDomain();
