@@ -397,7 +397,7 @@ async function driveCopy(hostel, day, gz) {
 }
 async function driveCallback(req, res) {
   const q = new URL(req.url, 'http://x').searchParams;
-  const back = msg => { res.statusCode = 302; res.setHeader('Location', `/?drive=${encodeURIComponent(msg)}#/admin-usage`); res.end(); };
+  const back = msg => { res.statusCode = 302; res.setHeader('Location', `/admin-usage?drive=${encodeURIComponent(msg)}`); res.end(); };
   if (q.get('error')) return back('cancelled');
   if (!G_ID || !G_SECRET) throw new HttpError(500, 'Google is not configured on the server');
   checkState(q.get('state'));
@@ -430,7 +430,7 @@ module.exports = async (req, res) => {
       try { out.backup = await backupHostels(t0); } catch (e) { out.backup = { error: e.message }; }   // a failed backup must not hide the sweep
       return res.status(200).json(out);
     }
-    if (req.method === 'GET' && new URL(req.url, 'http://x').searchParams.get('oauth') === 'callback') { try { return await driveCallback(req, res); } catch (e) { res.statusCode = 302; res.setHeader('Location', '/?drive=' + encodeURIComponent('error: ' + (e.status ? e.message : 'Server error')) + '#/admin-usage'); return res.end(); } }
+    if (req.method === 'GET' && new URL(req.url, 'http://x').searchParams.get('oauth') === 'callback') { try { return await driveCallback(req, res); } catch (e) { res.statusCode = 302; res.setHeader('Location', '/admin-usage?drive=' + encodeURIComponent('error: ' + (e.status ? e.message : 'Server error'))); return res.end(); } }
     if (req.method !== 'POST') throw new HttpError(405, 'POST only');
     const b = await readJson(req);
     const fn = actions[b.action];

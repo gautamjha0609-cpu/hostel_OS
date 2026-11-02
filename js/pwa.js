@@ -109,7 +109,7 @@ const Pwa = (() => {
     const e = env(), m = e.mode;
     if (installed()) { if (manual && typeof toast === 'function') toast(tr('Sarvlekh is already installed on this device.')); return; }
     if (manual && m === 'prompt') { prompt(); return; }          // the menu button: go straight to the browser's own dialog
-    const lead = `<div class="pwa"><img src="icons/icon-192.png" alt="" width="64" height="64"><div><b>${esc(tr('Use Sarvlekh like an app'))}</b><p>${esc(tr('Opens full screen from your home screen or desktop, loads faster and keeps you signed in.'))}</p></div></div>`;
+    const lead = `<div class="pwa"><img src="/icons/icon-192.png" alt="" width="64" height="64"><div><b>${esc(tr('Use Sarvlekh like an app'))}</b><p>${esc(tr('Opens full screen from your home screen or desktop, loads faster and keeps you signed in.'))}</p></div></div>`;
     let body, foot;
     if (m === 'prompt') {
       body = lead;

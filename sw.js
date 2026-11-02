@@ -49,8 +49,11 @@ self.addEventListener('fetch', e => {
   // mounted (root on Vercel, a sub-path in local preview), and nothing the functions answer
   // should ever be served stale from a cache.
   if (req.method !== 'GET' || url.origin !== location.origin || /(^|\/)api\//.test(url.pathname)) return;
+  // A page of the app (/home, /settings/site ...) is always the same shell, whatever the path: Vercel serves
+  // index.html for it, and offline the cached copy does.
+  const appPage = req.mode === 'navigate' && !/\.[a-z0-9]+$/i.test(url.pathname) && !/^\/h\//.test(url.pathname);
   e.respondWith(caches.open(VERSION).then(async cache => {
-    const hit = await cache.match(req, { ignoreSearch: req.mode === 'navigate' });
+    const hit = await cache.match(appPage ? './index.html' : req, { ignoreSearch: req.mode === 'navigate' });
     if (hit) { e.waitUntil(maybeRefresh()); return hit; }
     try {
       const res = await fetch(req);

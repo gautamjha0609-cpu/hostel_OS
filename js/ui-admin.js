@@ -680,8 +680,8 @@ A.admbackup = async el => {
 };
 A.admdriveon = async () => { try { const r = await Backend.admin('drive_connect'); location.assign(r.url); } catch (e) { toast(e.message, 'bad'); } };
 A.admdriveoff = () => confirmBox(t('Stop copying backups to Google Drive? Files already in Drive stay there.'), async () => { await Backend.admin('drive_disconnect'); adm.data = null; render(); toast(t('Disconnected')); }, 'Disconnect', 'bad');
-// Back from Google: /?drive=connected#/admin-usage
-(() => { try { const q = new URLSearchParams(location.search), d = q.get('drive'); if (!d) return; history.replaceState(null, '', location.pathname + location.hash); setTimeout(() => toast(d === 'connected' ? t('Google Drive connected') : d === 'cancelled' ? t('Google Drive was not connected') : d, d === 'connected' ? 'ok' : 'bad'), 600); } catch (e) { /* ignore */ } })();
+// Back from Google: /admin-usage?drive=connected
+(() => { try { const q = new URLSearchParams(location.search), d = q.get('drive'); if (!d) return; history.replaceState(null, '', location.pathname); setTimeout(() => toast(d === 'connected' ? t('Google Drive connected') : d === 'cancelled' ? t('Google Drive was not connected') : d, d === 'connected' ? 'ok' : 'bad'), 600); } catch (e) { /* ignore */ } })();
 A.admbackupget = async el => {
   try { const r = await Backend.admin('backup_url', { name: el.dataset.name }); location.assign(r.url); }
   catch (e) { toast(e.message, 'bad'); }

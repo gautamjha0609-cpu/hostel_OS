@@ -342,11 +342,11 @@ function importDemoVisits() {
 // Self-entry QR: printed at the gate, opens visit.html on the visitor's own phone, no login.
 // The key in it can be changed any time, which stops every old printout from working.
 const visitKey = () => (S().gate || {}).visitKey || '';
-const visitUrl = () => { const h = Store.hostel() || {}; return new URL(`visit.html?h=${encodeURIComponent(h.id)}&k=${encodeURIComponent(visitKey())}&n=${encodeURIComponent(h.name || '')}`, location.href).href; };
+const visitUrl = () => { const h = Store.hostel() || {}; return new URL(`/visit.html?h=${encodeURIComponent(h.id)}&k=${encodeURIComponent(visitKey())}&n=${encodeURIComponent(h.name || '')}`, location.href).href; };
 A.gateqr = async (el, e, fresh) => {
   if (!isAdmin()) return toast('Only the owner or manager can manage the visitor QR', 'bad');
   if (!visitKey() || fresh) { await Store.saveSettings({ gate: { visitKey: newQrKey(), selfEntry: true } }); }
-  if (typeof qrcode !== 'function') await loadScript('vendor/qrcode.js').catch(() => {});
+  if (typeof qrcode !== 'function') await loadScript('/vendor/qrcode.js').catch(() => {});
   const on = (S().gate || {}).selfEntry !== false, url = visitUrl();
   sheet('Visitor self-entry QR', `<div class="qr">${qrSvg(url, 6)}</div>
     <p style="text-align:center;margin:10px 0 4px"><b>${esc(hostelName())}</b></p>
@@ -439,7 +439,7 @@ function staffForm(x) {
     title: isNew ? 'Add staff' : 'Edit staff', wide: true,
     fields: [
       { name: 'name', label: 'Full name', value: s.name, required: true }, { name: 'phone', label: 'Mobile', type: 'tel', value: s.phone, required: true },
-      { name: 'dept', label: 'Department', type: 'select', options: S().departments.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="#/settings/depts">${esc(t('Edit departments'))}</a>` },
+      { name: 'dept', label: 'Department', type: 'select', options: S().departments.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="/settings/depts">${esc(t('Edit departments'))}</a>` },
       { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, value: s.salary }, { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today() },
       { name: 'idNo', label: 'ID number', value: s.idNo }, { name: 'address', label: 'Address', value: s.address, full: true },
       ...(!isNew ? [] : [{ name: 'login', label: 'Create app login (shows only their work)', type: 'checkbox', value: true, hint: t('User ID = name, password = mobile number.'), full: true }]),

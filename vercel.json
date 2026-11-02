@@ -94,6 +94,10 @@
     {
       "source": "/h/:slug",
       "destination": "/site.html?s=:slug"
+    },
+    {
+      "source": "/((?!api/|h/)[^.]*)",
+      "destination": "/index.html"
     }
   ],
   "crons": [

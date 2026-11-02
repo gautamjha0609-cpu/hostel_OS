@@ -1,8 +1,8 @@
 {
   "name": "Sarvlekh — Hostel & PG Manager",
   "short_name": "Sarvlekh",
-  "start_url": "./?source=pwa",
-  "scope": "./",
+  "start_url": "/?source=pwa",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f2f2f7",
@@ -43,7 +43,7 @@
     {
       "name": "Residents",
       "short_name": "Residents",
-      "url": "./#/residents",
+      "url": "/residents",
       "icons": [
         {
           "src": "icons/icon-192.png",
@@ -54,7 +54,7 @@
     {
       "name": "Payments",
       "short_name": "Payments",
-      "url": "./#/payments",
+      "url": "/payments",
       "icons": [
         {
           "src": "icons/icon-192.png",
@@ -65,7 +65,7 @@
     {
       "name": "Reports",
       "short_name": "Reports",
-      "url": "./#/reports",
+      "url": "/reports",
       "icons": [
         {
           "src": "icons/icon-192.png",

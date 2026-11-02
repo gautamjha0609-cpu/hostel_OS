@@ -361,7 +361,7 @@ A.messtab = el => { ui.tab.mess = el.dataset.tab; go('mess'); };
 A.joinqr = async (el, e, fresh) => {
   if (!isAdmin()) return toast('Only the owner or manager can manage this QR', 'bad');
   if (!joinKey() || fresh) await Store.saveSettings({ join: { on: true, key: newQrKey() } });
-  if (typeof qrcode !== 'function') await loadScript('vendor/qrcode.js').catch(() => {});
+  if (typeof qrcode !== 'function') await loadScript('/vendor/qrcode.js').catch(() => {});
   const url = joinUrl();
   sheet('New resident registration QR', `<div class="qr">${qrSvg(url, 6)}</div>
     <p style="text-align:center;margin:10px 0 4px"><b>${esc(hostelName())}</b></p>
@@ -561,7 +561,7 @@ async function saveSite(obj, msg) { await Store.saveSettings(sitePatch(obj)); if
 A.sitepreview = () => {
   const h = Store.hostel() || {};
   LS.set('hostelos.sitepreview', { at: Date.now(), name: h.name, city: h.city || '', address: h.address || '', phone: h.phone || '', site: siteCfg() });
-  window.open(new URL('site.html?preview=1', location.href).href, '_blank', 'noopener');
+  window.open(new URL('/site.html?preview=1', location.origin).href, '_blank', 'noopener');
 };
 A.sitecopy = async () => { try { await navigator.clipboard.writeText(siteUrl()); toast('Link copied'); } catch (e) { sheet('Link', `<pre class="pre-wrap">${esc(siteUrl())}</pre>`); } };
 A.siteqr = () => sheet('Your hostel page', `<div class="qr">${qrSvg(siteUrl(), 6)}</div>

@@ -49,7 +49,7 @@ function t(s, vars) {
 }
 function setLang(l) { LANG = l === 'hi' ? 'hi' : 'en'; try { localStorage.setItem(LKEY, LANG); } catch (e) { /* private mode */ } document.documentElement.lang = LANG; }
 // English is built into the source, so the Hindi dictionary is only ever fetched for Hindi.
-function ensureLang() { return LANG === 'hi' && !window.I18N_HI ? loadScript('js/i18n-hi.js') : Promise.resolve(); }
+function ensureLang() { return LANG === 'hi' && !window.I18N_HI ? loadScript('/js/i18n-hi.js') : Promise.resolve(); }
 const MONTHS_EN = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ');
 const MONTHS_HI = ['जन', 'फ़र', 'मार्च', 'अप्रै', 'मई', 'जून', 'जुला', 'अग', 'सित', 'अक्टू', 'नवं', 'दिसं'];
 const MONTHS = () => (LANG === 'hi' ? MONTHS_HI : MONTHS_EN);
@@ -562,7 +562,7 @@ function loadScript(src) {
 // QR code as inline SVG. The library is fetched on first use; the screen redraws once it lands.
 function qrSvg(text, cell = 5) {
   if (typeof qrcode !== 'function') {
-    loadScript('vendor/qrcode.js').then(() => render()).catch(() => {});
+    loadScript('/vendor/qrcode.js').then(() => render()).catch(() => {});
     return `<div class="qr-loading" style="min-height:160px;display:grid;place-items:center"><span class="spin"></span></div>`;
   }
   const q = qrcode(0, 'M'); q.addData(text); q.make();

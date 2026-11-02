@@ -99,6 +99,7 @@ http.createServer((req, res) => {
   if (p.startsWith('/h/')) return fs.readFile(path.join(APP, 'site.html'), (err, data) => send(res, err ? 404 : 200, { 'Content-Type': 'text/html; charset=utf-8' }, err ? 'not found' : data));
 
   if (p.endsWith('/')) p += 'index.html';
+  else if (!path.extname(p)) p = '/index.html';   // /home, /settings/site ...: the app, as vercel.json does
   const f = path.normalize(path.join(APP, p));
   // Never serve secrets or tooling: .env.local, .git, node_modules, tests, scripts.
   const rel = path.relative(APP, f).split(path.sep);

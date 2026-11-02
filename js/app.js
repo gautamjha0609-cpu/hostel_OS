@@ -29,7 +29,10 @@ async function chooseContext(key) {
   catch (e) { toast(e.message, 'bad'); }
   if (c.hostelId) { try { const n = runAutomation(); if (n) toast(t('Automation: {n} tasks done', { n })); } catch (e) { console.error(e); } }
   buildShell();
-  go(homeFor());
+  // Opening a link to a page (/settings/site, or after logging in from it) shows that page; no page in the link,
+  // or choosing another profile, starts at the home page.
+  const wanted = location.pathname.replace(/^\/+|\/+$/g, '').replace(/^index\.html$/, '');
+  if (!key && wanted) route(); else go(homeFor());
 }
 function homeFor() {
   const c = ctx();
@@ -108,7 +111,7 @@ function buildShell() {
   const opts = cs.map(x => `<option value="${esc(x.key)}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('');
   $('#app').innerHTML = `<div class="app ${solo ? 'solo' : ''}">
     <aside class="side" id="side" aria-label="${esc(t('Main menu'))}">
-      <div class="brand"><img src="icons/icon.svg" alt=""><div style="min-width:0">${esc(CFG.APP_NAME || 'Sarvlekh')}<small>${esc(h ? h.name : t('Platform'))}${h && h.settings && h.settings.demo ? ' <b style="color:var(--warn)">· DEMO</b>' : ''}</small></div></div>
+      <div class="brand"><img src="/icons/icon.svg" alt=""><div style="min-width:0">${esc(CFG.APP_NAME || 'Sarvlekh')}<small>${esc(h ? h.name : t('Platform'))}${h && h.settings && h.settings.demo ? ' <b style="color:var(--warn)">· DEMO</b>' : ''}</small></div></div>
       <nav class="nav" id="nav"></nav>
       <div class="side-foot"><div id="installSlot"></div>${li({ icon: 'user', ic: 'mute', t: Store.me.full_name, d: t(ROLES[c.role] ? ROLES[c.role].l : ''), act: 'go', attrs: 'data-to="me"' })}</div>
     </aside>
@@ -135,7 +138,7 @@ function buildShell() {
 }
 function updateChrome() {
   const nav = $('#nav'); if (!nav) return;
-  nav.innerHTML = navGroups().map(([title, list]) => `${title ? `<div class="nav-sec">${esc(t(title))}</div>` : ''}${list.map(([k, l, icn]) => { const n = badgeFor(k); return `<a href="#/${k}" class="${ui.page === k ? 'on' : ''}" data-act="nav">${ico(icn, 'sm')}<span>${esc(t(l))}</span>${n ? `<span class="cnt">${n}</span>` : ''}</a>`; }).join('')}`).join('');
+  nav.innerHTML = navGroups().map(([title, list]) => `${title ? `<div class="nav-sec">${esc(t(title))}</div>` : ''}${list.map(([k, l, icn]) => { const n = badgeFor(k); return `<a href="/${k}" class="${ui.page === k ? 'on' : ''}" data-act="nav">${ico(icn, 'sm')}<span>${esc(t(l))}</span>${n ? `<span class="cnt">${n}</span>` : ''}</a>`; }).join('')}`).join('');
   $('#bnav').innerHTML = bottomNav().map(([k, l, icn]) => { const n = badgeFor(k); return `<button class="${ui.page === k ? 'on' : ''}" data-act="${k === 'more' ? 'drawer' : 'go'}" data-to="${k}">${ico(icn)}<span>${esc(t(l))}</span>${n ? `<span class="dot">${n}</span>` : ''}</button>`; }).join('');
   blockBar();
   const slot = $('#installSlot'); if (slot && typeof Pwa !== 'undefined') slot.innerHTML = Pwa.button();
@@ -144,16 +147,17 @@ function updateChrome() {
 }
 
 /* ===================================================================== routing */
-function go(to) { if (location.hash !== '#/' + to) location.hash = '#/' + to; else route(); }
+// Clean addresses (/home, /settings/site), not /#/home. Vercel serves index.html for any path without a dot (vercel.json).
+function go(to) { const p = '/' + String(to).replace(/^\/+/, ''); if (location.pathname !== p) history.pushState(null, '', p); route(); }
 function route() {
-  const raw = location.hash.replace(/^#\/?/, '');
+  const raw = location.pathname.replace(/^\/+|\/+$/g, '').replace(/^index\.html$/, '');
   if (!Store.me) { if (raw === 'setup' && CLOUD) renderSetup(); else renderLogin(); return; }
   if (!Store.ctx) return;
   const [page, arg = ''] = raw.split('/');
   const p = PAGES[page];
   const allowed = p && (!p.mod || can(p.mod)) && (!p.when || p.when());
   ui.page = allowed ? page : homeFor(); ui.arg = allowed ? decodeURIComponent(arg) : '';
-  if (!allowed && page && page !== ui.page) { history.replaceState(null, '', '#/' + ui.page); }
+  if (!allowed && page && page !== ui.page) { history.replaceState(null, '', '/' + ui.page); }
   document.body.classList.remove('drawer');
   render(true);
 }
@@ -237,7 +241,7 @@ async function doLogin(u, p) {
 async function afterLogin() {
   try { await Store.loadMeta(); }
   catch (e) { if (e.status === 401) { await Backend.logout(); renderLogin(); return; } $('#app').innerHTML = `<div class="auth"><div class="box card">${empty('Could not load your account', t(e.message), btn('Try again', 'reload'))}</div></div>`; return; }
-  if (Store.me.is_super) await loadScript('js/ui-admin.js').catch(e => console.error(e));
+  if (Store.me.is_super) await loadScript('/js/ui-admin.js').catch(e => console.error(e));
   if (!contexts().length) { renderNoAccess(); return; }
   if (Store.me.must_change) toast('Please change your password from Profile', 'ok');
   await chooseContext();
@@ -246,13 +250,13 @@ function renderNoAccess() {
   $('#app').innerHTML = `<div class="auth"><div class="box card">${empty('No hostel linked to this login', 'Ask your PG owner or the platform admin to give you access.', btn('Log out', 'logout'))}</div></div>`;
 }
 function renderSetup() {
-  $('#app').innerHTML = `<div class="auth"><div class="box"><img class="logo" src="icons/icon.svg" alt=""><h1>${esc(t('First-time setup'))}</h1><p class="sub">${esc(t('Create the super admin account (needs SETUP_KEY from Vercel).'))}</p><div class="card"><form id="setupForm" class="stack" novalidate>
+  $('#app').innerHTML = `<div class="auth"><div class="box"><img class="logo" src="/icons/icon.svg" alt=""><h1>${esc(t('First-time setup'))}</h1><p class="sub">${esc(t('Create the super admin account (needs SETUP_KEY from Vercel).'))}</p><div class="card"><form id="setupForm" class="stack" novalidate>
     ${fieldHtml({ name: 'key', label: 'Setup key', type: 'password' })}${fieldHtml({ name: 'full_name', label: 'Your name' })}${fieldHtml({ name: 'username', label: 'User ID', value: 'admin' })}${fieldHtml({ name: 'password', label: 'Password (min 8)', type: 'password' })}
     <div class="ferr" id="serr"></div><button class="btn primary block">${esc(t('Create super admin'))}</button></form></div></div></div>`;
   $('#setupForm').onsubmit = async e => {
     e.preventDefault(); const f = e.target;
     if (f.password.value.length < 8) { $('#serr').textContent = t('Password must be at least 8 characters'); return; }
-    try { const u = await Backend.admin('setup', { key: f.key.value, full_name: f.full_name.value || 'Admin', username: f.username.value, password: f.password.value }); await Backend.login(u.username, f.password.value); location.hash = ''; await afterLogin(); }
+    try { const u = await Backend.admin('setup', { key: f.key.value, full_name: f.full_name.value || 'Admin', username: f.username.value, password: f.password.value }); await Backend.login(u.username, f.password.value); history.replaceState(null, '', '/'); await afterLogin(); }
     catch (err) { $('#serr').textContent = t(err.message); }
   };
 }
@@ -281,7 +285,7 @@ A.chpw = () => formModal({
   fields: [{ name: 'p1', label: 'New password', type: 'password', required: true, hint: t('At least 6 characters') }, { name: 'p2', label: 'Repeat new password', type: 'password', required: true }],
   onSubmit: async v => { if (v.p1.length < 6) return 'Password must be at least 6 characters'; if (v.p1 !== v.p2) return 'Passwords do not match'; await Backend.changePassword(v.p1); toast('Password changed'); },
 });
-A.logout = () => confirmBox(t('Log out from this device?'), async () => { await Store.logout(); location.hash = ''; renderLogin(); }, 'Log out', 'bad');
+A.logout = () => confirmBox(t('Log out from this device?'), async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); }, 'Log out', 'bad');
 A.syncnow = async () => { try { await Store.sync(); await Store.refreshMeta(); toast('Synced'); } catch (e) { toast(e.message, 'bad'); } render(); };
 A.reload = () => location.reload();
 // The page's Content-Security-Policy (vercel.json: script-src 'self') refuses inline handlers
@@ -325,7 +329,7 @@ A.palette = () => {
 
 /* ===================================================================== global events */
 A.go = el => { closeModal(true); go(el.dataset.to); };
-A.nav = (el, e) => { e.preventDefault(); go(el.getAttribute('href').slice(2)); };
+A.nav = (el, e) => { e.preventDefault(); go(el.getAttribute('href').slice(1)); };
 A.drawer = () => document.body.classList.toggle('drawer');
 A.close = () => { ui.waq = null; closeModal(); };
 A.mback = (el, e) => { if (e.target === el) { ui.waq = null; closeModal(); } };
@@ -423,7 +427,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.closest && e.target.closest('#mform') && e.target.tagName === 'INPUT' && e.target.type !== 'file') { e.preventDefault(); modalSubmit && modalSubmit(); }
 });
 window.addEventListener('scroll', () => { const tp = $('#top'); if (tp) tp.classList.toggle('scrolled', window.scrollY > 4); }, { passive: true });
-window.addEventListener('hashchange', route);
+window.addEventListener('popstate', route);
+// A link inside the app (<a href="/mess">) changes the page without reloading it.
+document.addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a[href^="/"]');
+  if (!a || a.dataset.act || a.target || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const href = a.getAttribute('href');
+  if (/^\/(api|h)\//.test(href) || /\.[a-z0-9]+(\?|#|$)/i.test(href)) return;
+  e.preventDefault(); go(href.slice(1));
+});
 // An uncaught error used to vanish into the console and leave a button that "did nothing".
 // Now the person is told once in a while (not on every repeat), and offline blips stay quiet.
 let _lastOops = 0;
@@ -461,6 +473,8 @@ Store.onChange = what => {
 /* ===================================================================== boot */
 
 async function boot() {
+  // Old links (/#/home) still work: turn them into /home
+  if (/^#\/./.test(location.hash)) history.replaceState(null, '', '/' + location.hash.slice(2) + location.search);
   setLang(LANG);
   await ensureLang().catch(() => {});
   setTheme(LS.get('hostelos.theme', 'light'));
@@ -472,7 +486,7 @@ async function boot() {
     // scripts while fetching new ones. Tell the person instead of letting the two versions mix.
     const had = !!navigator.serviceWorker.controller; let told = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !told) { told = true; toast(t('A new version is ready.'), 'ok', { label: t('Reload'), run: () => location.reload() }); } });
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
   if (Backend.uid()) {
     try { await afterLogin(); } catch (e) { console.error(e); renderLogin(); }

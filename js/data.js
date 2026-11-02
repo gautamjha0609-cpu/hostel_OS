@@ -93,7 +93,7 @@ const Cloud = {
     if (!force && this.session.expires_at - 60 > Date.now() / 1000) return;
     this.refreshing = this.refreshing || this.http(`${CFG.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', auth: false, body: { refresh_token: this.session.refresh_token } })
       .then(s => this.saveSession(s))
-      .catch(e => { if (e.status === 400 || e.status === 401) { this.saveSession(null); location.hash = ''; location.reload(); } throw e; })
+      .catch(e => { if (e.status === 400 || e.status === 401) { this.saveSession(null); history.replaceState(null, '', '/'); location.reload(); } throw e; })
       .finally(() => { this.refreshing = null; });
     return this.refreshing;
   },
@@ -146,8 +146,8 @@ const Cloud = {
     if (!r.ok) throw new AppError(data ? (data.error || 'Server error') : 'This needs the server, which is not running yet. It starts working once the app is deployed.');
     return data || {};
   },
-  admin(action, payload) { return this.fn('api/admin', action, payload); },
-  waApi(action, payload) { return this.fn('api/wa', action, payload); },
+  admin(action, payload) { return this.fn('/api/admin', action, payload); },
+  waApi(action, payload) { return this.fn('/api/wa', action, payload); },
   // generic table access for super admin / owner user management
   list: (table, q = '') => Cloud.rest(`${table}?select=*${q}`),
   insert: (table, row) => Cloud.rest(table, { method: 'POST', body: row, headers: { Prefer: 'return=representation' } }).then(a => a[0]),

@@ -58,12 +58,12 @@ PAGES.home = {
       <div class="qa">${qa.map(([act, l, icn, col, mod]) => `<button data-act="${act}" ${act === 'go' ? `data-to="${mod}"` : ''}><span class="ic" style="${col ? `background:var(--${col === 'pink' ? 'bad' : col === 'teal' ? 'info' : col === 'mute' ? 'muted' : col})` : ''}">${ico(icn)}</span>${esc(t(l))}</button>`).join('')}</div>
       <div class="grid g-main" style="margin-top:6px">
         <div class="stack">
-          ${group('Needs your attention', inbox.slice(0, 6).map(x => li({ icon: x.icon, ic: x.ic, t: x.t, d: x.d, act: 'go', attrs: 'data-to="inbox"' })).join('') || li({ icon: 'check', ic: 'ok', t: t('All clear'), d: t('Nothing is waiting for you.') }), inbox.length > 6 ? `<a href="#/inbox">${esc(t('See all {n}', { n: inbox.length }))}</a>` : '')}
+          ${group('Needs your attention', inbox.slice(0, 6).map(x => li({ icon: x.icon, ic: x.ic, t: x.t, d: x.d, act: 'go', attrs: 'data-to="inbox"' })).join('') || li({ icon: 'check', ic: 'ok', t: t('All clear'), d: t('Nothing is waiting for you.') }), inbox.length > 6 ? `<a href="/inbox">${esc(t('See all {n}', { n: inbox.length }))}</a>` : '')}
           ${can('payments') ? `<div class="card"><h3>${esc(t('Income vs expenses'))}<span class="sp"></span><small>${esc(t('last 6 months'))}</small>${blockScope() ? tip(esc(t('Payments are shown for the block you are looking at. Expenses — gas, salaries, internet — are recorded for the whole hostel and are not split between blocks.'))) : ''}</h3>${barChart(months.map(m => fmtYM(m).split(' ')[0]), [months.map(m => sum(payments().filter(p => ymOf(p.date) === m && p.mode !== 'deposit'), p => p.amount)), months.map(m => sum(Store.all('exp').filter(x => ymOf(x.date) === m), x => x.amount))], ['#34c759', '#ff9500'])}<div class="legend"><span><i style="background:#34c759"></i>${esc(t('Income'))}</span><span><i style="background:#ff9500"></i>${esc(t('Expenses'))}</span></div></div>` : ''}
         </div>
         <div class="stack">
           ${can('housekeeping') && hkT.length ? `<div class="card"><h3>${esc(t('Cleaning today'))}<span class="sp"></span><small>${hkDone}/${hkT.length}</small></h3><div class="bar ok"><i style="width:${pct(hkDone, hkT.length)}%"></i></div><div class="row" style="margin-top:10px">${badge(t('{n} pending', { n: hkT.filter(x => x.status === 'pending').length }), 'info')}${hkT.some(x => x.status === 'missed') ? badge(t('{n} missed', { n: hkT.filter(x => x.status === 'missed').length }), 'bad') : ''}</div></div>` : ''}
-          ${hc ? `<div class="card"><h3>${esc(t('Kitchen'))}<span class="sp"></span><a class="sm" href="#/mess">${esc(t('Open'))}</a></h3><dl class="kv">${meals().map(m => { const h = headcount(today(), m.k); return `<dt>${esc(mealName(m.k))}</dt><dd>${h.eat} ${esc(t('plates'))}${h.tiffin ? ` · ${h.tiffin} ${esc(t('tiffin'))}` : ''}</dd>`; }).join('')}</dl>${low.length ? `<div class="note warn" style="margin:12px 0 0">${ico('alert', 'sm')} ${esc(t('Low stock'))}: ${esc(low.map(i => i.name).join(', '))}</div>` : ''}</div>` : ''}
+          ${hc ? `<div class="card"><h3>${esc(t('Kitchen'))}<span class="sp"></span><a class="sm" href="/mess">${esc(t('Open'))}</a></h3><dl class="kv">${meals().map(m => { const h = headcount(today(), m.k); return `<dt>${esc(mealName(m.k))}</dt><dd>${h.eat} ${esc(t('plates'))}${h.tiffin ? ` · ${h.tiffin} ${esc(t('tiffin'))}` : ''}</dd>`; }).join('')}</dl>${low.length ? `<div class="note warn" style="margin:12px 0 0">${ico('alert', 'sm')} ${esc(t('Low stock'))}: ${esc(low.map(i => i.name).join(', '))}</div>` : ''}</div>` : ''}
           ${group('Top dues', dues.slice(0, 5).map(x => li({ lead: avatar(x.r.name), t: x.r.name, d: `${roomName(x.r.roomId)} · ${x.od ? t('overdue') + ' ' + inr(x.od) : t('due')}`, end: `<b class="${x.od ? 'bad-t' : ''}">${inr(x.due)}</b>`, act: 'go', attrs: `data-to="residents/${x.r.id}"` })).join('') || li({ icon: 'check', ic: 'ok', t: t('No dues') }))}
         </div>
       </div>`;
@@ -1049,7 +1049,7 @@ A.repxlsx = async el => {
   if (el) el.style.opacity = .6;
   toast(t('Preparing your workbook…'));
   try {
-    await loadScript('js/xlsx.js'); await loadScript('js/report.js');
+    await loadScript('/js/xlsx.js'); await loadScript('/js/report.js');
     const w = Report.workbook(R.from, R.to, R.label);
     download(w.name, w.bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     toast(t('Workbook downloaded'));

@@ -294,7 +294,7 @@ function joinUrl() {
   const h = Store.hostel() || {};
   const q = new URLSearchParams({ h: h.id || '', k: joinKey(), n: h.name || '' });
   if (S().police.state) q.set('s', S().police.state);
-  return new URL(`join.html?${q}`, location.href).href;
+  return new URL(`/join.html?${q}`, location.origin).href;
 }
 const signups = () => Store.all('signup');
 const pendingSignups = () => signups().filter(x => x.status !== 'admitted' && x.status !== 'rejected').sort(by('ts', -1));
@@ -467,7 +467,7 @@ function siteUrl() {
   const base = siteBase(), sl = siteSlug(), dom = siteDomain();
   if (dom && sl && !siteSlugProblem(sl)) return `https://${sl}.${dom}`;
   if (base && sl) return `${base}/h/${sl}`;
-  return new URL(`site.html?h=${encodeURIComponent((Store.hostel() || {}).id || '')}`, location.href).href;
+  return new URL(`/site.html?h=${encodeURIComponent((Store.hostel() || {}).id || '')}`, location.origin).href;
 }
 // What is still missing before this is worth showing anyone.
 function siteGaps() {
@@ -666,8 +666,9 @@ function advPaidAhead(resId) {
 }
 
 /* ===================================================================== UPI & WhatsApp */
-const appUrl = () => location.href.split('#')[0].replace(/[?].*$/, '');
-const baseUrl = () => appUrl().replace(/index\.html$/, '');
+// The app is at the root of its address (https://app.example.com/), whichever page is open.
+const appUrl = () => location.origin + '/';
+const baseUrl = () => location.origin + '/';
 function upiUri(amount, note) {
   const p = S().pay;
   return `upi://pay?pa=${encodeURIComponent(p.upiId)}&pn=${encodeURIComponent(p.payee || (Store.hostel() || {}).name || '')}&am=${round2(amount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(String(note).slice(0, 60))}`;
