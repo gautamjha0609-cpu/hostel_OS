@@ -116,4 +116,7 @@ async function readJson(req) {
   } catch (e) { throw new HttpError(400, 'The request was not valid JSON'); }
 }
 
-module.exports = { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson };
+// Names that are never a hostel's address (the app, mail, the API...). Same list as scripts/set-domain.js and js/domain.js.
+const SITE_RESERVED = ['www', 'app', 'admin', 'api', 'mail', 'smtp', 'ftp', 'cdn', 'static', 'assets', 'dashboard', 'login', 'support', 'help', 'blog', 'docs', 'status', 'staging', 'test', 'dev', 'h', 'join', 'visit', 'pay', 'site', 'public', 'ns1', 'ns2'];
+
+module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson };

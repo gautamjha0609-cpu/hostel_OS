@@ -62,6 +62,13 @@ A.savesettings = async el => {
   for (const fl of f.fields) if (fl.required && (v[fl.name] === '' || (typeof v[fl.name] === 'number' && isNaN(v[fl.name])))) { err.textContent = t('{f} is required.', { f: t(fl.label) }); return; }
   const patch = f.toPatch(v, form);
   if (typeof patch === 'string') { err.textContent = t(patch); return; }
+  // a new web address must not be one another hostel already has
+  if (id === 'site' && patch.site && patch.site.slug && patch.site.slug !== (siteCfg().slug || '') && CLOUD) {
+    try {
+      const r = await fetch('/api/public/slug?s=' + encodeURIComponent(patch.site.slug) + '&h=' + encodeURIComponent(Store.ctx.hostelId)).then(x => x.json());
+      if (r && r.free === false) { err.textContent = t(r.why === 'reserved' ? 'This name is kept for Sarvlekh itself. Choose another.' : 'Another hostel already uses this web address. Add your area or a number, for example {n}-2.', { n: patch.site.slug }); return; }
+    } catch (e) { /* offline: the page itself refuses an address two hostels claim, so saving is still safe to try */ }
+  }
   // lists replace rather than merge, or a removed or reordered entry comes back
   try { await Store.saveSettings(patch, Object.keys(patch).filter(k => Array.isArray(patch[k]))); toast('Settings saved'); render(); }
   catch (e) { err.textContent = t(e.message); }
@@ -291,7 +298,7 @@ const SETTINGS_PAGES = {
       ].filter(Boolean).join(''), gaps.length ? t('Still missing: {m}.', { m: gaps.join(', ') }) : t('Everything a parent usually asks is on the page.'))}
       ${settingsForm('site', [
         { type: 'section', label: 'Address of the page' },
-        { name: 'slug', label: 'Web address', value: siteSlug(), hint: siteBase() ? `${siteBase().replace(/^https?:\/\//, '')}/h/…` : t('Used once your domain is connected.'),
+        { name: 'slug', label: 'Web address', value: siteSlug(), hint: siteDomain() ? `…${'.'}${siteDomain()}` : siteBase() ? `${siteBase().replace(/^https?:\/\//, '')}/h/…` : t('Used once your domain is connected.'),
           info: t('Lowercase letters, numbers and dashes. This is the part of the link that is your hostel’s name, so keep it short and easy to say on the phone.') },
         { type: 'section', label: 'Top of the page' },
         { name: 'tagline', label: 'Line under the name', value: c.tagline, hint: t('e.g. "Luxury Boys PG". Leave blank to show the area.') },
@@ -313,7 +320,7 @@ const SETTINGS_PAGES = {
         { name: 'callNo', label: 'Call number', type: 'tel', value: c.callNo, hint: t('Leave blank to call the WhatsApp number.') },
       ], v => {
         const sl = String(v.slug || '').trim().toLowerCase();
-        if (!/^[a-z0-9]([a-z0-9-]{0,58}[a-z0-9])?$/.test(sl)) return 'The web address can only use lowercase letters, numbers and dashes';
+        if (siteSlugProblem(sl)) return siteSlugProblem(sl);
         if (v.mapUrl && !/^https?:\/\//i.test(v.mapUrl)) return 'The map link must start with https://';
         const ll = String(v.mapLatLng || '').trim();
         if (ll && !/^-?\d{1,2}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?$/.test(ll)) return 'The map location must look like 26.9124, 75.7873';

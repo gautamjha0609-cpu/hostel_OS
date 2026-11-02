@@ -27,7 +27,7 @@ function boot() {
     applyModSwitch, modNeeds, modNeededBy, orgEnabled, MOD_DEPS, fmtYM, addMonths, invoices, myNotifs,
     meterOccupants, setOpeningReading, lastMeter, moveReading, moveReadingHint, canMarkHk, punchIn, punchedToday, selfPunchOn, attFence, Geo,
     remindersDue, markReminded, monthlyBillsDue, monthlyBillMsgs, meals, byTime, checkout, payrollFor,
-    rooms, residents, allRooms, allResidents, occupancy, dueList, shiftBed, vacantBeds, Xlsx, Report, repPresets, repRange, repIn, seedDemo, isDemoHostel, WaGw, Pwa, stockOf, stockM, toM, fromM, postMove, countTo, postConsumption, catchUpConsumption, auditStock, ledger, itemMoves, lineTotal, prTotal, usageBooked, billMessage, receiptMessage, welcomeMessage, laundryMessage, tpl, WA_TPL, rs,
+    rooms, residents, allRooms, allResidents, occupancy, dueList, shiftBed, vacantBeds, Xlsx, Report, repPresets, repRange, repIn, seedDemo, isDemoHostel, WaGw, Pwa, CFG, siteUrl, siteDomain, siteSlugProblem, SITE_RESERVED, stockOf, stockM, toM, fromM, postMove, countTo, postConsumption, catchUpConsumption, auditStock, ledger, itemMoves, lineTotal, prTotal, usageBooked, billMessage, receiptMessage, welcomeMessage, laundryMessage, tpl, WA_TPL, rs,
     hostelBlocks, blocksOn, blockScope, setBlockScope, withAllBlocks, roomBlock, resBlock, blockName, blockOrder,
     payments, resPays, siteCfg, siteLive, siteGaps, sitePhotos, sitePhotoUrl, SITE_PHOTOS, imgUrl, siteSlug, siteUrl,
     ui: { tab: {}, q: {}, flt: {}, lim: {} } };`, ctx);
@@ -1126,4 +1126,15 @@ test('ledger: the demo kitchen runs on the ledger without surprises', () => {
   for (const i of T.items()) { const e = T.ledger().get(i.id); if (e) assert.equal(T.stockM(i), e.qm); }
   assert.ok(T.auditStock().every(x => x.problem === 'not in ledger yet' || x.problem === 'below zero'));
   assert.equal(before.length, its.length);
+});
+
+test('hostel address: <name>.<domain> when a domain is set, /h/<name> otherwise, never a reserved name', () => {
+  setupHostel('owner'); T.Store.hostels[0].name = 'Shreedham - Luxury boys PG';
+  assert.ok(T.siteUrl().includes('site.html?h='));                         // nothing connected yet
+  T.CFG.PUBLIC_SITE_BASE = 'https://sarvlekh.in';
+  assert.equal(T.siteUrl(), 'https://sarvlekh.in/h/shreedham-luxury-boys-pg');
+  T.CFG.PUBLIC_SITE_DOMAIN = 'sarvlekh.in';
+  assert.equal(T.siteUrl(), 'https://shreedham-luxury-boys-pg.sarvlekh.in');
+  T.Store.hostels[0].name = 'WWW'; assert.equal(T.siteUrl(), 'https://sarvlekh.in/h/www');   // reserved: falls back to the path address
+  assert.ok(T.siteSlugProblem('app') && T.siteSlugProblem('-x') && !T.siteSlugProblem('shreedham'));
 });

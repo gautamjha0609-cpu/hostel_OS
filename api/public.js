@@ -10,7 +10,7 @@
  * service role.
  */
 const crypto = require('crypto');
-const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson } = require('./_lib.js');
+const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, SITE_RESERVED } = require('./_lib.js');
 
 const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
@@ -208,7 +208,20 @@ async function join(req, res) {
 }
 
 /* ------------------------------------------------------------------ entry point */
-const routes = { visit, join, site };
+/* Is this web address free? The owner's settings screen asks before saving: two hostels with the same
+ * address would both stop opening (the page refuses an address two hostels claim). The answer is only
+ * free or not free: the pages are public, so nothing private is revealed. */
+async function slug(req, res) {
+  limit('slug:' + clientIp(req), 40, 10 * 60e3);
+  const q = Object.fromEntries(new URL(req.url, 'http://x').searchParams);
+  const sl = String(q.s || '').toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9-]{0,58}[a-z0-9])?$/.test(sl)) return res.status(200).json({ free: false, why: 'format' });
+  if (SITE_RESERVED.includes(sl)) return res.status(200).json({ free: false, why: 'reserved' });
+  const mine = q.h ? uuid(q.h, 'hostel') : null;
+  const rows = await rest('hostels', `?settings->site->>slug=eq.${encodeURIComponent(sl)}&select=id&limit=3`);
+  return res.status(200).json({ free: rows.every(r => r.id === mine), why: 'taken' });
+}
+const routes = { visit, join, site, slug };
 module.exports = async (req, res) => {
   const sub = (req.query && req.query.sub) || new URL(req.url, 'http://x').searchParams.get('sub') || '';
   res.setHeader('Cache-Control', 'no-store');
@@ -223,4 +236,4 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports._internals = { visit, join, site };
+module.exports._internals = { visit, join, site, slug };

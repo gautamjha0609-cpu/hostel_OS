@@ -7,7 +7,8 @@
     "test": "node --test tests/*.test.js",
     "dev": "node scripts/dev-server.js",
     "dev:demo": "node scripts/dev-server.js --demo --port 5177",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "domain": "node scripts/set-domain.js"
   },
   "engines": {
     "node": ">=18"

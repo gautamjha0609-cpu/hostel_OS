@@ -23,8 +23,15 @@
   // slug has to be read from the path. The ?s= form stays for direct testing.
   var PREVIEW = q.get('preview') === '1', NO_SERVER = false;
   var H = q.get('h') || '';
-  var SLUG = q.get('s') || (location.pathname.match(/\/h\/([a-z0-9][a-z0-9-]*)/i) || [])[1] || '';
   var CFG = window.HOSTELOS_CONFIG || {}, CLOUD = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY);
+  // On a hostel's own address (shreedham.sarvlekh.in) the name is the first part of the host.
+  var hostSlug = (function () {
+    var dom = String(CFG.PUBLIC_SITE_DOMAIN || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, ''), host = location.hostname.toLowerCase();
+    if (!dom || host.length <= dom.length + 1 || host.slice(-dom.length - 1) !== '.' + dom) return '';
+    var first = host.slice(0, -dom.length - 1);
+    return /^[a-z0-9][a-z0-9-]*$/.test(first) ? first : '';
+  })();
+  var SLUG = q.get('s') || (location.pathname.match(/\/h\/([a-z0-9][a-z0-9-]*)/i) || [])[1] || hostSlug;
   var hi = (navigator.language || '').toLowerCase().indexOf('hi') === 0;
   var T = hi ? {
     call: 'कॉल करें', wa: 'WhatsApp पर बात करें', waShort: 'WhatsApp',

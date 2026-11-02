@@ -210,8 +210,8 @@ function renderLogin(err) {
   $('#app').innerHTML = `<div class="auth login"><div class="box">
     <form id="loginForm" class="lcard" novalidate>
       <h1>${esc(t('Log in'))}</h1><p class="sub">${esc(t('Hostel & PG management, simple and fast'))}</p>
-      <label class="lf"><span class="lic">${ico('user')}</span><input name="u" placeholder="${esc(t('User ID (your name)'))}" autocomplete="username" autocapitalize="none" required></label>
-      <label class="lf"><span class="lic">${ico('lock')}</span><input name="p" type="password" placeholder="${esc(t('Password (mobile number)'))}" autocomplete="current-password" required>
+      <label class="lf"><span class="lic">${ico('user')}</span><input name="u" placeholder="${esc(t('User ID'))}" autocomplete="username" autocapitalize="none" required></label>
+      <label class="lf"><span class="lic">${ico('lock')}</span><input name="p" type="password" placeholder="${esc(t('Password'))}" autocomplete="current-password" required>
         <button type="button" class="eye" data-act="pwtoggle" aria-label="${esc(t('Show password'))}">${EYE}</button>
         ${typeof Mascot !== 'undefined' ? `<div class="eleph" id="spy" aria-hidden="true">${Mascot.svg()}</div>` : ''}</label>
       <div class="caps" id="caps" role="status">${esc(t('Caps Lock is on.'))}</div>

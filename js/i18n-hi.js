@@ -35,7 +35,7 @@ window.I18N_HI = {
   "Browser storage is full — export a backup in Settings.": "ब्राउज़र स्टोरेज भर गया — सेटिंग्स में बैकअप डाउनलोड करें।",
 
   // ---- login & profile
-  "Log in": "लॉग इन", "Log out": "लॉग आउट", "Log out from this device?": "इस फ़ोन से लॉग आउट करें?", "User ID (your name)": "यूज़र ID (आपका नाम)", "Password (mobile number)": "पासवर्ड (मोबाइल नंबर)",
+  "Log in": "लॉग इन", "Log out": "लॉग आउट", "Log out from this device?": "इस फ़ोन से लॉग आउट करें?", "User ID (your name)": "यूज़र ID (आपका नाम)", "Password (mobile number)": "पासवर्ड (मोबाइल नंबर)", "Password": "पासवर्ड",
   "Hostel & PG management, simple and fast": "हॉस्टल और PG मैनेजमेंट, आसान और तेज़", "Enter user ID and password": "यूज़र ID और पासवर्ड डालें", "Wrong username or password": "गलत यूज़र ID या पासवर्ड",
   "Demo logins — tap to try": "डेमो लॉगिन — छूकर आज़माएँ", "Owner (2 PGs)": "मालिक (2 PG)", "Demo mode: data stays in this browser. Add Supabase keys in js/config.js to go live.": "डेमो मोड: डेटा सिर्फ़ इसी ब्राउज़र में है। लाइव करने के लिए js/config.js में Supabase keys डालें।",
   "Please log in": "कृपया लॉग इन करें", "Account disabled. Contact your PG owner.": "अकाउंट बंद है। अपने PG मालिक से बात करें।", "Could not load your account": "आपका अकाउंट लोड नहीं हुआ",
