@@ -38,15 +38,20 @@ Google OAuth secrets (`GOCSPX-`), private keys, GitHub tokens, AWS keys, any JWT
 
 ## Push status
 
-**Not pushed — waiting for your decision.** The repository is **public**: pushing makes the whole
-source (business rules, pricing logic, database schema and security policies, the production
-Supabase URL and anon key) readable by anyone. The schema is safe to publish only because every
-table is protected by RLS, but competitors could copy the product.
+**Pushed** on 2026-11-02 at the owner's explicit choice ("Public mein push"), to the public repository.
 
-Options:
-1. Make the GitHub repo **private** first (GitHub → Settings → General → Danger Zone → Change
-   visibility), then push. **Recommended** for a commercial product.
-2. Push to the public repo as it is.
+* `git push -u origin production-readiness` — a new branch on an empty remote; no force, no other
+  branch touched. Run from the owner's terminal (Git Credential Manager sign-in); the agent's own
+  shell had no GitHub credentials.
+* First commit `bc8f46c`: local = remote, ahead/behind 0/0, verified with `git ls-remote` and
+  the GitHub contents API (no `.env*`, inventory or cleanup files listed).
+* Later documentation-only commits on the same branch are pushed the same way (fast-forward only).
 
-Once decided, the push is: `git remote add origin https://github.com/gautamjha0609-cpu/hostel_OS.git`
-then `git push -u origin production-readiness` — a new branch on an empty repo, no force.
+Consequence of the public repo: the production Supabase URL and the public `anon` key are
+readable by anyone. That is safe only because every table is protected by row-level security
+(verified on the live database today); keep the service-role key out of the repository forever.
+
+**Known leftover in history:** the first commit `bc8f46c` mentions the real client's business name
+once (in `ENVIRONMENT_AND_PORT_AUDIT.md`); the next commit removes it. No ids, logins, phone numbers
+or records were ever committed. History was not rewritten (no force-push, as agreed); if the name
+must disappear from history too, that needs an explicit decision to rewrite the branch.

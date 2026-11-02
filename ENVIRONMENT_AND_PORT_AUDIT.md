@@ -24,7 +24,7 @@ demo". Different ports did mean different setups — but not dev vs. production 
 ## Problems with the current setup
 
 1. **5175 writes to production.** Every local test, demo click or experiment on 5175 is a real
-   change to Shreedham's database. The earlier test fixtures got into production this way.
+   change to the live client's database. The earlier test fixtures got into production this way.
 2. **5180 is a second, drifting copy of the app** with no security headers, so a demo shown there
    is not the app that will be deployed.
 3. The demo hostel in the database (Sarvlekh Demo PG, `settings.demo = true`) and the in-browser
