@@ -88,16 +88,6 @@
   ],
   "rewrites": [
     {
-      "source": "/",
-      "has": [
-        {
-          "type": "host",
-          "value": "^(?!(?:www|app|admin|api|mail|smtp|ftp|cdn|static|assets|dashboard|login|support|help|blog|docs|status|staging|test|dev|h|join|visit|pay|site|public|ns1|ns2)\\.)(?<slug>[a-z0-9][a-z0-9-]*)\\.sarvlekh\\.in$"
-        }
-      ],
-      "destination": "/site.html?s=:slug"
-    },
-    {
       "source": "/api/public/:sub",
       "destination": "/api/public?sub=:sub"
     },
