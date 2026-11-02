@@ -34,7 +34,7 @@ create table if not exists public.orgs (
   email       text,
   city        text,
   plan        text not null default 'standard',
-  fee         numeric not null default 0,           -- monthly SaaS fee (₹)
+  fee         numeric not null default 0,           -- yearly SaaS fee (₹); paid_till is how far that year(s) of fee reaches
   paid_till   date,
   status      text not null default 'active' check (status in ('active','suspended')),
   modules     jsonb not null default '{}'::jsonb,   -- {"laundry": false, ...}; missing key = enabled

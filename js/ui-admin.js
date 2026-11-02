@@ -27,11 +27,29 @@ async function admLoad(force) {
   if (adm.loading || (adm.data && !force)) return;
   adm.loading = true; adm.res = { started: false, loading: false, done: false, offset: 0 };
   try {
-    const [orgs, hostels, members, stats, usage, files, backups, drive] = await Promise.all([Backend.rpc('my_orgs_billing'), Backend.list('hostels', '&order=name'), admAll('members', '&role=neq.resident&order=id'), Backend.rpc('admin_stats').catch(() => []), admUsage(), CLOUD ? Backend.rpc('doc_files_usage').catch(() => null) : null, CLOUD ? Backend.admin('backup_list').catch(() => null) : null, CLOUD ? Backend.admin('drive_status').catch(() => null) : null]);
-    const supers = await Backend.list('profiles', '&is_super=eq.true');
+    /* Backups and Drive go through /api/admin, which has to verify the caller's token with
+     * Supabase before it does anything — about a second each, against ~110 ms for a direct
+     * REST read. Waiting for them inside this Promise.all held the whole console back by that
+     * second, every single time it opened, to fill in two side panels. They are started here
+     * but awaited separately, and the screen is drawn as soon as the rest is in. */
+    const slow = {
+      backups: CLOUD ? Backend.admin('backup_list').catch(() => null) : Promise.resolve(null),
+      drive: CLOUD ? Backend.admin('drive_status').catch(() => null) : Promise.resolve(null),
+    };
+    // The super admins do not depend on anything else here, so they are fetched alongside
+    // rather than after. Only admProfilesFor has to wait — it needs the member list first.
+    const supersP = Backend.list('profiles', '&is_super=eq.true');
+    const [orgs, hostels, members, stats, usage, files] = await Promise.all([Backend.rpc('my_orgs_billing'), Backend.list('hostels', '&order=name'), admAll('members', '&role=neq.resident&order=id'), Backend.rpc('admin_stats').catch(() => []), admUsage(), CLOUD ? Backend.rpc('doc_files_usage').catch(() => null) : null]);
+    const supers = await supersP;
     const profiles = [...supers, ...await admProfilesFor(members.map(m => m.user_id), supers)];
-    adm.data = { orgs, hostels, profiles, members, stats: stats || [], size: usage ? usage.total : null, usage, files, backups, drive, at: Date.now() };
+    adm.data = { orgs, hostels, profiles, members, stats: stats || [], size: usage ? usage.total : null, usage, files, backups: undefined, drive: undefined, at: Date.now() };
     Store.orgs = orgs; Store.hostels = hostels;
+    // `undefined` above means "still coming"; the cards show a skeleton until these land.
+    Promise.all([slow.backups, slow.drive]).then(([backups, drive]) => {
+      if (!adm.data || adm.data.error) return;
+      adm.data.backups = backups; adm.data.drive = drive;
+      if (ui.page && ui.page.startsWith('admin')) render();
+    });
   } catch (e) { adm.data = { error: e.message }; }
   adm.loading = false; render();
 }
@@ -63,9 +81,9 @@ PAGES.admin = {
     const list = orgs.filter(o => (f === 'all' || o.status === f) && needle('org', o.name, o.owner_name, o.phone, o.city));
     const mrr = sum(orgs.filter(o => o.status === 'active'), o => +o.fee || 0), dueSoon = orgs.filter(o => o.paid_till && o.paid_till < addDays(today(), 5));
     return `${head('Clients & hostels', t('{c} clients · {h} hostels · {r} residents', { c: orgs.length, h: hostels.length, r: sum(hostels, h => +statOf(h.id).residents || 0) }), `${btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync')}${btn('New client', 'addorg', '', 'primary', 'plus')}`)}
-      <div class="grid g4 keep2" style="margin-bottom:14px">${kpi('Active clients', orgs.filter(o => o.status === 'active').length, t('{n} suspended', { n: orgs.filter(o => o.status === 'suspended').length }), 'ok', null, 'building')}${kpi('Monthly revenue', inr(mrr), t('from active clients'), '', null, 'rupee')}${kpi('Renewal due', dueSoon.length, t('in next 5 days'), dueSoon.length ? 'warn' : '', null, 'cal')}${kpi('Database', adm.data.size != null ? adm.data.size + ' MB' : '—', t('of 500 MB free'), adm.data.size > 400 ? 'bad' : '', 'admin-usage', 'chart')}</div>
+      <div class="grid g4 keep2" style="margin-bottom:14px">${kpi('Active clients', orgs.filter(o => o.status === 'active').length, t('{n} suspended', { n: orgs.filter(o => o.status === 'suspended').length }), 'ok', null, 'building')}${kpi('Yearly revenue', inr(mrr), t('from active clients'), '', null, 'rupee')}${kpi('Renewal due', dueSoon.length, t('in next 5 days'), dueSoon.length ? 'warn' : '', null, 'cal')}${kpi('Database', adm.data.size != null ? adm.data.size + ' MB' : '—', t('of 500 MB free'), adm.data.size > 400 ? 'bad' : '', 'admin-usage', 'chart')}</div>
       <div class="tool">${searchBox('org', 'Search client, owner, city')}${chips('org', [['all', 'All'], ['active', 'Active'], ['suspended', 'Suspended']], 'all')}</div>
-      ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/m', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
+      ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/yr', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
   },
 };
 function orgDetail(id) {
@@ -85,7 +103,7 @@ function orgDetail(id) {
           act: 'go', attrs: `data-to="admin-hostel/${h.id}"`,
           end: h.status === 'active' ? '' : badge('Inactive'),
         }); }).join(''), hs.length < o.max_hostels ? `<a href="#" data-act="addhostel" data-org="${id}">+ ${esc(t('Add hostel'))}</a> · ${t('{a} of {b} allowed', { a: hs.length, b: o.max_hostels })}` : t('Hostel limit reached ({n}). Edit the client to raise it.', { n: o.max_hostels }), t('Open a hostel to edit it, set its blocks and modules, and manage the people who log into it.'))}
-        ${group('Plan & billing', [li({ icon: 'rupee', ic: 'ok', t: `${inr(o.fee)} / ${t('month')}`, d: `${t(o.plan || 'standard')} · ${t('paid till')} ${o.paid_till ? fmtDate(o.paid_till) : '—'}`, act: 'orgpaid', attrs: `data-id="${id}"`, end: badge('Mark paid', 'acc') }), li({ icon: 'bed', ic: 'info', t: t('Max {n} beds', { n: o.max_beds }), d: t('Max {n} hostels', { n: o.max_hostels }) })].join(''))}
+        ${group('Plan & billing', [li({ icon: 'rupee', ic: 'ok', t: `${inr(o.fee)} / ${t('year')}`, d: `${t(o.plan || 'standard')} · ${t('paid till')} ${o.paid_till ? fmtDate(o.paid_till) : '—'}`, act: 'orgpaid', attrs: `data-id="${id}"`, end: badge('Mark paid', 'acc') }), li({ icon: 'cal', ic: 'info', t: t('Change fee or paid-till date'), d: t('Edit the client'), act: 'editorg', attrs: `data-id="${id}"` }), li({ icon: 'bed', ic: 'info', t: t('Max {n} beds', { n: o.max_beds }), d: t('Max {n} hostels', { n: o.max_hostels }) })].join(''))}
       </div>
       <div class="stack">
         ${group('Modules this client pays for', OPTIONAL_MODULES.map(k => `<div class="li noic"><span class="body"><span class="t">${esc(modLabel(k))}</span>${modNote(k) ? `<span class="d">${esc(modNote(k))}</span>` : ''}</span><label class="sw"><input type="checkbox" data-orgmod="${k}" data-org="${id}" ${mods[k] === false ? '' : 'checked'} aria-label="${esc(modLabel(k))}"><span></span></label></div>`).join(''), t('This is the ceiling for every hostel of this client. To switch a module off in one hostel only, use Modules on that hostel above.'))}
@@ -104,7 +122,7 @@ A.addorg = () => formModal({
   title: 'New client', submit: 'Create client', wide: true, note: t('Creates the client, their first hostel and the owner login in one step.'),
   fields: [
     { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true }, { name: 'city', label: 'City' },
-    { name: 'fee', label: 'Monthly fee (₹)', type: 'number', min: 0, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: 3 },
+    { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: 3 },
     { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true }, { name: 'haddr', label: 'Address' },
     { type: 'section', label: 'Owner login' }, { name: 'oname', label: 'Owner name', required: true }, { name: 'ophone', label: 'Owner mobile', type: 'tel', required: true },
     { name: 'ouser', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
@@ -125,11 +143,13 @@ A.addorg = () => formModal({
 });
 A.editorg = el => {
   const o = adm.data.orgs.find(x => x.id === el.dataset.id);
-  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone }, { name: 'city', label: 'City', value: o.city }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Monthly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
-    onSubmit: async v => { const patch = { ...v, phone: phone10(v.phone), paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
+  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone }, { name: 'city', label: 'City', value: o.city }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
+    onSubmit: async v => { if (v.paid_till && (v.paid_till < '2020-01-01' || v.paid_till > addDays(today(), 366 * 5))) return t('Paid till looks wrong ({d}). It can be at most 5 years from today.', { d: fmtDate(v.paid_till) }); const patch = { ...v, phone: phone10(v.phone), paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
 };
 A.orgstatus = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id), next = o.status === 'active' ? 'suspended' : 'active'; confirmBox(next === 'suspended' ? t('Suspend {n}? Their staff and residents cannot log in until you activate again. Data is kept.', { n: o.name }) : t('Activate {n}?', { n: o.name }), async () => { await Backend.update('orgs', o.id, { status: next }); o.status = next; toast(next === 'active' ? 'Activated' : 'Suspended'); }, next === 'active' ? 'Activate' : 'Suspend', next === 'active' ? 'ok' : 'bad'); };
-A.orgpaid = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Record client payment', fields: [{ name: 'months', label: 'Months paid', type: 'number', min: 1, value: 1 }], onSubmit: async v => { const base = o.paid_till && o.paid_till > today() ? o.paid_till : today(); const d = parse(base); d.setMonth(d.getMonth() + (v.months || 1)); const pt = iso(d); await Backend.update('orgs', o.id, { paid_till: pt }); o.paid_till = pt; toast(t('Paid till {d}', { d: fmtDate(pt) })); } }); };
+// The date the client has paid till once `years` more are added (counted from today when nothing is paid ahead). Plans are yearly.
+const paidTillAfter = (o, years) => { const base = o.paid_till && o.paid_till > today() ? o.paid_till : today(); const d = parse(base); d.setFullYear(d.getFullYear() + (Math.min(5, Math.max(1, Math.round(years))) || 1)); return iso(d); };
+A.orgpaid = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Record client payment', fields: [{ name: 'years', label: 'Years paid', type: 'number', min: 1, max: 5, value: 1 }], note: t('Adds to the date the client has already paid till. To correct a wrong date, use Edit.'), preview: v => (v.years >= 1 && v.years <= 5 ? `<div class="note">${esc(t('Paid till {d}', { d: fmtDate(paidTillAfter(o, v.years)) }))}</div>` : `<div class="note">${esc(t('Enter 1 to 5 years.'))}</div>`), onSubmit: async v => { if (!Number.isInteger(v.years)) return t('Enter whole years, 1 to 5.'); const pt = paidTillAfter(o, v.years); await Backend.update('orgs', o.id, { paid_till: pt }); o.paid_till = pt; toast(t('Paid till {d}', { d: fmtDate(pt) })); } }); };
 A.delorg = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Delete client', submit: 'Delete forever', note: t('This deletes {n}, all their hostels and ALL data. It cannot be undone. Download backups first.', { n: o.name }), fields: [{ name: 'confirm', label: 'Type the client name to confirm', required: true }], onSubmit: async v => { if (v.confirm.trim() !== o.name) return 'Name does not match'; await Backend.remove('orgs', o.id); adm.data = null; closeModal(); go('admin'); toast('Client deleted'); return false; } }); };
 A.addhostel = el => formModal({ title: 'Add hostel', fields: [{ name: 'name', label: 'Hostel / PG name', required: true }, { name: 'city', label: 'City' }, { name: 'address', label: 'Address', full: true }], onSubmit: async v => { await Backend.insert('hostels', { org_id: el.dataset.org, ...v, status: 'active', settings: {} }); adm.data = null; toast('Hostel added'); } });
 // Only the four columns a browser is allowed to PATCH on a hostel. Status is the platform
@@ -629,6 +649,10 @@ function filesCard(rows) {
  * backup on the same day replaces that day's file, so pressing the button again never piles up copies. */
 function backupCard(rows, drive) {
   if (!CLOUD) return '';
+  // undefined = the slow /api/admin call has not come back yet; null = it came back empty or
+  // failed. Telling someone the list "could not load" while it is still on its way is worse
+  // than showing them that it is on its way.
+  if (rows === undefined) return group('Backups', li({ icon: 'sync', ic: 'mute', t: t('Checking backups…'), d: t('This one goes through the server, so it takes a moment.'), chev: false }));
   if (!rows) return group('Backups', li({ icon: 'folder', ic: 'mute', t: t('Backups'), d: t('Could not load the list. Run the latest database update.'), chev: false }));
   const newest = id => rows.filter(r => r.hostel_id === id).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
   const kb = n => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');

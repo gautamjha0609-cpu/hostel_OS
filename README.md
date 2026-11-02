@@ -223,8 +223,8 @@ Needs Node 18+ and nothing else (no `npm install`: there are no dependencies).
 ```bash
 cp env.local.example .env.local   # then fill in the STAGING project's values (see ENVIRONMENT_VARIABLES.md)
 npm test          # 131 tests: billing, ledger, permissions, API authorization, QR pages, public page, CSP, WhatsApp gateway
-npm run dev       # http://localhost:5173 — real app + real /api handlers; prints which database it uses
-npm run dev:demo  # http://localhost:5180 — same source, no database: made-up data in the browser, demo logins on the login screen
+npm run dev       # http://localhost:5176 — real app + real /api handlers; prints which database it uses
+npm run dev:demo  # http://localhost:5177 — same source, no database: made-up data in the browser, demo logins on the login screen
 npm run release   # before every deploy: stamps a new service-worker VERSION so phones update at once
 ```
 **Never develop against production.** With `SUPABASE_URL` + `SUPABASE_ANON_KEY` (and the staging

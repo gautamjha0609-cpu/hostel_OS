@@ -1,4 +1,4 @@
-// Local server for Sarvlekh: `npm run dev`  →  http://localhost:5173
+// Local server for Sarvlekh: `npm run dev`  →  http://localhost:5176
 //
 // It serves this folder the way Vercel does (the app at "/", /h/<name> → the public page) and runs
 // the REAL api/*.js handlers, so password resets, new logins and the WhatsApp connection work
@@ -13,7 +13,16 @@
 // breaks on your machine first, where it is cheap to fix.
 const http = require('http'), fs = require('fs'), path = require('path');
 const APP = path.resolve(__dirname, '..');
-const PORT = +process.env.PORT || 5173;
+/* Options come from the command line as well as the environment, so a launcher can say
+ * `dev-server.js --demo --port 5177` instead of wrapping the whole thing in `node -e`. The
+ * environment still wins where a tool sets it (the editor assigns PORT when it starts us). */
+const ARGV = process.argv.slice(2);
+const argOf = name => { const i = ARGV.indexOf('--' + name); return i >= 0 ? ARGV[i + 1] : null; };
+if (ARGV.includes('--demo')) process.env.DEMO = '1';
+// 5176, not the customary 5173: that one is taken on this machine by another project, and
+// Google's OAuth redirect URI must match the port character for character, so it is pinned in
+// one place that `npm run dev` and the editor's launch config both read.
+const PORT = +process.env.PORT || +argOf('port') || 5176;
 
 // ---- .env.local (KEY=value per line; # comments; no quoting rules to learn)
 for (const f of ['.env.local', '.env']) {
@@ -103,7 +112,7 @@ http.createServer((req, res) => {
     send(res, 200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream' }, data);
   });
 }).on('error', e => {
-  console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use — another server is running there. Stop it first (or set PORT=5174).` : e);
+  console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use — another server is running there. Stop that one, or start this with --port <free port>.` : e);
   process.exit(1);
 }).listen(PORT, () => {
   console.log(`Sarvlekh serving on http://localhost:${PORT}`);
