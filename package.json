@@ -1,0 +1,15 @@
+{
+  "name": "hostelos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sarvlekh — hostel & PG management SaaS (static PWA + Supabase + one Vercel function)",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "dev": "node scripts/dev-server.js",
+    "dev:demo": "node -e \"process.env.DEMO='1';process.env.PORT=process.env.PORT||'5180';require('./scripts/dev-server.js')\"",
+    "release": "node scripts/release.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

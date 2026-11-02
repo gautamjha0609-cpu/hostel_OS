@@ -1,0 +1,33 @@
+# Secrets: every real env file stays local. Placeholders live in env.local.example.
+.env
+.env.*
+*.env
+.env*.local
+# Dependencies, build and tool output
+node_modules/
+.vercel/
+dist/
+build/
+coverage/
+.lighthouseci/
+lighthouse-reports/
+playwright-report/
+test-results/
+# Database dumps and backup files (contain residents' personal data)
+*.json.gz
+*.json.gz.enc
+*.sql.gz
+*.dump
+backups/
+# Logs, OS and editor clutter
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+tmp/
+# Operational records that name real clients and their ids: kept on this machine, never pushed
+DATABASE_INVENTORY.md
+DATA_CLEANUP_PLAN.md
+DATA_CLEANUP_EXECUTION_REPORT.md
+supabase/cleanup/

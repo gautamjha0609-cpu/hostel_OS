@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Reached at /h/<hostel-name> as well as /site.html, so every address below starts with "/". (A <base> tag would be simpler, but the Content-Security-Policy in vercel.json says base-uri 'none', which makes browsers ignore it and leave the page with no styles and no script.) -->
+<title>Hostel</title>
+<meta name="description" content="Rooms, rent, facilities, photos and location of the hostel. Enquire on WhatsApp.">
+<meta name="theme-color" content="#0a1428">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/site.css">
+</head>
+<body class="sitebody">
+<!-- The hostel's public one-pager. No login and no app: this is the link an owner sends to a
+     parent who asks what the place is like. Everything on it is what the owner typed in
+     Settings → Hostel page; an enquiry opens WhatsApp rather than being stored here.
+     It loads only its own stylesheet and script (no app.css, no theme, no fonts) so it stays
+     light for the phone and for the server. -->
+<main id="site"><div class="loader"><div class="spin"></div></div></main>
+<script src="/js/config.js"></script>
+<script src="/js/site.js"></script>
+</body>
+</html>
