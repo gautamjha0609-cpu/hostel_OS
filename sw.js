@@ -6,7 +6,7 @@
 // most once every 12 hours. A deploy is picked up immediately when VERSION changes; Vercel stamps a new
 // VERSION on every deploy (build command in vercel.json), no manual step.
 // API, Supabase and Google calls are never cached.
-const VERSION = 'hostelos-202611021743';
+const VERSION = 'hostelos-202611040733';
 const REFRESH_MS = 12 * 3600e3;
 const SHELL = [
   './', './index.html', './pay.html', './visit.html', './join.html', './site.html', './manifest.webmanifest', './css/app.css', './css/site.css',

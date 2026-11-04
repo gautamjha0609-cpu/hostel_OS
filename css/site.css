@@ -197,6 +197,49 @@ button { background: none; border: 0; cursor: pointer; }
 .s-gone b { display: block; font-size: 19px; margin-bottom: 8px; }
 .s-gone p { color: var(--muted); line-height: 1.6; }
 
+/* ---------- phones (under 600px) ----------
+   The 667px reference squeezed onto a 360–430px phone left two cramped columns side by side
+   (about, location) and four facility tiles too narrow for their words. Here every two-column
+   block stacks, the side gutters drop to 16px and one "reference pixel" is a real pixel again,
+   so text is read at its intended size. Tablets and desktop are untouched. */
+@media (max-width: 599px) {
+  :root { --u: clamp(.92px, .27vw, 1px); }
+  .wrap, .top .wrap, .hero .wrap { padding-left: 16px; padding-right: 16px; }
+  .top .wrap { gap: 10px; }
+
+  .hero { padding-bottom: calc(46 * var(--u)); }
+  .hero::before { background: linear-gradient(180deg, rgba(11, 21, 48, .9) 0%, rgba(11, 21, 48, .8) 55%, rgba(11, 21, 48, .92) 100%); }
+  .hero .copy, .hero .sub { max-width: none; }
+  .hero h1 { font-size: calc(28 * var(--u)); }
+  .pills { width: 100%; min-width: 0; }
+  .pills span { padding: 6px calc(8 * var(--u)); }
+  .cta { flex-wrap: wrap; }
+  .cta .b { flex: 1 1 auto; }
+
+  .ab { grid-template-columns: 1fr; gap: calc(16 * var(--u)); }
+  .ab-pic { height: auto; max-height: none; aspect-ratio: 16 / 10; }
+  .rate { margin-top: calc(14 * var(--u)); }
+
+  .fac-card { padding: calc(18 * var(--u)) calc(12 * var(--u)) calc(16 * var(--u)); }
+  .fac-card .h2 { font-size: calc(24 * var(--u)); }
+  .fac { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .fac div { min-height: 84px; padding: 10px 4px 8px; font-size: 12px; }
+  .fac small { font-size: 10px; }
+
+  .rail img { flex-basis: 84%; aspect-ratio: 4 / 3; }
+
+  .stats b { font-size: calc(16 * var(--u)); }
+
+  .loc { grid-template-columns: 1fr; gap: calc(14 * var(--u)); }
+  .map { min-height: 0; aspect-ratio: 16 / 9; }
+
+  .faq { padding: 0; gap: 6px; }
+  .faq summary { padding: 10px 14px; line-height: 1.3; }
+  .faq .a { padding: 0 14px 12px; }
+
+  .enq { padding: 22px 16px 20px; }
+}
+
 /* ---------- desktop (reference 1024px wide) ---------- */
 @media (min-width: 900px) {
   .wrap { max-width: calc(960 * var(--u)); padding: 0 calc(10 * var(--u)); }
