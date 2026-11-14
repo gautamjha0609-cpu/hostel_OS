@@ -551,11 +551,12 @@ function addInvoice(o) {
 // FIFO allocation: oldest dues first, extra money becomes advance credit.
 // `invIds` puts those bills at the front of the queue; `exclude` keeps a bill out of this
 // payment altogether, which is how a penalty the owner is not collecting today stays pending.
-function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(), note = '', claimId = null, invIds = null, exclude = null }) {
+function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(), note = '', claimId = null, invIds = null, exclude = null, idempotencyKey = null }) {
   const r = resById(resId); if (!r) throw new Error('Resident not found');
   amount = round2(amount);
   if (!isFinite(amount) || isNaN(amount) || !(amount > 0)) throw new Error('Enter an amount');
   if (amount > 10000000) throw new Error('Amount cannot exceed ₹10,000,000');
+  const idmpKey = idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : uid('idmp-'));
   let left = amount; const alloc = [];
   const skip = new Set(exclude || []);
   const open = openInv(resId).filter(i => !skip.has(i.id));
@@ -569,7 +570,7 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   }
   if (left > 0) Store.patch(resId, { credit: round2((r.credit || 0) + left) });
   const no = (S().receiptNo || 0) + Store.all('pay').length + 1;
-  const pay = Store.put('pay', { resId, roomId: r.roomId, amount, mode, ref, date, note, alloc, credit: left, claimId, no: `R-${no}`, by: Store.me && Store.me.full_name, ts: nowIso() });
+  const pay = Store.put('pay', { resId, roomId: r.roomId, amount, mode, ref, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
   notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}` });
   return pay;
 }

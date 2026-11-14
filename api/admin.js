@@ -70,15 +70,19 @@ async function makeUser({ full_name, phone, username, password, isSuper = false 
   if (pw.length < 6) throw new HttpError(400, 'Password must be at least 6 characters (default is the mobile number)');
   const u = await sb('/auth/v1/admin/users', {
     method: 'POST',
-    body: { email: `${uname}@${DOMAIN}`, password: pw, email_confirm: true, user_metadata: { username: uname, full_name: name } },
+    body: { email: `${uname}@${DOMAIN}`, password: pw, user_metadata: { username: uname, full_name: name } },
   });
+  const inviteToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(inviteToken).digest('hex');
+  const expiresAt = new Date(Date.now() + 7 * 86400 * 1000).toISOString();
   try {
     await insert('profiles', { id: u.id, username: uname, full_name: name, phone: cleanP || digits(phone) || null, is_super: isSuper });
+    await insert('account_invites', { user_id: u.id, token_hash: tokenHash, expires_at: expiresAt }).catch(() => {});
   } catch (e) {
     await sb(`/auth/v1/admin/users/${u.id}`, { method: 'DELETE' }).catch(() => {});
     throw e;
   }
-  return { user_id: u.id, username: uname, password: pw };
+  return { user_id: u.id, username: uname, password: pw, invite_token: inviteToken };
 }
 
 // Only these module keys may be granted as extra permissions.
@@ -315,6 +319,20 @@ async function putBackup(name, buf) {
     if (!r.ok) throw new HttpError(502, 'Backup upload failed: ' + r.status);
   } catch (e) { throw e instanceof HttpError ? e : new HttpError(504, 'Backup upload failed'); } finally { clearTimeout(timer); }
 }
+async function sendAlert(subject, detail) {
+  const url = process.env.ALERT_WEBHOOK_URL;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `[HostelOS Alert] ${subject}: ${detail}`, at: new Date().toISOString() })
+    });
+  } catch (err) {
+    console.error('Alert delivery failed:', err.message);
+  }
+}
+
 // One hostel, one file per day: a second run on the same day replaces that day's file (x-upsert), so
 // pressing the button twice never leaves two copies.
 async function backupOne(id, started = Date.now()) {
@@ -323,6 +341,12 @@ async function backupOne(id, started = Date.now()) {
   if (!hostel) throw new HttpError(404, 'Hostel not found');
   // the hostel's own logins and its org-wide ones (an owner has no single hostel)
   const members = await rest('members', `?or=(hostel_id.eq.${id},and(hostel_id.is.null,org_id.eq.${uuid(hostel.org_id, 'client')}))&select=user_id,org_id,hostel_id,role,ref_id,perms,deny,block,active`);
+  const userIds = [...new Set(members.map(m => m.user_id).filter(Boolean))];
+  let profiles = [];
+  if (userIds.length) {
+    profiles = await rest('profiles', `?id=in.(${userIds.join(',')})&select=id,username,full_name,phone,created_at,active`).catch(() => []);
+  }
+  const receiptSeq = await rest('hostel_receipt_seq', `?hostel_id=eq.${id}&select=*`).catch(() => []);
   const docs = [];
   for (let off = 0; ; off += 1000) {
     if (Date.now() - started > BACKUP_BUDGET_MS + 1500) throw new HttpError(504, 'out of time');
@@ -331,7 +355,7 @@ async function backupOne(id, started = Date.now()) {
     if (page.length < 1000) break;
   }
   const name = `${id}/${new Date().toISOString().slice(0, 10)}.json.gz`;
-  const gz = zlib.gzipSync(JSON.stringify({ v: 1, at: new Date().toISOString(), hostel, members, docs }));
+  const gz = zlib.gzipSync(JSON.stringify({ v: 2, at: new Date().toISOString(), hostel, members, profiles, receiptSeq, docs }));
   await putBackup(name, gz);
   let drive = null;
   try { drive = await driveCopy(hostel, name.slice(37, 47), gz); } catch (e) { drive = e.message; }   // a Drive problem never loses the backup above
@@ -446,8 +470,20 @@ module.exports = async (req, res) => {
     if (!URL_ || !KEY) throw new HttpError(500, 'Server is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)');
     if (req.method === 'GET' && new URL(req.url, 'http://x').searchParams.get('cron') === 'sweep') {
       if (!cronOk(req)) throw new HttpError(401, 'Not allowed');
-      const t0 = Date.now(), out = await sweepFiles();
-      try { out.backup = await backupHostels(t0); } catch (e) { out.backup = { error: e.message }; }   // a failed backup must not hide the sweep
+      const t0 = Date.now();
+      let out;
+      try {
+        out = await sweepFiles();
+      } catch (e) {
+        await sendAlert('Document Sweep Failed', e.message);
+        throw e;
+      }
+      try {
+        out.backup = await backupHostels(t0);
+      } catch (e) {
+        out.backup = { error: e.message };
+        await sendAlert('Hostel Backup Failed', e.message);
+      }
       return res.status(200).json(out);
     }
     if (req.method === 'GET' && new URL(req.url, 'http://x').searchParams.get('oauth') === 'callback') { try { return await driveCallback(req, res); } catch (e) { res.statusCode = 302; res.setHeader('Location', '/admin-usage?drive=' + encodeURIComponent('error: ' + (e.status ? e.message : 'Server error'))); return res.end(); } }

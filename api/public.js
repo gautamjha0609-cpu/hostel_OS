@@ -227,7 +227,64 @@ async function slug(req, res) {
   const rows = await rest('hostels', `?settings->site->>slug=eq.${encodeURIComponent(sl)}&select=id&limit=3`);
   return res.status(200).json({ free: rows.every(r => r.id === mine), why: 'taken' });
 }
-const routes = { visit, join, site, slug };
+/* ------------------------------------------------------------------ account activation */
+async function activate(req, res) {
+  if (req.method !== 'POST') throw new HttpError(405, 'POST only');
+  limit('activate:' + clientIp(req), 10, 15 * 60e3);
+  const b = await readJson(req);
+  const token = String(b.token || '').trim();
+  if (!token || !/^[a-f0-9]{32,128}$/i.test(token)) {
+    throw new HttpError(400, 'Invalid activation token');
+  }
+  const password = String(b.password || '');
+  if (password.length < 8) {
+    throw new HttpError(400, 'Password must be at least 8 characters');
+  }
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+  // 1. Claim invite token atomically
+  let claims;
+  try {
+    claims = await rest('rpc/claim_account_invite', '', {
+      method: 'POST',
+      body: { p_token_hash: tokenHash }
+    });
+  } catch (err) {
+    throw new HttpError(400, err.message || 'Invalid or expired activation link');
+  }
+  const claim = claims && claims[0];
+  if (!claim || !claim.invite_id) {
+    throw new HttpError(400, 'Invalid or expired activation link');
+  }
+
+  // 2. Update Supabase Auth user password
+  try {
+    await sb(`/auth/v1/admin/users/${claim.user_id}`, {
+      method: 'PUT',
+      body: { password }
+    });
+  } catch (authErr) {
+    await rest('rpc/release_account_invite', '', {
+      method: 'POST',
+      body: { p_invite_id: claim.invite_id }
+    }).catch(() => {});
+    throw new HttpError(502, 'Could not set password: ' + authErr.message);
+  }
+
+  // 3. Mark invite completed
+  try {
+    await rest('rpc/complete_account_invite', '', {
+      method: 'POST',
+      body: { p_invite_id: claim.invite_id }
+    });
+  } catch (compErr) {
+    console.error('Failed to complete invite record:', compErr);
+  }
+
+  return res.status(200).json({ ok: true, username: claim.username });
+}
+
+const routes = { visit, join, site, slug, activate };
 module.exports = async (req, res) => {
   const sub = (req.query && req.query.sub) || new URL(req.url, 'http://x').searchParams.get('sub') || '';
   res.setHeader('Cache-Control', 'no-store');
@@ -242,4 +299,4 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports._internals = { visit, join, site, slug };
+module.exports._internals = { visit, join, site, slug, activate };

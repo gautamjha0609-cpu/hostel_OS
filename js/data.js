@@ -39,28 +39,93 @@ const IDB = {
     if (this.p) return this.p;
     this.p = new Promise((res, rej) => {
       if (!self.indexedDB) return rej(new Error('no indexeddb'));
-      const r = indexedDB.open('hostelos', 1);
-      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('cache')) r.result.createObjectStore('cache'); };
+      const r = indexedDB.open('hostelos', 2);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache');
+        if (!db.objectStoreNames.contains('keystore')) db.createObjectStore('keystore');
+        if (!db.objectStoreNames.contains('vault')) db.createObjectStore('vault');
+      };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
       r.onblocked = () => rej(new Error('blocked'));
     }).catch(e => { this.p = null; throw e; });
     return this.p;
   },
-  async tx(mode, fn) {
+  async tx(storeName, mode, fn) {
+    if (typeof mode === 'function') { fn = mode; mode = storeName; storeName = 'cache'; }
     const db = await this.open();
     return new Promise((res, rej) => {
-      const t = db.transaction('cache', mode), st = t.objectStore('cache');
+      const t = db.transaction(storeName, mode), st = t.objectStore(storeName);
       let out; const rq = fn(st);
       if (rq) rq.onsuccess = () => { out = rq.result; };
       t.oncomplete = () => res(out);
       t.onerror = t.onabort = () => rej(t.error);
     });
   },
-  async get(k, d = null) { try { const v = await this.tx('readonly', st => st.get(k)); return v === undefined ? d : v; } catch (e) { return LS.get(k, d); } },
-  async set(k, v) { try { await this.tx('readwrite', st => st.put(v, k)); return true; } catch (e) { return LS.set(k, v); } },
-  async del(k) { try { await this.tx('readwrite', st => st.delete(k)); } catch (e) { /* ignore */ } LS.del(k); },
-  async keys() { try { return await this.tx('readonly', st => st.getAllKeys()) || []; } catch (e) { return []; } },
+  async get(k, d = null, store = 'cache') { try { const v = await this.tx(store, 'readonly', st => st.get(k)); return v === undefined ? d : v; } catch (e) { return LS.get(k, d); } },
+  async set(k, v, store = 'cache') { try { await this.tx(store, 'readwrite', st => st.put(v, k)); return true; } catch (e) { return LS.set(k, v); } },
+  async del(k, store = 'cache') { try { await this.tx(store, 'readwrite', st => st.delete(k)); } catch (e) { /* ignore */ } LS.del(k); },
+  async keys(store = 'cache') { try { return await this.tx(store, 'readonly', st => st.getAllKeys()) || []; } catch (e) { return []; } },
+};
+
+/* Device-level encrypted vault for pending offline writes on shared devices */
+const CryptoVault = {
+  async getKey() {
+    if (!self.crypto || !self.crypto.subtle) return null;
+    try {
+      let key = await IDB.get('device_vault_key', null, 'keystore');
+      if (!key) {
+        key = await crypto.subtle.generateKey(
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+        await IDB.set('device_vault_key', key, 'keystore');
+      }
+      return key;
+    } catch (e) {
+      console.warn('CryptoVault getKey error:', e);
+      return null;
+    }
+  },
+  async saveVault(uid, data) {
+    const key = await this.getKey();
+    if (!key) return false;
+    try {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoded = new TextEncoder().encode(JSON.stringify(data));
+      const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+      const vaultRecord = {
+        iv: Array.from(iv),
+        ciphertext: Array.from(new Uint8Array(ciphertext)),
+        at: new Date().toISOString()
+      };
+      await IDB.set(`vault.${uid}`, vaultRecord, 'vault');
+      return true;
+    } catch (e) {
+      console.error('Failed to seal vault:', e);
+      return false;
+    }
+  },
+  async loadVault(uid) {
+    const key = await this.getKey();
+    if (!key) return null;
+    try {
+      const vaultRecord = await IDB.get(`vault.${uid}`, null, 'vault');
+      if (!vaultRecord || !vaultRecord.iv || !vaultRecord.ciphertext) return null;
+      const iv = new Uint8Array(vaultRecord.iv);
+      const cipher = new Uint8Array(vaultRecord.ciphertext);
+      const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+      return JSON.parse(new TextDecoder().decode(decrypted));
+    } catch (e) {
+      console.error('Failed to unseal vault:', e);
+      return null;
+    }
+  },
+  async clearVault(uid) {
+    await IDB.del(`vault.${uid}`, 'vault');
+  }
 };
 
 /* ===================================================================== cloud backend */
@@ -125,7 +190,58 @@ const Cloud = {
   },
   async push(rows) {
     if (!rows.length) return;
-    await this.rest('docs?on_conflict=hostel_id,id', { method: 'POST', body: rows, headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
+    const standard = [];
+    for (const r of rows) {
+      if (r.kind === 'res' && !r.deleted) {
+        await this.rpc('allocate_bed', {
+          p_hostel_id: r.hostel_id,
+          p_res_id: r.id,
+          p_res_data: r.data,
+          p_room_id: r.room_id || (r.data && r.data.roomId),
+          p_bed_id: (r.data && r.data.bed),
+          p_invoices: []
+        }).catch(err => {
+          if (err.message && (err.message.includes('not vacant') || err.message.includes('already exists'))) {
+            throw new AppError(err.message, { status: 409, code: '23505' });
+          }
+          throw err;
+        });
+      } else if (r.kind === 'pay' && !r.deleted) {
+        await this.rpc('record_payment_atomic', {
+          p_hostel_id: r.hostel_id,
+          p_idempotency_key: (r.data && r.data.idempotencyKey) || r.id,
+          p_res_id: r.res_id || (r.data && r.data.resId),
+          p_amount: +(r.data && r.data.amount),
+          p_mode: (r.data && r.data.mode) || 'cash',
+          p_ref: (r.data && r.data.ref) || '',
+          p_date: r.day || (r.data && r.data.date),
+          p_note: (r.data && r.data.note) || '',
+          p_claim_id: (r.data && r.data.claimId) || null
+        }).catch(err => {
+          if (err.message && err.message.includes('Idempotency conflict')) {
+            throw new AppError(err.message, { status: 409, code: '40900' });
+          }
+          throw err;
+        });
+      } else if (r.kind === 'mv' && !r.deleted) {
+        await this.rpc('record_stock_movement', {
+          p_hostel_id: r.hostel_id,
+          p_item_id: r.data && r.data.itemId,
+          p_qm: r.data && r.data.qm,
+          p_move_doc: r.data
+        }).catch(err => {
+          if (err.message && err.message.includes('Insufficient stock')) {
+            throw new AppError(err.message, { status: 409, code: '55P03' });
+          }
+          throw err;
+        });
+      } else {
+        standard.push(r);
+      }
+    }
+    if (standard.length) {
+      await this.rest('docs?on_conflict=hostel_id,id', { method: 'POST', body: standard, headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
+    }
   },
   saveHostel(id, patch) { return this.rest(`hostels?id=eq.${id}`, { method: 'PATCH', body: patch, headers: { Prefer: 'return=minimal' } }); },
   // Merged inside one statement in Postgres so simultaneous edits cannot overwrite each other.
@@ -333,6 +449,16 @@ const Store = {
     await this.flush().catch(() => {});
     this.ctx = ctx; this.docs = new Map(); this.byKind = new Map(); this.cursor = null; this.outbox = []; this.ver++;
     if (!ctx.hostelId) return;
+    const uidv = Backend.uid();
+    if (uidv) {
+      const vaulted = await CryptoVault.loadVault(uidv).catch(() => null);
+      if (vaulted && Array.isArray(vaulted) && vaulted.length) {
+        for (const r of vaulted) {
+          if (!this.outbox.some(o => o.id === r.id)) this.outbox.push(r);
+        }
+        await CryptoVault.clearVault(uidv).catch(() => {});
+      }
+    }
     const key = this.cacheKey();
     let c = await IDB.get(key);
     if (!c) {
@@ -341,7 +467,14 @@ const Store = {
       const old = LS.get(key);
       if (old) { c = old; if (await IDB.set(key, old)) LS.del(key); }
     }
-    if (c && c.v === 2) { for (const d of c.docs) this.docs.set(d.id, d); this.cursor = c.cursor; this.outbox = c.outbox || []; this.ver++; }
+    if (c && c.v === 2) {
+      for (const d of c.docs) this.docs.set(d.id, d);
+      this.cursor = c.cursor;
+      for (const r of (c.outbox || [])) {
+        if (!this.outbox.some(o => o.id === r.id)) this.outbox.push(r);
+      }
+      this.ver++;
+    }
     if (this.prune()) this.persist();
     if (this.docs.size) { this.sync().catch(() => {}); } else { await this.sync(); }
   },
@@ -492,13 +625,21 @@ const Store = {
   // Lists (meals, expense categories…) must replace rather than merge, or removed entries return.
   replaceSettingsKey(key, value) { return this.saveSettings({ [key]: value }, [key]); },
 
-  async logout() {
-    await this.flush().catch(() => {});
+  async logout(opt = {}) {
     const uidv = Backend.uid();
+    if (this.outbox.length > 0 && !opt.forceDiscard) {
+      if (opt.safeSwitch) {
+        await CryptoVault.saveVault(uidv, this.outbox);
+      } else {
+        return { promptRequired: true, pendingCount: this.outbox.length };
+      }
+    }
+    await this.flush().catch(() => {});
     await Backend.logout();
     try { Object.keys(localStorage).filter(k => k.startsWith(`hostelos.cache.${uidv}`) || k.startsWith(`hostelos.meta.${uidv}`)).forEach(k => localStorage.removeItem(k)); } catch (e) { /* ignore */ }
     try { for (const k of await IDB.keys()) if (String(k).startsWith(`hostelos.cache.${uidv}`)) await IDB.del(k); } catch (e) { /* ignore */ }
     this.me = null; this.ctx = null; this.docs = new Map(); this.byKind = new Map(); this.outbox = [];
+    return { ok: true };
   },
 };
 

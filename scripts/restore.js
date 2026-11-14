@@ -56,6 +56,14 @@ const post = (table, rows, conflict) => fetch(`${URL_}/rest/v1/${table}?on_confl
       if (!r.ok) { console.error(`Could not create the ${table} row: ${r.status} ${(await r.text()).slice(0, 200)}`); process.exit(1); }
     }
     console.log('  client and hostel rows in place');
+    if (b.profiles && b.profiles.length) {
+      const pr = await post('profiles', b.profiles, 'id');
+      if (pr.ok) console.log(`  restored ${b.profiles.length} profiles`);
+    }
+    if (b.receiptSeq && b.receiptSeq.length) {
+      const sr = await post('hostel_receipt_seq', b.receiptSeq, 'hostel_id');
+      if (sr.ok) console.log(`  restored ${b.receiptSeq.length} receipt sequence records`);
+    }
   }
   for (let i = 0; i < b.docs.length; i += 500) {
     const r = await post('docs', b.docs.slice(i, i + 500), 'hostel_id,id');

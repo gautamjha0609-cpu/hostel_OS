@@ -120,7 +120,7 @@ function buildShell() {
       <div class="offline" id="offline" ${Store.online ? 'hidden' : ''}>${esc(t('Offline — changes are saved and will sync'))}</div>
       <header class="top ${cs.length > 1 || (c.key && c.key.startsWith('super:')) ? 'sel' : ''}" id="top">
         <button class="ibtn menu-btn" data-act="drawer" aria-label="${esc(t('Menu'))}">${ico('menu')}</button>
-        <h1 id="ptitle"></h1><span class="sp"></span>
+        <h1 id="ptitle"></h1><span id="outboxBadge" class="badge warn sm" ${Store.outbox && Store.outbox.length ? '' : 'hidden'}>${esc(t('{n} pending', { n: Store.outbox ? Store.outbox.length : 0 }))}</span><span class="sp"></span>
         ${cs.length > 1 || c.key && c.key.startsWith('super:') ? `<select class="hsel" id="ctxSel" aria-label="${esc(t('Switch hostel'))}">${opts}${c.key && c.key.startsWith('super:') ? `<option selected>${esc(c.label)}</option>` : ''}</select>` : ''}
         ${c.hostelId ? `<button class="ibtn hide-s" data-act="palette" aria-label="${esc(t('Search'))}" title="Ctrl+K">${ico('search', 'sm')}</button>` : ''}
         <button class="ibtn" data-act="theme" aria-label="${esc(t('Appearance'))}" title="${esc(themeLabel())}">${ico(themeIcon(), 'sm')}</button>
@@ -144,6 +144,7 @@ function updateChrome() {
   const slot = $('#installSlot'); if (slot && typeof Pwa !== 'undefined') slot.innerHTML = Pwa.button();
   const nd = $('#ndot'); if (nd) { const n = myNotifs().filter(x => !x.read).length; nd.hidden = !n; nd.textContent = n > 9 ? '9+' : n; }
   const off = $('#offline'); if (off) off.hidden = Store.online;
+  const ob = $('#outboxBadge'); if (ob) { const p = Store.outbox ? Store.outbox.length : 0; ob.hidden = !p; ob.textContent = t('{n} pending', { n: p }); }
 }
 
 /* ===================================================================== routing */
@@ -285,7 +286,35 @@ A.chpw = () => formModal({
   fields: [{ name: 'p1', label: 'New password', type: 'password', required: true, hint: t('At least 6 characters') }, { name: 'p2', label: 'Repeat new password', type: 'password', required: true }],
   onSubmit: async v => { if (v.p1.length < 6) return 'Password must be at least 6 characters'; if (v.p1 !== v.p2) return 'Passwords do not match'; await Backend.changePassword(v.p1); toast('Password changed'); },
 });
-A.logout = () => confirmBox(t('Log out from this device?'), async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); }, 'Log out', 'bad');
+A.logout = () => {
+  if (Store.outbox && Store.outbox.length > 0) {
+    openModal({
+      title: t('Unsynced Changes Warning'),
+      body: `<p>${esc(t('You have {n} offline changes that have not yet synced with the server.', { n: Store.outbox.length }))}</p>
+             <p class="muted sm" style="margin-top:8px">${esc(t('To protect your data on a shared device, choose an option:'))}</p>`,
+      foot: `<div class="row" style="gap:8px;flex-direction:column;width:100%">
+               <button class="btn ok block" data-act="logout_safe">${esc(t('Safe Switch Account (Encrypt & Keep)'))}</button>
+               <button class="btn bad block" data-act="logout_force">${esc(t('Discard Pending Changes & Log Out'))}</button>
+               <button class="btn block" data-act="closemodal">${esc(t('Cancel (Stay Logged In)'))}</button>
+             </div>`
+    });
+    return;
+  }
+  confirmBox(t('Log out from this device?'), async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); }, 'Log out', 'bad');
+};
+A.logout_safe = async () => {
+  closeModal();
+  await Store.logout({ safeSwitch: true });
+  history.replaceState(null, '', '/');
+  renderLogin();
+  toast(t('Account switched safely. Pending changes are encrypted on this device.'), 'ok');
+};
+A.logout_force = async () => {
+  closeModal();
+  await Store.logout({ forceDiscard: true });
+  history.replaceState(null, '', '/');
+  renderLogin();
+};
 A.syncnow = async () => { try { await Store.sync(); await Store.refreshMeta(); toast('Synced'); } catch (e) { toast(e.message, 'bad'); } render(); };
 A.reload = () => location.reload();
 // The page's Content-Security-Policy (vercel.json: script-src 'self') refuses inline handlers
