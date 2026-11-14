@@ -20,7 +20,14 @@ function fake(row) {
       if (opt.method === 'POST') { st.row = JSON.parse(opt.body)[0]; return json(201, {}); }
       if (opt.method === 'DELETE') { st.row = null; return json(200, {}); }
     }
-    if (u.hostname === 'gw.example.com') { st.sent.push({ path: u.pathname, body: JSON.parse(opt.body), key: opt.headers['X-Api-Key'] || opt.headers.apikey }); return json(201, {}); }
+    if (u.hostname === 'gw.example.com' || u.hostname === 'graph.facebook.com') {
+      st.sent.push({
+        path: u.pathname,
+        body: JSON.parse(opt.body),
+        key: opt.headers['X-Api-Key'] || opt.headers.apikey || (opt.headers.Authorization ? opt.headers.Authorization.replace('Bearer ', '') : null)
+      });
+      return json(201, {});
+    }
     return json(404, {});
   };
   return st;
@@ -49,6 +56,17 @@ test('send goes through the gateway, 5 at a time, bad numbers reported', async (
   const r = await actions.send({ hostel_id: H1, messages: [{ phone: '9876543210', text: 'Rent due' }, { phone: '12', text: 'x' }] }, owner);
   assert.equal(r.results[0].ok, true); assert.equal(r.results[1].ok, false);
   assert.equal(st.sent[0].path, '/message/sendText/pg1'); assert.equal(st.sent[0].body.number, '919876543210');
+});
+
+test('send goes through Meta Official WhatsApp Cloud API', async () => {
+  const metaRow = { hostel_id: H1, kind: 'meta', url: 'https://graph.facebook.com/v19.0', api_key: 'EAAB_token', session: '109988776655' };
+  const st = fake(metaRow);
+  const r = await actions.send({ hostel_id: H1, messages: [{ phone: '9876543210', text: 'Rent bill ₹8,000' }] }, owner);
+  assert.equal(r.results[0].ok, true);
+  assert.equal(st.sent[0].path, '/v19.0/109988776655/messages');
+  assert.equal(st.sent[0].key, 'EAAB_token');
+  assert.equal(st.sent[0].body.to, '919876543210');
+  assert.equal(st.sent[0].body.text.body, 'Rent bill ₹8,000');
 });
 
 /* ---- shared Evolution server: the owner scans a QR, messages leave from the owner's own number ---- */

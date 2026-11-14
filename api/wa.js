@@ -31,16 +31,40 @@ const load = async hostelId => (await rest('wa_gateways', `?hostel_id=eq.${hoste
 async function deliver(g, phone, text) {
   const to = '91' + phone;
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
-  const base = g.url.replace(/\/+$/, '');
+  const base = (g.url || '').replace(/\/+$/, '');
   try {
-    const r = g.kind === 'evolution'
-      ? await fetch(`${base}/message/sendText/${encodeURIComponent(g.session || 'hostel')}`, {
+    let r;
+    if (g.kind === 'meta') {
+      const phoneId = encodeURIComponent(g.session || '');
+      const metaUrl = `${base || 'https://graph.facebook.com/v19.0'}/${phoneId}/messages`;
+      r = await fetch(metaUrl, {
+        method: 'POST', signal: ctl.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${g.api_key}`,
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'text',
+          text: { preview_url: true, body: text },
+        }),
+      });
+    } else if (g.kind === 'evolution') {
+      r = await fetch(`${base}/message/sendText/${encodeURIComponent(g.session || 'hostel')}`, {
         method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json', apikey: g.api_key },
-        body: JSON.stringify({ number: to, text }) })
-      : await fetch(`${base}/api/sendText`, {
+        body: JSON.stringify({ number: to, text }) });
+    } else {
+      r = await fetch(`${base}/api/sendText`, {
         method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json', 'X-Api-Key': g.api_key },
         body: JSON.stringify({ session: g.session || 'default', chatId: `${to}@c.us`, text }) });
-    if (!r.ok) return { ok: false, error: `Gateway error ${r.status}` };
+    }
+    if (!r.ok) {
+      let msg = `Gateway error ${r.status}`;
+      try { const j = await r.json(); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
+      return { ok: false, error: msg };
+    }
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.name === 'AbortError' ? 'Gateway did not answer' : 'Gateway unreachable' };
@@ -112,15 +136,18 @@ const actions = {
     const { role } = await hostelAccess(me, id);
     if (!isAdminRole(role)) throw new HttpError(403, 'Only the owner or manager can set up WhatsApp');
     await notDemo(id);
-    const kind = b.kind === 'evolution' ? 'evolution' : 'waha';
-    const url = String(b.url || '').trim();
+    const kind = b.kind === 'meta' ? 'meta' : (b.kind === 'evolution' ? 'evolution' : 'waha');
+    const url = kind === 'meta' ? (String(b.url || '').trim() || 'https://graph.facebook.com/v19.0') : String(b.url || '').trim();
     // Vercel cannot reach a home network, so the gateway needs a public https address
     // (a free Cloudflare Tunnel or ngrok in front of it is enough).
     if (!/^https:\/\/[^\s/]+\.[^\s]+$/i.test(url)) throw new HttpError(400, 'The gateway address must start with https://');
     const cur = await load(id);
     const key = String(b.api_key || '').trim() || (cur && cur.api_key) || '';
-    if (!key) throw new HttpError(400, 'Enter the gateway API key');
-    const row = { hostel_id: id, kind, url, api_key: key, session: String(b.session || '').trim().slice(0, 60) || (kind === 'waha' ? 'default' : 'hostel') };
+    if (!key) throw new HttpError(400, 'Enter the gateway API key / Access Token');
+    const defaultSession = kind === 'meta' ? '' : (kind === 'waha' ? 'default' : 'hostel');
+    const session = String(b.session || '').trim().slice(0, 60) || defaultSession;
+    if (kind === 'meta' && !session) throw new HttpError(400, 'Enter the Meta Phone Number ID');
+    const row = { hostel_id: id, kind, url, api_key: key, session };
     if (b.test_phone) {
       const ph = String(b.test_phone).replace(/\D/g, '').slice(-10);
       if (ph.length !== 10) throw new HttpError(400, 'Test number must be 10 digits');
