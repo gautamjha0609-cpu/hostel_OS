@@ -697,11 +697,16 @@ const Files = {
     throw new AppError(`Upload failed (${r.status}). Please try again.`);
   },
 
+  _urlCache: new Map(),
   async url(path) {
     if (!CLOUD) throw new AppError('Documents need the cloud version.');
+    const hit = this._urlCache.get(path);
+    if (hit && hit.exp > Date.now()) return hit.url;
     try {
       const d = await Cloud.http(`${CFG.SUPABASE_URL}/storage/v1/object/sign/${DOC_BUCKET}/${path}`, { method: 'POST', body: { expiresIn: 600 } });
-      return `${CFG.SUPABASE_URL}/storage/v1${d.signedURL || d.signedUrl}`;
+      const signedUrl = `${CFG.SUPABASE_URL}/storage/v1${d.signedURL || d.signedUrl}`;
+      this._urlCache.set(path, { url: signedUrl, exp: Date.now() + 540e3 });
+      return signedUrl;
     } catch (e) {
       if (e.offline) throw e;
       throw new AppError(/not.?found/i.test(e.message) || e.status === 404 ? 'This document is no longer on file' : e.message);
