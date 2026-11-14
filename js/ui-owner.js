@@ -155,7 +155,7 @@ function roomForm(room) {
   formModal({
     title: room ? `${t('Edit room')} ${r.no}` : 'Add room', submit: room ? 'Save' : 'Add room',
     fields: [
-      { name: 'no', label: 'Room number', value: r.no, required: true }, { name: 'floor', label: 'Floor', value: r.floor || `${t('Floor')} 1`, required: true },
+      { name: 'no', label: 'Room number', value: r.no, required: true, maxlength: 20 }, { name: 'floor', label: 'Floor', value: r.floor || `${t('Floor')} 1`, required: true, maxlength: 30 },
       ...(blocksOn() ? [{ name: 'block', label: 'Block', type: 'select', value: roomBlock(r),
         options: [{ v: '', l: t('Not in a block') }, ...hostelBlocks().map(b => ({ v: b.k, l: b.l }))],
         info: t('Everyone living in this room counts as being in this block. Beds, bills and the head count stay with the hostel.') }] : []),
@@ -192,10 +192,10 @@ A.checkin = el => {
     note: t('Bills, bed status, resident login and the WhatsApp welcome are created automatically.'),
     fields: [
       { type: 'section', label: 'Resident' },
-      { name: 'name', label: 'Full name', required: true }, { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', required: true },
-      { name: 'guardian', label: 'Parent / guardian name' }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel' },
-      { name: 'college', label: 'College / office' }, { name: 'idNo', label: 'ID number (Aadhaar etc.)' },
-      { name: 'address', label: 'Home address', full: true },
+      { name: 'name', label: 'Full name', required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', required: true, maxlength: 15 },
+      { name: 'guardian', label: 'Parent / guardian name', maxlength: 80 }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', maxlength: 15 },
+      { name: 'college', label: 'College / office', maxlength: 120 }, { name: 'idNo', label: 'ID number (Aadhaar etc.)', maxlength: 40 },
+      { name: 'address', label: 'Home address', full: true, maxlength: 240 },
       { type: 'section', label: 'Room & money' },
       { name: 'bed', label: 'Room & bed', type: 'select', options: bedOpts, value: pre, required: true },
       { name: 'checkIn', label: 'Check-in date', type: 'date', value: today(), required: true },
@@ -513,11 +513,11 @@ A.resedit = el => {
   const r = resById(el.dataset.id);
   formModal({
     title: 'Edit resident', fields: [
-      { name: 'name', label: 'Full name', value: r.name, required: true }, { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', value: r.phone, required: true },
-      { name: 'guardian', label: 'Parent / guardian name', value: r.guardian }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: r.guardianPhone },
-      { name: 'college', label: 'College / office', value: r.college }, { name: 'idNo', label: 'ID number (Aadhaar etc.)', value: r.idNo },
-      { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: r.rent, min: 0, required: true, hint: t('Applies from the next bill.') }, { name: 'lang', label: 'WhatsApp language', type: 'select', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }], value: r.lang },
-      { name: 'food', label: 'Takes mess food', type: 'checkbox', value: r.food !== false }, { name: 'address', label: 'Home address', value: r.address, full: true },
+      { name: 'name', label: 'Full name', value: r.name, required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', value: r.phone, required: true, maxlength: 15 },
+      { name: 'guardian', label: 'Parent / guardian name', value: r.guardian, maxlength: 80 }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: r.guardianPhone, maxlength: 15 },
+      { name: 'college', label: 'College / office', value: r.college, maxlength: 120 }, { name: 'idNo', label: 'ID number (Aadhaar etc.)', value: r.idNo, maxlength: 40 },
+      { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: r.rent, min: 0, max: 1000000, required: true, hint: t('Applies from the next bill.') }, { name: 'lang', label: 'WhatsApp language', type: 'select', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }], value: r.lang },
+      { name: 'food', label: 'Takes mess food', type: 'checkbox', value: r.food !== false }, { name: 'address', label: 'Home address', value: r.address, full: true, maxlength: 240 },
     ],
     onSubmit: v => {
       const was = r.phone, now = phone10(v.phone);
@@ -730,7 +730,7 @@ A.invedit = el => {
     onSubmit: v => { if (v.amount < (i.paid || 0)) return 'Amount cannot be less than what is already paid'; Store.patch(i.id, { amount: v.amount, waived: v.waive || 0, due: v.due }); toast('Bill updated'); } });
 };
 A.addinv = el => formModal({
-  title: 'Add a one-time charge', fields: [{ name: 'type', label: 'Type', type: 'select', options: Object.entries(INV_TYPES).filter(([k]) => !['rent', 'deposit'].includes(k)).map(([v, l]) => ({ v, l: t(l) })) }, { name: 'title', label: 'Description', required: true }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, required: true }, { name: 'due', label: 'Due date', type: 'date', value: addDays(today(), 5) }],
+  title: 'Add a one-time charge', fields: [{ name: 'type', label: 'Type', type: 'select', options: Object.entries(INV_TYPES).filter(([k]) => !['rent', 'deposit'].includes(k)).map(([v, l]) => ({ v, l: t(l) })) }, { name: 'title', label: 'Description', required: true, maxlength: 80 }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, max: 1000000, required: true }, { name: 'due', label: 'Due date', type: 'date', value: addDays(today(), 5) }],
   onSubmit: v => { const r = resById(el.dataset.res); addInvoice({ resId: r.id, roomId: r.roomId, type: v.type, title: v.title, amount: v.amount, period: ymOf(today()), due: v.due }); toast('Charge added'); },
 });
 
@@ -993,9 +993,9 @@ function expenseForm(x) {
   formModal({
     title: x ? 'Edit expense' : 'Add expense',
     fields: [
-      { name: 'cat', label: 'Category', type: 'select', options: S().expenseCats.map(c => ({ v: c, l: t(c) })), value: e.cat, required: true }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, value: e.amount, required: true },
+      { name: 'cat', label: 'Category', type: 'select', options: S().expenseCats.map(c => ({ v: c, l: t(c) })), value: e.cat, required: true }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, max: 10000000, value: e.amount, required: true },
       { name: 'date', label: 'Date', type: 'date', value: e.date || today(), required: true }, { name: 'mode', label: 'Payment', type: 'select', options: [{ v: 'cash', l: t('Cash / paid now') }, { v: 'credit', l: t('Credit (pay later)') }], value: e.mode || 'cash' },
-      { name: 'vendor', label: 'Vendor / shop', value: e.vendor }, { name: 'note', label: 'Note', value: e.note },
+      { name: 'vendor', label: 'Vendor / shop', value: e.vendor, maxlength: 80 }, { name: 'note', label: 'Note', value: e.note, maxlength: 200 },
     ],
     danger: x ? { label: 'Delete', run: () => confirmBox(t('Delete this expense?'), () => { Store.remove(e.id); toast('Deleted'); }, 'Delete', 'bad') } : null,
     onSubmit: v => {
@@ -1073,7 +1073,7 @@ PAGES.notices = {
   },
 };
 A.addnotice = () => formModal({
-  title: 'New notice', submit: 'Post', fields: [{ name: 'title', label: 'Title', required: true, full: true }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true }, { name: 'pinned', label: 'Pin on top', type: 'checkbox' }],
+  title: 'New notice', submit: 'Post', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100 }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500 }, { name: 'pinned', label: 'Pin on top', type: 'checkbox' }],
   onSubmit: v => { Store.put('notice', { ...v, date: today() }); activeRes().forEach(r => notify({ to: 'res', resId: r.id, title: t('New notice'), body: v.title, link: 'r-help' })); toast('Notice posted'); },
 });
 A.noticedel = el => confirmBox(t('Delete this notice?'), () => Store.remove(el.dataset.id), 'Delete', 'bad');

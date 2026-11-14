@@ -56,7 +56,7 @@ function dishForm(x) {
   formModal({
     title: x ? 'Edit dish' : 'Add dish', wide: true,
     fields: [
-      { name: 'name', label: 'Dish name', value: d.name, required: true }, { name: 'meal', label: 'Served at', type: 'select', options: [{ v: 'any', l: t('Any meal') }, ...meals().map(m => ({ v: m.k, l: mealName(m.k) }))], value: d.meal },
+      { name: 'name', label: 'Dish name', value: d.name, required: true, maxlength: 60 }, { name: 'meal', label: 'Served at', type: 'select', options: [{ v: 'any', l: t('Any meal') }, ...meals().map(m => ({ v: m.k, l: mealName(m.k) }))], value: d.meal },
       { name: 'serves', label: 'Quantities below are for how many people?', type: 'number', min: 1, value: d.serves, required: true, full: true, hint: t('Example: for 40 people we use 6 kg rice → enter 40 here and 6 kg below.') },
       { type: 'html', html: `<label class="f">${esc(t('Ingredients'))}</label><datalist id="itemlist">${itemOpts}</datalist><div id="ings">${rows.map(rowHtml).join('')}</div><button type="button" class="btn sm" id="addIng">+ ${esc(t('Ingredient'))}</button>` },
     ],
@@ -147,7 +147,7 @@ A.prrecv = el => {
 };
 function itemForm(x) {
   const i = x || {};
-  formModal({ title: x ? 'Edit item' : 'Add item', fields: [{ name: 'name', label: 'Item name', value: i.name, required: true }, { name: 'unit', label: 'Unit', type: 'select', options: S().units, value: i.unit || 'kg' }, { name: 'stock', label: 'Current stock', type: 'number', step: 0.1, min: 0, value: x ? stockOf(i) : (i.stock ?? 0) }, { name: 'min', label: 'Alert below', type: 'number', step: 0.1, min: 0, value: i.min ?? 0 }, { name: 'rate', label: 'Last price ₹ / unit', type: 'number', step: 0.01, min: 0, value: i.rate ?? '' }],
+  formModal({ title: x ? 'Edit item' : 'Add item', fields: [{ name: 'name', label: 'Item name', value: i.name, required: true, maxlength: 60 }, { name: 'unit', label: 'Unit', type: 'select', options: S().units, value: i.unit || 'kg' }, { name: 'stock', label: 'Current stock', type: 'number', step: 0.1, min: 0, value: x ? stockOf(i) : (i.stock ?? 0) }, { name: 'min', label: 'Alert below', type: 'number', step: 0.1, min: 0, value: i.min ?? 0 }, { name: 'rate', label: 'Last price ₹ / unit', type: 'number', step: 0.01, min: 0, value: i.rate ?? '' }],
     danger: x ? { label: 'Delete', run: () => { if (dishes().some(d => (d.ings || []).some(g => g.itemId === i.id))) { toast('Used in a dish — remove it from dishes first', 'bad'); return; } confirmBox(t('Delete {n}?', { n: i.name }), () => Store.remove(i.id), 'Delete', 'bad'); } } : null,
     onSubmit: v => { if (items().some(z => z.name.toLowerCase() === v.name.toLowerCase() && z.id !== i.id)) return 'An item with this name exists'; const { stock, ...rest } = v; Store.put('item', { ...i, id: i.id || `item-${slug(v.name)}-${uid()}`, ...(x ? rest : v), rate: isNaN(v.rate) ? 0 : v.rate }); if (x) countTo(i.id, +stock || 0, 'adjust', t('Edited in the item form')); toast('Saved'); } });
 }
@@ -438,10 +438,10 @@ function staffForm(x) {
   formModal({
     title: isNew ? 'Add staff' : 'Edit staff', wide: true,
     fields: [
-      { name: 'name', label: 'Full name', value: s.name, required: true }, { name: 'phone', label: 'Mobile', type: 'tel', value: s.phone, required: true },
+      { name: 'name', label: 'Full name', value: s.name, required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile', type: 'tel', value: s.phone, required: true, maxlength: 15 },
       { name: 'dept', label: 'Department', type: 'select', options: S().departments.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="/settings/depts">${esc(t('Edit departments'))}</a>` },
-      { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, value: s.salary }, { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today() },
-      { name: 'idNo', label: 'ID number', value: s.idNo }, { name: 'address', label: 'Address', value: s.address, full: true },
+      { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, max: 10000000, value: s.salary }, { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today() },
+      { name: 'idNo', label: 'ID number', value: s.idNo, maxlength: 40 }, { name: 'address', label: 'Address', value: s.address, full: true, maxlength: 240 },
       ...(!isNew ? [] : [{ name: 'login', label: 'Create app login (shows only their work)', type: 'checkbox', value: true, hint: t('User ID = name, password = mobile number.'), full: true }]),
       { type: 'section', label: 'Documents' }, ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*,application/pdf' })),
       { type: 'html', html: docsNote() },

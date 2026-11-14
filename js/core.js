@@ -29,10 +29,10 @@ function cleanPhone(s) {
   if (s == null) return null;
   const str = String(s).trim();
   if (!str || /[a-zA-Z]/.test(str)) return null;
-  const d = str.replace(/\D/g, '');
-  if (d.length === 10) return d;
-  if (d.length === 11 && d.startsWith('0')) return d.slice(1);
-  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  let d = str.replace(/\D/g, '');
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  if (d.length === 10 && /^[5-9]/.test(d)) return d;
   return null;
 }
 const phone10 = s => cleanPhone(s) || digits(s).slice(-10);

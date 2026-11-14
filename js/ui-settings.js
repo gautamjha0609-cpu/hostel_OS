@@ -685,7 +685,7 @@ const blockField = value => (blocksOn() ? [{ name: 'block', label: 'Block', type
   info: t('Tied to one block, this person sees only that wing — its rooms, residents, bills and daily work. Leave it on all blocks for anyone who runs the whole hostel.') }] : []);
 A.adduser = () => formModal({
   title: 'Add user', submit: 'Create login',
-  fields: [{ name: 'full_name', label: 'Full name', required: true }, { name: 'phone', label: 'Mobile', type: 'tel', required: true }, { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r !== 'resident').map(r => ({ v: r, l: t(ROLES[r].l) })) },
+  fields: [{ name: 'full_name', label: 'Full name', required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile', type: 'tel', required: true, maxlength: 15 }, { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r !== 'resident').map(r => ({ v: r, l: t(ROLES[r].l) })) },
     ...blockField(''),
     { name: 'perms', label: 'Extra modules (optional)', type: 'multi', options: MODULES.filter(m => !['home', 'settings'].includes(m.k) && orgEnabled(m.k)).map(m => ({ v: m.k, l: t(m.l) })), full: true },
     { name: 'existing', label: 'This person already has a login (add role only)', type: 'checkbox' }, { name: 'username', label: 'Their user ID', hidden: true }],

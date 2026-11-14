@@ -25,9 +25,9 @@
     if (!s || typeof s !== 'string') return null;
     if (/[a-zA-Z]/.test(s)) return null;
     var d = s.replace(/\D/g, '');
-    if (d.length === 10) return d;
-    if (d.length === 11 && d.startsWith('0')) return d.slice(1);
-    if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+    if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+    else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+    if (d.length === 10 && /^[5-9]/.test(d)) return d;
     return null;
   };
   var box = document.getElementById('box'), geo = null;
