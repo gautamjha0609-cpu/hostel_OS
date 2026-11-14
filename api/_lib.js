@@ -119,4 +119,17 @@ async function readJson(req) {
 // Names that are never a hostel's address (the app, mail, the API...). Same list as scripts/set-domain.js and js/domain.js.
 const SITE_RESERVED = ['www', 'app', 'admin', 'api', 'mail', 'smtp', 'ftp', 'cdn', 'static', 'assets', 'dashboard', 'login', 'support', 'help', 'blog', 'docs', 'status', 'staging', 'test', 'dev', 'h', 'join', 'visit', 'pay', 'site', 'public', 'ns1', 'ns2', 'hostel'];
 
-module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson };
+function cleanPhone(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str || /[a-zA-Z]/.test(str)) return null;
+  const d = str.replace(/\D/g, '');
+  if (d.length === 10) return d;
+  if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  return null;
+}
+
+const isValidEmail = s => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+
+module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, cleanPhone, isValidEmail };

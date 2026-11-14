@@ -21,6 +21,15 @@
     need: 'Please enter your name and a 10-digit mobile number.', fail: 'Could not record the entry. Please try again or register at the gate.', meeting: 'Meeting', again: 'Another entry',
   };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  var cleanPhone = function (s) {
+    if (!s || typeof s !== 'string') return null;
+    if (/[a-zA-Z]/.test(s)) return null;
+    var d = s.replace(/\D/g, '');
+    if (d.length === 10) return d;
+    if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+    if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+    return null;
+  };
   var box = document.getElementById('box'), geo = null;
   var api = function (body) {
     return fetch('api/public/visit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ h: H, k: K }, body)) })
@@ -48,9 +57,10 @@
     document.getElementById('vf').onsubmit = function (ev) {
       ev.preventDefault();
       var v = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
-      var entry = { name: v('v_name'), phone: v('v_phone').replace(/\D/g, '').slice(-10), meet: v('v_meet'), roomNo: v('v_room'), purpose: v('v_purpose'), place: v('v_place'), geo: geo };
+      var clean = cleanPhone(v('v_phone'));
       var err = document.getElementById('v_err'), go = document.getElementById('v_go');
-      if (!entry.name || entry.phone.length !== 10) { err.textContent = T.need; return; }
+      if (!v('v_name') || !clean) { err.textContent = T.need; return; }
+      var entry = { name: v('v_name'), phone: clean, meet: v('v_meet'), roomNo: v('v_room'), purpose: v('v_purpose'), place: v('v_place'), geo: geo };
       err.textContent = ''; go.disabled = true; go.textContent = T.sending;
       var send = CLOUD ? api({ action: 'submit', entry: entry }) : demoSend(entry);
       send.then(function () { done(entry); }).catch(function (e) { err.textContent = e.message || T.fail; go.disabled = false; go.textContent = T.submit; });

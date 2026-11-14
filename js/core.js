@@ -25,7 +25,17 @@ const groupBy = (a, f) => a.reduce((m, x) => { const k = f(x); (m[k] = m[k] || [
 const initials = n => String(n || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
 const hue = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 const digits = s => String(s || '').replace(/\D/g, '');
-const phone10 = s => digits(s).slice(-10);
+function cleanPhone(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str || /[a-zA-Z]/.test(str)) return null;
+  const d = str.replace(/\D/g, '');
+  if (d.length === 10) return d;
+  if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  return null;
+}
+const phone10 = s => cleanPhone(s) || digits(s).slice(-10);
 const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 30) || 'user';
 const clone = o => JSON.parse(JSON.stringify(o));
 const isObj = o => o && typeof o === 'object' && !Array.isArray(o);
@@ -195,7 +205,7 @@ function fieldHtml(f) {
     } else body = f.options.map(opt).join('');
     return wrap(`<select id="${id}" name="${f.name}">${f.placeholder ? `<option value="">${esc(t(f.placeholder))}</option>` : ''}${body}</select>`);
   }
-  if (f.type === 'textarea') return wrap(`<textarea id="${id}" name="${f.name}" placeholder="${esc(t(f.placeholder || ''))}">${esc(v)}</textarea>`);
+  if (f.type === 'textarea') return wrap(`<textarea id="${id}" name="${f.name}" maxlength="${f.maxlength || 500}" placeholder="${esc(t(f.placeholder || ''))}">${esc(v)}</textarea>`);
   if (f.type === 'checkbox') return `<div class="${f.full ? 'full' : ''}" data-fw="${f.name}"><label class="row nw" style="gap:10px;font-weight:600;font-size:15px;min-height:44px"><input type="checkbox" id="${id}" name="${f.name}" ${v ? 'checked' : ''}> <span>${lbl}</span>${tip(f.info || f.hint)}</label></div>`;
   if (f.type === 'multi') { const cur = (v || []).map(String); return wrap(`<div class="mchk" id="${id}">${f.options.map(o => `<label><input type="checkbox" name="${f.name}" value="${esc(optVal(o))}" ${cur.includes(String(optVal(o))) ? 'checked' : ''}>${esc(optLbl(o))}</label>`).join('') || `<span class="hint">${esc(t('Nothing to choose yet'))}</span>`}</div>`); }
   if (f.type === 'file') return wrap(`<input id="${id}" name="${f.name}" type="file" accept="${f.accept || 'image/*,application/pdf'}" ${f.multiple ? 'multiple' : ''} ${f.capture ? 'capture="environment"' : ''}>`);
@@ -204,7 +214,9 @@ function fieldHtml(f) {
   // is a card number, so every one of them opts out — autocomplete alone is not enough,
   // Chrome, Edge, LastPass and 1Password each need their own hint.
   const noFill = 'autocomplete="off" autocorrect="off" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore';
-  const extra = [f.min != null && `min="${f.min}"`, f.max != null && `max="${f.max}"`, f.step && `step="${f.step}"`, f.maxlength && `maxlength="${f.maxlength}"`,
+  const defMax = f.type === 'tel' ? 15 : f.type === 'email' ? 120 : (f.type === 'text' || !f.type) ? 120 : null;
+  const mx = f.maxlength != null ? f.maxlength : defMax;
+  const extra = [f.min != null && `min="${f.min}"`, f.max != null && `max="${f.max}"`, f.step && `step="${f.step}"`, mx && `maxlength="${mx}"`,
     f.type === 'tel' && 'inputmode="tel"', f.type === 'number' && `inputmode="${f.step && f.step < 1 ? 'decimal' : 'numeric'}"`, f.inputmode && `inputmode="${f.inputmode}"`, f.readonly && 'readonly',
     f.type === 'number' && noFill].filter(Boolean).join(' ');
   return wrap(`<input id="${id}" name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}" placeholder="${esc(t(f.placeholder || ''))}" ${extra} autocomplete="${f.autocomplete || 'one-off'}" data-lpignore="true" data-1p-ignore>`);
@@ -246,10 +258,20 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
       const w = $(`[data-fw="${f.name}"]`, form); if (w && w.hidden) continue;
       const v = vals[f.name], L = t(f.label || f.name);
       if (f.required && (v === '' || v == null || (typeof v === 'number' && isNaN(v)) || (Array.isArray(v) && !v.length))) { err.textContent = t('{f} is required.', { f: L }); form.elements[f.name]?.focus?.(); return; }
-      if (f.type === 'number' && !isNaN(v) && f.min != null && v < f.min) { err.textContent = t('{f} must be at least {n}.', { f: L, n: f.min }); return; }
-      if (f.type === 'number' && !isNaN(v) && f.max != null && v > f.max) { err.textContent = t('{f} must be at most {n}.', { f: L, n: f.max }); return; }
-      if (f.type === 'tel' && v && phone10(v).length !== 10) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); return; }
+      if (f.type === 'number') {
+        if (typeof v === 'number' && (!isFinite(v) || isNaN(v))) { err.textContent = t('{f} must be a valid number.', { f: L }); return; }
+        if (!isNaN(v) && f.min != null && v < f.min) { err.textContent = t('{f} must be at least {n}.', { f: L, n: f.min }); return; }
+        if (!isNaN(v) && f.max != null && v > f.max) { err.textContent = t('{f} must be at most {n}.', { f: L, n: f.max }); return; }
+      }
+      if (f.type === 'tel' && v) {
+        const clean = cleanPhone(String(v));
+        if (!clean) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); return; }
+      }
+      if (f.type === 'email' && v) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim())) { err.textContent = t('{f} must be a valid email address.', { f: L }); return; }
+      }
       if (f.pattern && v && !f.pattern.test(v)) { err.textContent = t('{f} looks invalid.', { f: L }); return; }
+      if (typeof v === 'string' && f.maxlength && v.length > f.maxlength) { err.textContent = t('{f} cannot exceed {n} characters.', { f: L, n: f.maxlength }); return; }
     }
     busy = true; const sb = $('[data-act="msubmit"]'); if (sb) sb.disabled = true;
     try {

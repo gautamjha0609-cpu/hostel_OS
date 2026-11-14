@@ -10,11 +10,11 @@
  * service role.
  */
 const crypto = require('crypto');
-const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, SITE_RESERVED } = require('./_lib.js');
+const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, SITE_RESERVED, cleanPhone, isValidEmail } = require('./_lib.js');
 
 const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
-const phone10 = v => str(v, 20).replace(/\D/g, '').slice(-10);
+const phone10 = v => cleanPhone(v) || str(v, 20).replace(/\D/g, '').slice(-10);
 const sameKey = (want, got) => !!want && want.length === got.length && crypto.timingSafeEqual(Buffer.from(want), Buffer.from(got));
 
 // The entry row plus the bell the owner sees, in one insert.
@@ -52,8 +52,8 @@ async function visit(req, res) {
     const e = b.entry || {};
     const name = str(e.name, 80);
     if (!name) throw new HttpError(400, 'Name is required');
-    const phone = phone10(e.phone);
-    if (phone.length !== 10) throw new HttpError(400, 'Enter a 10-digit mobile number');
+    const phone = cleanPhone(e.phone);
+    if (!phone) throw new HttpError(400, 'Enter a 10-digit mobile number');
     const at = new Date().toISOString(), date = istNow().toISOString().slice(0, 10);
     const id = 'gate-' + crypto.randomBytes(6).toString('hex');
     const g = e.geo && isFinite(e.geo.lat) && isFinite(e.geo.lng) ? { lat: Math.round(e.geo.lat * 1e4) / 1e4, lng: Math.round(e.geo.lng * 1e4) / 1e4 } : null;
@@ -181,8 +181,14 @@ async function join(req, res) {
     const e = b.entry || {};
     const name = str(e.name, 80);
     if (!name) throw new HttpError(400, 'Name is required');
-    const phone = phone10(e.phone);
-    if (phone.length !== 10) throw new HttpError(400, 'Enter a 10-digit mobile number');
+    const phone = cleanPhone(e.phone);
+    if (!phone) throw new HttpError(400, 'Enter a 10-digit mobile number');
+    if (e.email && !isValidEmail(e.email)) throw new HttpError(400, 'Invalid email address');
+    let guardianPhone = null;
+    if (e.guardianPhone) {
+      guardianPhone = cleanPhone(e.guardianPhone);
+      if (!guardianPhone) throw new HttpError(400, 'Enter a 10-digit mobile number for guardian');
+    }
     const app = appId(b.app);
     const at = new Date().toISOString(), date = istNow().toISOString().slice(0, 10);
     const id = 'signup-' + app;
@@ -192,7 +198,7 @@ async function join(req, res) {
       .slice(0, 8).map(d => ({ type: str(d.type, 60) || 'Document', path: d.path, ts: at }));
     const data = {
       status: 'pending', name, phone,
-      guardian: str(e.guardian, 80), guardianPhone: phone10(e.guardianPhone),
+      guardian: str(e.guardian, 80), guardianPhone: guardianPhone || '',
       email: str(e.email, 120), college: str(e.college, 120), idNo: str(e.idNo, 40),
       address: str(e.address, 240), lang: e.lang === 'hi' ? 'hi' : 'en',
       note: str(e.note, 240), docs,

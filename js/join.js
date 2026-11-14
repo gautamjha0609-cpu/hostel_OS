@@ -70,6 +70,15 @@
   var NATIONAL = 'https://digitalpolice.gov.in/';
 
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  var cleanPhone = function (s) {
+    if (!s || typeof s !== 'string') return null;
+    if (/[a-zA-Z]/.test(s)) return null;
+    var d = s.replace(/\D/g, '');
+    if (d.length === 10) return d;
+    if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+    if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+    return null;
+  };
   var box = document.getElementById('box');
   var DOCS = [], PV = { on: false, state: '' };
 
@@ -180,16 +189,24 @@
     document.getElementById('jf').onsubmit = function (ev) {
       ev.preventDefault();
       var err = document.getElementById('j_err'), go = document.getElementById('j_go');
+      var name = val('j_name');
+      var phone = cleanPhone(val('j_phone'));
+      if (!name || !phone) { err.textContent = T.need; return; }
+      var gphone = val('j_gphone') ? cleanPhone(val('j_gphone')) : '';
+      if (val('j_gphone') && !gphone) { err.textContent = T.needG; return; }
+      var email = val('j_email');
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        err.textContent = hi ? 'कृपया सही ईमेल पता भरें।' : 'Please enter a valid email address.';
+        return;
+      }
       var entry = {
-        name: val('j_name'), phone: val('j_phone').replace(/\D/g, '').slice(-10),
-        email: val('j_email'), college: val('j_college'), idNo: val('j_idno'), address: val('j_address'),
+        name: name, phone: phone,
+        email: email, college: val('j_college'), idNo: val('j_idno'), address: val('j_address'),
         lang: val('j_lang') || 'en', guardian: val('j_guardian'),
-        guardianPhone: val('j_gphone').replace(/\D/g, '').slice(-10),
+        guardianPhone: gphone,
         note: val('j_note'),
         pvDone: !!(done && done.checked), pvRefNo: val('j_pvrefno'), pvState: PV.state,
       };
-      if (!entry.name || entry.phone.length !== 10) { err.textContent = T.need; return; }
-      if (val('j_gphone') && entry.guardianPhone.length !== 10) { err.textContent = T.needG; return; }
       err.textContent = ''; go.disabled = true; go.textContent = T.sending;
       var send = CLOUD ? cloudSend(entry, go) : demoSend(entry);
       send.then(function () { finish(entry); })

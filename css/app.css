@@ -25,7 +25,8 @@
 }}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;overflow-x:hidden;min-height:100dvh}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;overflow-x:hidden;min-height:100dvh;overflow-wrap:break-word}
+.card,.li .body,.tbl td,.receipt,.note,.prev,.mbody,.person b{overflow-wrap:anywhere;min-width:0}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;touch-action:manipulation}
 h1,h2,h3,h4{margin:0;line-height:1.2;letter-spacing:-.015em}
@@ -173,7 +174,7 @@ button.li:active,a.li:active{background:var(--fill)}
 .kv dt{color:var(--muted)}.kv dd{margin:0;font-weight:600;text-align:right}
 
 /* ---------- tables ---------- */
-.tbl-wrap{overflow-x:auto;border-radius:var(--r);background:var(--surface);box-shadow:var(--shadow)}
+.tbl-wrap{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch;border-radius:var(--r);background:var(--surface);box-shadow:var(--shadow)}
 .tbl{width:100%;border-collapse:collapse;font-size:14.5px}
 .tbl th{text-align:left;font-size:12.5px;font-weight:600;color:var(--muted);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
 .tbl td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -380,6 +381,14 @@ button.kpi:active{opacity:.75}
   .rooms{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:400px){.page{padding-left:12px;padding-right:12px}.btn{padding:9px 13px}.qa button span.ic{width:38px;height:38px}}
+@media (max-width:360px){
+  .qa{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .search{min-width:100%;max-width:100%}
+  .days7{gap:3px}
+  .days7 button{font-size:11px;padding:6px 0}
+  .days7 button b{font-size:14px}
+  .btn{padding:8px 10px;font-size:14px}
+}
 @media (min-width:981px){.mobile-only{display:none!important}}
 @media print{
   body{background:#fff}

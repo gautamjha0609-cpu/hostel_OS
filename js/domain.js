@@ -553,7 +553,9 @@ function addInvoice(o) {
 // payment altogether, which is how a penalty the owner is not collecting today stays pending.
 function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(), note = '', claimId = null, invIds = null, exclude = null }) {
   const r = resById(resId); if (!r) throw new Error('Resident not found');
-  amount = round2(amount); if (!(amount > 0)) throw new Error('Enter an amount');
+  amount = round2(amount);
+  if (!isFinite(amount) || isNaN(amount) || !(amount > 0)) throw new Error('Enter an amount');
+  if (amount > 10000000) throw new Error('Amount cannot exceed ₹10,000,000');
   let left = amount; const alloc = [];
   const skip = new Set(exclude || []);
   const open = openInv(resId).filter(i => !skip.has(i.id));
@@ -583,8 +585,11 @@ const penaltyDue = id => round2(sum(resPenalties(id), invBal));
 const penaltyList = () => activeRes().map(r => ({ r, amount: penaltyDue(r.id) })).filter(x => x.amount > 0).sort((a, b) => b.amount - a.amount);
 function addPenalty({ resId, amount, reason, date = today(), due = '' }) {
   const r = resById(resId); if (!r) throw new AppError('Resident not found');
-  amount = round2(amount); if (!(amount > 0)) throw new AppError('Enter an amount');
+  amount = round2(amount);
+  if (!isFinite(amount) || isNaN(amount) || !(amount > 0)) throw new AppError('Enter an amount');
+  if (amount > 1000000) throw new AppError('Penalty cannot exceed ₹1,000,000');
   reason = String(reason || '').trim(); if (!reason) throw new AppError('Please write the reason');
+  if (reason.length > 120) throw new AppError('Reason cannot exceed 120 characters');
   const inv = addInvoice({ resId, roomId: r.roomId, type: 'penalty', reason, amount, date,
     title: `${t('Penalty')} - ${reason}`, period: ymOf(date), due: due || addDays(date, 7) });
   notify({ to: 'res', resId, title: t('Penalty added'), body: `${inr(amount)} - ${reason}` });
@@ -903,8 +908,14 @@ function checkIn(o) {
   const room = roomById(o.roomId); if (!room) throw new Error('Choose a room');
   const bed = bedsOf(room).find(b => b.id === o.bed);
   if (!bed || bed.status !== 'vac') throw new Error('That bed is not vacant any more');
+  const name = String(o.name || '').trim();
+  if (!name) throw new Error('Resident name is required');
+  const phone = phone10(o.phone);
+  if (!phone || phone.length !== 10) throw new Error('Enter a valid 10-digit mobile number');
   const id = o.id || uid('res-');
-  const r = Store.put('res', { id, resId: id, name: o.name.trim(), phone: phone10(o.phone), guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent: o.rent === '' || o.rent == null || isNaN(o.rent) ? +room.rent || 0 : +o.rent, deposit: +o.deposit || 0, checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '' });
+  const rent = o.rent === '' || o.rent == null || isNaN(o.rent) ? +room.rent || 0 : Math.max(0, +o.rent || 0);
+  const deposit = Math.max(0, +o.deposit || 0);
+  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '' });
   setBed(room.id, bed.id, { status: 'occ', resId: r.id });
   const ym = ymOf(r.checkIn), dim = daysIn(ym), day = +r.checkIn.slice(8, 10);
   const first = S().rent.prorate && day > 1 ? round2((r.rent * (dim - day + 1)) / dim) : r.rent;
@@ -1003,7 +1014,9 @@ function addReading({ roomId, curr, date = today(), prev }) {
   const room = roomById(roomId); if (!room) throw new Error('Choose a room');
   const last = lastMeter(roomId);
   const p = prev != null && !isNaN(prev) ? +prev : last ? last.curr : 0;
-  if (+curr < p) throw new Error(t('Reading cannot be less than previous ({p})', { p }));
+  curr = +curr;
+  if (!isFinite(curr) || isNaN(curr) || curr < 0) throw new Error(t('Enter a valid non-negative reading'));
+  if (curr < p) throw new Error(t('Reading cannot be less than previous ({p})', { p }));
   const units = round2(curr - p), rate = S().elec.rate;
   const occ = meterOccupants(roomId, last ? last.date : null, date);
   const partial = occ.some(o => o[1] < 1);
@@ -1013,14 +1026,16 @@ function addReading({ roomId, curr, date = today(), prev }) {
   // otherwise the full month that follows a check-in reading always looks "unusual" and sits unbilled.
   let odd = false;
   if (avg > 0) odd = last.span && span ? span >= 7 && last.span >= 7 && units / span > (avg / last.span) * 2.2 : units > avg * 2.2;
-  const m = Store.put('meter', { roomId, date, prev: p, curr: +curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), status: odd ? 'review' : 'billed' });
+  const m = Store.put('meter', { roomId, date, prev: p, curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), status: odd ? 'review' : 'billed' });
   if (odd) notify({ to: 'admin', title: t('Unusual electricity reading'), body: `${room.no}: ${units} ${t('units')} (${t('last')} ${avg})` });
   else billMeter(m);
   return m;
 }
 // One opening row per room (deterministic id), so re-saving the migration screen corrects it.
 function setOpeningReading(roomId, curr, date = today()) {
-  return Store.put('meter', { id: `meter-open-${roomId}`, roomId, date, prev: +curr, curr: +curr, units: 0, rate: S().elec.rate, shares: [], total: 0, period: ymOf(date), status: 'billed', opening: true });
+  curr = +curr;
+  if (!isFinite(curr) || isNaN(curr) || curr < 0) throw new Error(t('Enter a valid non-negative reading'));
+  return Store.put('meter', { id: `meter-open-${roomId}`, roomId, date, prev: curr, curr, units: 0, rate: S().elec.rate, shares: [], total: 0, period: ymOf(date), status: 'billed', opening: true });
 }
 /* A reading taken at the moment the room's occupancy changes.
  *
@@ -1077,7 +1092,9 @@ function laundryQuote(resId, pcs, date = today()) {
 }
 function laundryReceive({ resId, pcs, note = '', date = today() }) {
   const r = resById(resId); if (!r) throw new Error('Choose a resident');
-  pcs = Math.round(+pcs); if (!(pcs > 0)) throw new Error('Enter number of clothes');
+  pcs = Math.round(+pcs);
+  if (!isFinite(pcs) || isNaN(pcs) || !(pcs > 0)) throw new Error('Enter number of clothes');
+  if (pcs > 100) throw new Error('Cannot receive more than 100 clothes at once');
   const q = laundryQuote(resId, pcs, date);
   const l = Store.put('laundry', { resId, roomId: r.roomId, pcs, note, date, ts: nowIso(), status: 'received', extra: q.extra, charge: q.charge, freeAfter: q.freeAfter, by: Store.me && Store.me.full_name });
   if (q.charge > 0) { const inv = addInvoice({ id: `inv-ld-${l.id}`, resId, roomId: r.roomId, type: 'laundry', period: ymOf(date), title: `${t('Laundry')} ${fmtShort(date)} (${q.extra} ${t('extra pcs')})`, amount: q.charge, date, due: addDays(date, 7) }); Store.patch(l.id, { invId: inv.id }); }

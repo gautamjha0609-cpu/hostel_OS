@@ -16,7 +16,7 @@
 // GET /api/admin?cron=sweep   Authorization: Bearer <CRON_SECRET>   the same clean-up, daily (vercel.json)
 
 const crypto = require('crypto');
-const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson } = require('./_lib.js');
+const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone } = require('./_lib.js');
 
 const DOMAIN = process.env.AUTH_EMAIL_DOMAIN || 'login.hostelos.app';
 const ROLES = ['owner', 'manager', 'accountant', 'cook', 'housekeeping', 'laundry', 'guard', 'staff', 'resident'];
@@ -57,16 +57,23 @@ async function uniqueUsername(base) {
 }
 
 async function makeUser({ full_name, phone, username, password, isSuper = false }) {
-  if (!full_name) throw new HttpError(400, 'Name is required');
-  const uname = await uniqueUsername(username || full_name);
-  const pw = String(password || digits(phone));
+  const name = String(full_name || '').trim();
+  if (!name) throw new HttpError(400, 'Name is required');
+  if (name.length > 80) throw new HttpError(400, 'Name cannot exceed 80 characters');
+  let cleanP = null;
+  if (phone) {
+    cleanP = cleanPhone(phone);
+    if (!cleanP) throw new HttpError(400, 'Enter a valid 10-digit mobile number');
+  }
+  const uname = await uniqueUsername(username || name);
+  const pw = String(password || cleanP || digits(phone));
   if (pw.length < 6) throw new HttpError(400, 'Password must be at least 6 characters (default is the mobile number)');
   const u = await sb('/auth/v1/admin/users', {
     method: 'POST',
-    body: { email: `${uname}@${DOMAIN}`, password: pw, email_confirm: true, user_metadata: { username: uname, full_name } },
+    body: { email: `${uname}@${DOMAIN}`, password: pw, email_confirm: true, user_metadata: { username: uname, full_name: name } },
   });
   try {
-    await insert('profiles', { id: u.id, username: uname, full_name, phone: digits(phone) || null, is_super: isSuper });
+    await insert('profiles', { id: u.id, username: uname, full_name: name, phone: cleanP || digits(phone) || null, is_super: isSuper });
   } catch (e) {
     await sb(`/auth/v1/admin/users/${u.id}`, { method: 'DELETE' }).catch(() => {});
     throw e;
@@ -127,8 +134,21 @@ const actions = {
   async create_org(b, me) {
     if (!me.isSuper) throw new HttpError(403, 'Super admin only');
     const o = b.org || {};
-    if (!o.name) throw new HttpError(400, 'Client name is required');
-    const org = await insert('orgs', { name: o.name, owner_name: b.owner?.full_name, phone: digits(b.owner?.phone), city: o.city, plan: o.plan || 'standard', fee: +o.fee || 0, modules: o.modules || {}, max_hostels: +o.max_hostels || 3, max_beds: +o.max_beds || 300 });
+    const orgName = String(o.name || '').trim();
+    if (!orgName) throw new HttpError(400, 'Client name is required');
+    if (orgName.length > 100) throw new HttpError(400, 'Client name cannot exceed 100 characters');
+    const ownerPhone = b.owner?.phone ? (cleanPhone(b.owner.phone) || digits(b.owner.phone)) : null;
+    const org = await insert('orgs', {
+      name: orgName,
+      owner_name: b.owner?.full_name ? String(b.owner.full_name).trim().slice(0, 80) : null,
+      phone: ownerPhone,
+      city: o.city ? String(o.city).trim().slice(0, 60) : null,
+      plan: o.plan || 'standard',
+      fee: Math.max(0, +o.fee || 0),
+      modules: o.modules || {},
+      max_hostels: Math.max(1, +o.max_hostels || 3),
+      max_beds: Math.max(1, +o.max_beds || 300)
+    });
     let owner = null;
     try {
       const hostel = await insert('hostels', { org_id: org.id, name: b.hostel?.name || o.name, city: b.hostel?.city || o.city, address: b.hostel?.address, settings: b.hostel?.settings || {} });

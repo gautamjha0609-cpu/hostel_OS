@@ -367,10 +367,19 @@ function setTheme(v) {
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
+  if (el.dataset.busy) return;
   const fn = A[el.dataset.act]; if (!fn) return;
   if (el.tagName === 'A' && el.dataset.act !== 'nav' && el.getAttribute('href') && !el.getAttribute('href').startsWith('#')) { fn(el, e); return; }
   if (el.tagName === 'A' || el.tagName === 'BUTTON') e.preventDefault();
-  try { const r = fn(el, e); if (r && r.catch) r.catch(err => { console.error(err); toast(err.message || 'Something went wrong', 'bad'); }); }
+  try {
+    const r = fn(el, e);
+    if (r && typeof r.then === 'function') {
+      el.dataset.busy = '1';
+      el.setAttribute('aria-busy', 'true');
+      r.catch(err => { console.error(err); toast(err.message || 'Something went wrong', 'bad'); })
+       .finally(() => { delete el.dataset.busy; el.removeAttribute('aria-busy'); });
+    }
+  }
   catch (err) { console.error(err); toast(err.message || 'Something went wrong', 'bad'); }
 });
 // "i" buttons: one small bubble at a time, always opened below the button, closed by any other tap.
