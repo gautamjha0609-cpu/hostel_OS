@@ -247,7 +247,7 @@ async function createResidentLogin(r) {
 }
 // One line under every document picker, so nobody wonders where the papers go.
 const docsNote = () => (Files.ready()
-  ? `<div class="hint">${ico('lock', 'sm')} ${esc(t('Saved privately, compressed. Deleted {n} days after checkout.', { n: DOC_KEEP_DAYS }))}</div>`
+  ? `<div class="hint">${ico('lock', 'sm')} ${esc(t('Saved privately. Photos auto-compressed, PDF max 1.5 MB. Deleted {n} days after checkout.', { n: DOC_KEEP_DAYS }))}</div>`
   : `<div class="note warn">${esc(t('Documents are not uploaded in demo mode.'))}</div>`);
 // The record is saved first and the papers follow in the background, so a slow network never
 // holds up a check-in. A paper of a type already on file replaces it; the old file is left for

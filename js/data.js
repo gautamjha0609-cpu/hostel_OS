@@ -657,7 +657,7 @@ window.addEventListener('offline', () => Store.setOnline(false));
  * checkout, and any file no record points at any more (a replaced paper, say).
  */
 const DOC_BUCKET = 'docs';
-const DOC_MAX = 3 * 1024 * 1024;   // = the bucket's own limit
+const DOC_MAX = 1.5 * 1024 * 1024;   // 1.5 MB limit to protect storage and bandwidth
 const DOC_KEEP_DAYS = 30;          // = doc_files_garbage() in schema.sql
 const Files = {
   ready: () => CLOUD,
@@ -669,9 +669,10 @@ const Files = {
     if (!/^[\w-]{1,64}$/.test(String(ownerId || ''))) throw new AppError('Save the record first');
     const pdf = !!file && file.type === 'application/pdf';
     if (!file || !(pdf || /^image\//.test(file.type))) throw new AppError('Upload a photo or a PDF');
-    // a face needs far fewer pixels than the small print on an ID card
-    const f = pdf ? file : await compressImage(file, /photo/i.test(type) ? 600 : 1280);
-    if (f.size > DOC_MAX) throw new AppError(pdf ? 'PDF is too large (max 3 MB). Upload a photo of it instead.' : 'Photo is too large (max 3 MB)');
+    // Photo tuning: Passport photos only need 400px at q=0.65 (~25 KB). Documents need 1200px at q=0.68 (~75 KB).
+    const isPhoto = /photo|avatar|face/i.test(type);
+    const f = pdf ? file : await compressImage(file, isPhoto ? 400 : 1200, isPhoto ? 0.65 : 0.68);
+    if (f.size > DOC_MAX) throw new AppError(pdf ? 'PDF is too large (max 1.5 MB). Take a photo with your camera instead.' : 'Photo is too large (max 1.5 MB)');
     const ext = { 'application/pdf': 'pdf', 'image/webp': 'webp', 'image/png': 'png' }[f.type] || 'jpg';
     const rand = Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
     const path = `${hostelId}/${kind}/${ownerId}/${slug(type).replace(/\./g, '-')}-${rand}.${ext}`;
@@ -691,7 +692,7 @@ const Files = {
     if (r.ok) return;
     const d = await r.json().catch(() => ({}));
     const msg = String(d.message || d.error || '');
-    if (r.status === 413 || /too large|size/i.test(msg)) throw new AppError('File is too large (max 3 MB)');
+    if (r.status === 413 || /too large|size/i.test(msg)) throw new AppError('File is too large (max 1.5 MB)');
     if (r.status === 403 || /security|unauthori/i.test(msg)) throw new AppError('Only the owner or manager can upload documents');
     if (r.status === 415 || /mime/i.test(msg)) throw new AppError('Upload a photo or a PDF');
     throw new AppError(`Upload failed (${r.status}). Please try again.`);
@@ -702,10 +703,36 @@ const Files = {
     if (!CLOUD) throw new AppError('Documents need the cloud version.');
     const hit = this._urlCache.get(path);
     if (hit && hit.exp > Date.now()) return hit.url;
+
+    // Check CacheStorage for locally cached document blob if available
+    if (typeof caches !== 'undefined') {
+      try {
+        const cache = await caches.open('hostelos-docs-v1');
+        const match = await cache.match(path);
+        if (match) {
+          const blob = await match.blob();
+          const localUrl = URL.createObjectURL(blob);
+          this._urlCache.set(path, { url: localUrl, exp: Date.now() + 86400e3 }); // 1 day local cache
+          return localUrl;
+        }
+      } catch (err) { /* ignore and fallback */ }
+    }
+
     try {
       const d = await Cloud.http(`${CFG.SUPABASE_URL}/storage/v1/object/sign/${DOC_BUCKET}/${path}`, { method: 'POST', body: { expiresIn: 600 } });
       const signedUrl = `${CFG.SUPABASE_URL}/storage/v1${d.signedURL || d.signedUrl}`;
       this._urlCache.set(path, { url: signedUrl, exp: Date.now() + 540e3 });
+
+      // Cache document response in CacheStorage in background
+      if (typeof caches !== 'undefined') {
+        fetch(signedUrl).then(async (res) => {
+          if (res.ok) {
+            const cache = await caches.open('hostelos-docs-v1');
+            await cache.put(path, res);
+          }
+        }).catch(() => {});
+      }
+
       return signedUrl;
     } catch (e) {
       if (e.offline) throw e;

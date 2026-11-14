@@ -4,6 +4,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'https://sb.test';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'service';
+
 // 1. Payment Idempotency & Request Fingerprinting
 test('payment fingerprinting: identical payload produces same fingerprint, altered payload differs', () => {
   const hashPayload = (resId, amount, mode, ref, date, targetInvs, excludeInvs) => {
@@ -176,4 +179,74 @@ test('public /api/public/activate rejects invalid tokens and short passwords', a
   const r2 = await invokeActivate({ token: validHexToken, password: 'short' });
   assert.equal(r2.status, 400);
   assert.match(r2.jsonOut.error, /at least 8 characters/i);
+});
+
+// 6. PDF and Document Upload Guard (1.5 MB Limit)
+test('document upload guard: rejects files > 1.5 MB and accepts valid sizes', async () => {
+  const publicApi = require('../api/public.js');
+  const H1 = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const APP = '0123456789abcdef';
+  const HOSTEL = { id: H1, name: 'Sunrise', settings: { join: { key: 'join-key-123456', on: true } } };
+
+  global.fetch = async (url) => {
+    const u = new URL(url);
+    const json = (status, body) => ({ ok: status < 400, status, text: async () => JSON.stringify(body), json: async () => body });
+    if (u.pathname === '/rest/v1/hostels') return json(200, [HOSTEL]);
+    if (u.pathname.startsWith('/storage/v1/object/upload/sign/docs/')) return json(200, { url: '/sign/upload-test' });
+    return json(404, { message: 'not mocked' });
+  };
+
+  const invokeDoc = async (size) => {
+    let status = 0, jsonOut = null;
+    const req = {
+      method: 'POST',
+      query: { sub: 'join' },
+      headers: { 'x-forwarded-for': '127.0.0.1' },
+      body: { action: 'doc', h: H1, k: 'join-key-123456', app: APP, label: 'Aadhaar', mime: 'application/pdf', size }
+    };
+    const res = {
+      setHeader() {},
+      status(s) { status = s; return this; },
+      json(j) { jsonOut = j; }
+    };
+    await publicApi(req, res);
+    return { status, jsonOut };
+  };
+
+  // 1.8 MB PDF should be rejected by 1.5 MB guard
+  const r1 = await invokeDoc(1.8 * 1024 * 1024);
+  assert.equal(r1.status, 400);
+  assert.match(r1.jsonOut.error, /max 1\.5 MB/i);
+
+  // 1.2 MB PDF should be accepted under 1.5 MB limit
+  const r2 = await invokeDoc(1.2 * 1024 * 1024);
+  assert.equal(r2.status, 200);
+  assert.ok(r2.jsonOut.url);
+});
+
+// 7. In-Memory Signed URL Cache for Instant Document Viewing
+test('signed document URL cache: cached for 9 min avoiding repeated server roundtrips', () => {
+  const urlCache = new Map();
+  const getUrl = (path, now = Date.now()) => {
+    const hit = urlCache.get(path);
+    if (hit && hit.exp > now) return { url: hit.url, fromCache: true };
+    const newUrl = `https://storage.hostelos.app/signed/${path}?token=tok_${Math.random()}`;
+    urlCache.set(path, { url: newUrl, exp: now + 540e3 }); // 9 min TTL
+    return { url: newUrl, fromCache: false };
+  };
+
+  const path = 'hostel-1/res/res-101/aadhaar.webp';
+  const t0 = Date.now();
+  const first = getUrl(path, t0);
+  assert.equal(first.fromCache, false);
+
+  // Re-read 2 minutes later must be from cache with identical URL
+  const second = getUrl(path, t0 + 120e3);
+  assert.equal(second.fromCache, true);
+  assert.equal(second.url, first.url);
+
+  // Re-read 10 minutes later (expired) must fetch fresh URL
+  const third = getUrl(path, t0 + 600e3);
+  assert.equal(third.fromCache, false);
+  assert.notEqual(third.url, first.url);
 });

@@ -130,7 +130,7 @@ async function site(req, res) {
  * is never sent are removed by the daily sweep.
  */
 const JOIN_MIME = /^(image\/(jpeg|png|webp)|application\/pdf)$/;
-const JOIN_DOC_MAX = 3 * 1024 * 1024;              // = the bucket's own limit
+const JOIN_DOC_MAX = 1.5 * 1024 * 1024;              // 1.5 MB limit to protect storage and bandwidth
 const APP_ID = /^[a-f0-9]{16,32}$/;
 const signupDir = (hostelId, app) => `${hostelId}/signup/${app}/`;
 
@@ -167,7 +167,7 @@ async function join(req, res) {
 
   if (b.action === 'doc') {
     const size = Number(b.size) || 0;
-    if (size <= 0 || size > JOIN_DOC_MAX) throw new HttpError(400, 'File is too large (max 3 MB)');
+    if (size <= 0 || size > JOIN_DOC_MAX) throw new HttpError(400, 'File is too large (max 1.5 MB). Please upload a camera photo or a PDF under 1.5 MB.');
     if (!JOIN_MIME.test(String(b.mime || ''))) throw new HttpError(400, 'Upload a photo or a PDF');
     const ext = { 'application/pdf': 'pdf', 'image/png': 'png', 'image/webp': 'webp' }[b.mime] || 'jpg';
     const type = str(b.label, 60).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'document';

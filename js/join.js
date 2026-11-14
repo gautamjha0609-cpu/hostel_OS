@@ -22,7 +22,7 @@
     name: 'पूरा नाम', phone: 'मोबाइल नंबर (WhatsApp)', email: 'ईमेल', college: 'कॉलेज / ऑफिस',
     idNo: 'आधार / ID नंबर', address: 'स्थायी पता', lang: 'भाषा',
     guardianSec: 'परिवार / अभिभावक', guardian: 'अभिभावक का नाम', guardianPhone: 'अभिभावक का मोबाइल',
-    docsSec: 'दस्तावेज़', docsHint: 'फ़ोटो या PDF। सीधे हॉस्टल के सुरक्षित फ़ोल्डर में जाते हैं।',
+    docsSec: 'दस्तावेज़', docsHint: 'फ़ोटो या PDF (अधिकतम 1.5 MB)। साफ़ कैमरा फ़ोटो अपलोड करें। सीधे हॉस्टल के सुरक्षित फ़ोल्डर में जाते हैं।',
     docsLater: 'अभी यहाँ अपलोड नहीं हो सकता। ये दस्तावेज़ साथ लेकर आइए — हॉस्टल पहुँचने पर ले लिए जाएँगे:',
     pvSec: 'पुलिस वेरिफिकेशन', pvHint: 'किरायेदार का पुलिस वेरिफिकेशन कानूनन ज़रूरी है। आप इसे अभी खुद कर सकते हैं, या हॉस्टल बाद में कर देगा।',
     pvOpen: 'पुलिस पोर्टल खोलें', pvCopy: 'अपनी जानकारी कॉपी करें', pvCopied: 'कॉपी हो गया — पोर्टल पर पेस्ट करें',
@@ -40,7 +40,7 @@
     name: 'Full name', phone: 'Mobile number (WhatsApp)', email: 'Email', college: 'College / office',
     idNo: 'Aadhaar / ID number', address: 'Permanent address', lang: 'Language',
     guardianSec: 'Parent / guardian', guardian: 'Parent or guardian name', guardianPhone: 'Their mobile number',
-    docsSec: 'Documents', docsHint: 'A photo or a PDF. These go straight into the hostel’s private folder.',
+    docsSec: 'Documents', docsHint: 'Photo or PDF (max 1.5 MB). Clear camera photos recommended. Stored in the hostel’s private folder.',
     docsLater: 'These cannot be uploaded here yet. Please bring them with you — the hostel will take them when you arrive:',
     pvSec: 'Police verification', pvHint: 'Police verification of tenants is required by law. You can do it yourself now, or leave it and the hostel will do it for you.',
     pvOpen: 'Open the police portal', pvCopy: 'Copy my details', pvCopied: 'Copied — paste it into the portal',
@@ -104,10 +104,11 @@
   var val = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
 
   // Same budget as an upload from the app (compressImage in core.js, which this page does not
-  // load): 1280 px reads an Aadhaar number, 600 px is plenty for a face. WebP where the phone
-  // can write it, JPEG where it cannot (Safari hands back a PNG instead). PDFs go as they are.
-  var DOC_MAX = 3 * 1024 * 1024;
-  function compress(file, max) {
+  // load): 1200 px reads an Aadhaar number, 400 px is plenty for a face. WebP where the phone
+  // can write it, JPEG where it cannot (Safari hands back a PNG instead). PDFs max 1.5 MB.
+  var DOC_MAX = 1.5 * 1024 * 1024;
+  function compress(file, max, q) {
+    q = q || 0.68;
     return new Promise(function (res) {
       if (!file) return res(null);
       if (!/^image\//.test(file.type)) return res(file.type === 'application/pdf' && file.size <= DOC_MAX ? file : null);
@@ -118,8 +119,8 @@
         c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
         c.toBlob(function (b) {
           if (b && b.type === 'image/webp') return res(b);
-          c.toBlob(function (j) { res(j && j.size <= DOC_MAX ? j : null); }, 'image/jpeg', 0.7);
-        }, 'image/webp', 0.7);
+          c.toBlob(function (j) { res(j && j.size <= DOC_MAX ? j : null); }, 'image/jpeg', q);
+        }, 'image/webp', q);
       };
       im.onerror = function () { res(null); };
       im.src = url;
@@ -225,7 +226,8 @@
     var chain = Promise.resolve([]);
     picks.forEach(function (p) {
       chain = chain.then(function (acc) {
-        return compress(p.file, /photo/i.test(p.label) ? 600 : 1280).then(function (blob) {
+        var isPhoto = /photo|avatar|face/i.test(p.label);
+        return compress(p.file, isPhoto ? 400 : 1200, isPhoto ? 0.65 : 0.68).then(function (blob) {
           if (!blob) return acc;
           var mime = blob.type || 'image/jpeg';
           return api({ action: 'doc', app: APP, label: p.label, mime: mime, size: blob.size })
