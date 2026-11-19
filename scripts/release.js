@@ -6,8 +6,19 @@
 const fs = require('fs'), path = require('path');
 const f = process.env.SW_FILE || path.join(__dirname, '..', 'sw.js');
 const sha = String(process.env.VERCEL_GIT_COMMIT_SHA || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 12);
-const v = 'hostelos-' + (sha || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12));
+const vStamp = (sha || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12));
+const v = 'hostelos-' + vStamp;
 const src = fs.readFileSync(f, 'utf8');
 if (!/const VERSION = '[^']*';/.test(src)) { console.error('sw.js has no VERSION line to stamp'); process.exit(1); }
 fs.writeFileSync(f, src.replace(/const VERSION = '[^']*';/, `const VERSION = '${v}';`));
 console.log('sw.js VERSION =', v);
+
+const htmlFiles = ['index.html', 'pay.html', 'join.html', 'visit.html', 'site.html'];
+for (const hf of htmlFiles) {
+  const p = path.join(__dirname, '..', hf);
+  if (fs.existsSync(p)) {
+    const s = fs.readFileSync(p, 'utf8');
+    fs.writeFileSync(p, s.replace(/\?v=[0-9a-zA-Z_-]+/g, `?v=${vStamp}`));
+    console.log(`${hf} ?v =`, vStamp);
+  }
+}

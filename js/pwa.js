@@ -51,24 +51,56 @@ const Pwa = (() => {
   }
   const env = () => detect({ ua: navigator.userAgent || '', platform: navigator.platform || '', touch: navigator.maxTouchPoints || 0, hasEvt: !!evt });
   const standalone = () => {
-    try { if (navigator.standalone === true) return true; return ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'].some(m => matchMedia(`(display-mode: ${m})`).matches); } catch (e) { return false; }
+    try {
+      if (typeof window === 'undefined') return false;
+      if (window.sessionStorage && window.sessionStorage.getItem('hostelos.pwa.mode') === 'standalone') return true;
+      if (typeof location !== 'undefined' && location.search && location.search.includes('source=pwa')) {
+        try { window.sessionStorage.setItem('hostelos.pwa.mode', 'standalone'); } catch (e) {}
+        store.set(KEY.installed, '1');
+        return true;
+      }
+      if (typeof navigator !== 'undefined' && navigator.standalone === true) return true;
+      if (typeof document !== 'undefined' && document.referrer && document.referrer.includes('android-app://')) return true;
+      if (typeof window.matchMedia === 'function') {
+        const modes = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'];
+        if (modes.some(m => { try { return window.matchMedia(`(display-mode: ${m})`).matches; } catch (e) { return false; } })) {
+          try { window.sessionStorage.setItem('hostelos.pwa.mode', 'standalone'); } catch (e) {}
+          store.set(KEY.installed, '1');
+          return true;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return false;
   };
   const installed = () => standalone() || store.get(KEY.installed) === '1';
   const snoozed = () => +store.get(KEY.snooze) > Date.now();
   const snooze = days => { store.set(KEY.snooze, String(Date.now() + days * DAY)); try { if (typeof closeModal === 'function') closeModal(); } catch (e) { /* nothing open */ } };
   const changed = () => { try { if (typeof updateChrome === 'function') updateChrome(); } catch (e) { /* shell not drawn yet */ } };
 
-  window.addEventListener('beforeinstallprompt', e => {
-    e.preventDefault(); evt = e;
-    store.del(KEY.installed);          // the browser offers it only when it is NOT installed: a stale "installed" note is wrong
-    changed();
-  });
-  window.addEventListener('appinstalled', () => {
-    evt = null; store.set(KEY.installed, '1');
-    if (typeof closeModal === 'function') closeModal();
-    if (typeof toast === 'function') toast(tr('Installed. Open Sarvlekh from your home screen or desktop.'));
-    changed();
-  });
+  if (typeof window !== 'undefined') {
+    if (standalone()) {
+      store.set(KEY.installed, '1');
+    }
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault(); evt = e;
+      if (!installed()) changed();
+    });
+    window.addEventListener('appinstalled', () => {
+      evt = null; store.set(KEY.installed, '1');
+      try { window.sessionStorage.setItem('hostelos.pwa.mode', 'standalone'); } catch (e) {}
+      if (typeof closeModal === 'function') closeModal();
+      if (typeof toast === 'function') toast(tr('Installed. Open Sarvlekh from your home screen or desktop.'));
+      changed();
+    });
+    if (typeof navigator !== 'undefined' && typeof navigator.getInstalledRelatedApps === 'function') {
+      navigator.getInstalledRelatedApps().then(apps => {
+        if (apps && apps.length > 0) {
+          store.set(KEY.installed, '1');
+          changed();
+        }
+      }).catch(() => {});
+    }
+  }
 
   async function prompt() {
     if (!evt) return false;
@@ -124,21 +156,142 @@ const Pwa = (() => {
     openModal({ title: tr('Install Sarvlekh'), body, foot });
   }
 
-  // Two minutes after the app opens. Never over a form, never twice in one visit, never after a no.
+  // When the app opens: if not installed, show prompt. Never over a form, never if installed/snoozed.
   function tick() {
     timer = null;
     if (installed() || snoozed() || store.get(KEY.shown, 'sessionStorage') === '1') return;
     if (env().mode === 'none') return;
-    if (document.hidden) { document.addEventListener('visibilitychange', function again() { if (!document.hidden) { document.removeEventListener('visibilitychange', again); timer = setTimeout(tick, 5000); } }); return; }
+    if (document.hidden) { document.addEventListener('visibilitychange', function again() { if (!document.hidden) { document.removeEventListener('visibilitychange', again); timer = setTimeout(tick, 3000); } }); return; }
     const busy = (document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim()) || /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
-    if (busy) { if (++retries <= 8) timer = setTimeout(tick, 30000); return; }
+    if (busy) { if (++retries <= 8) timer = setTimeout(tick, 10000); return; }
     store.set(KEY.shown, '1', 'sessionStorage');
     open(false);
   }
-  function start() { if (!timer && !installed()) timer = setTimeout(tick, AFTER_MS); }
+  function start(delay = 5000) { if (!timer && !installed()) timer = setTimeout(tick, delay); }
 
   // The button in the menu: shown until the app is installed (or can never be).
   const button = () => (installed() ? '' : `<button class="install-btn" data-act="install">${I.install}<span>${esc(tr('Install app'))}</span></button>`);
 
-  return { detect, env, standalone, installed, snoozed, snooze, prompt, open, start, button, steps, tick, KEY, AFTER_MS, _set: e => { evt = e; } };
+  /* ===================================================================== Web Push Notifications */
+  const PUSH_KEY = { sub: 'hostelos.push.sub', status: 'hostelos.push.status', promptDismissed: 'hostelos.push.dismissed' };
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+    return outputArray;
+  }
+
+  function isPushSupported() {
+    return typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
+
+  function getPushPermission() {
+    if (!isPushSupported()) return 'unsupported';
+    return Notification.permission;
+  }
+
+  async function getSwRegistration() {
+    if (!('serviceWorker' in navigator)) return null;
+    return await navigator.serviceWorker.ready.catch(() => null);
+  }
+
+  async function subscribePush(vapidPublicKey) {
+    if (!isPushSupported()) throw new Error('Push notifications are not supported on this browser');
+    const reg = await getSwRegistration();
+    if (!reg) throw new Error('Service worker registration not ready');
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub && vapidPublicKey) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+      });
+    }
+
+    if (sub) {
+      store.set(PUSH_KEY.sub, JSON.stringify(sub));
+      store.set(PUSH_KEY.status, 'active');
+      if (typeof Backend !== 'undefined' && Backend.admin && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        await Backend.admin('save_push_sub', {
+          sub: sub.toJSON ? sub.toJSON() : sub,
+          endpoint: sub.endpoint,
+          hostel_id: (typeof Store !== 'undefined' && Store.ctx) ? Store.ctx.hostelId : null
+        }).catch(err => console.warn('Could not sync push subscription to backend:', err));
+      }
+    }
+    return sub;
+  }
+
+  async function unsubscribePush() {
+    if (!isPushSupported()) return false;
+    const reg = await getSwRegistration();
+    if (!reg) return false;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await sub.unsubscribe();
+      store.del(PUSH_KEY.sub);
+      store.set(PUSH_KEY.status, 'unsubscribed');
+      if (typeof Backend !== 'undefined' && Backend.admin && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        await Backend.admin('remove_push_sub', { endpoint: sub.endpoint }).catch(() => {});
+      }
+    }
+    return true;
+  }
+
+  async function togglePushWorkflow() {
+    const perm = getPushPermission();
+    if (perm === 'unsupported') {
+      if (typeof toast === 'function') toast(tr('Browser push is not supported on this device. In-app notifications will still work.'), 'warn');
+      return false;
+    }
+    if (perm === 'denied') {
+      const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+      const instructions = isMobile
+        ? tr('To enable: tap the lock or tune icon in the address bar → Permissions → Reset or Allow Notifications.')
+        : tr('To enable: click the tune/lock icon beside the website address in your browser bar → change Notifications to "Allow", then reload.');
+      if (typeof openModal === 'function') {
+        openModal({
+          title: tr('Notifications Blocked'),
+          body: `<p>${instructions}</p><p class="hint" style="margin-top:10px">${esc(tr('In-app notification badge will continue to update normally.'))}</p>`,
+          foot: `<button class="btn primary" data-act="closemodal">${esc(tr('Understood'))}</button>`
+        });
+      }
+      return false;
+    }
+
+    try {
+      const requested = await Notification.requestPermission();
+      if (requested === 'granted') {
+        const vapidKey = (window.HOSTELOS_CONFIG && window.HOSTELOS_CONFIG.VAPID_PUBLIC_KEY) || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
+        await subscribePush(vapidKey);
+        if (typeof toast === 'function') toast(tr('Push notifications enabled successfully!'));
+        return true;
+      } else {
+        if (typeof toast === 'function') toast(tr('Notification permission not granted. In-app notifications will continue.'), 'info');
+        return false;
+      }
+    } catch (e) {
+      console.warn('Push subscription failed:', e);
+      if (typeof toast === 'function') toast(tr('Could not activate push notifications.'), 'bad');
+      return false;
+    }
+  }
+
+  function dispatchPush(payload) {
+    if (document.hidden && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'PUSH_LOCAL',
+        payload
+      });
+    }
+  }
+
+  return {
+    detect, env, standalone, installed, snoozed, snooze, prompt, open, start, button, steps, tick,
+    isPushSupported, getPushPermission, subscribePush, unsubscribePush, togglePushWorkflow, dispatchPush,
+    KEY, PUSH_KEY, AFTER_MS, _set: e => { evt = e; }
+  };
 })();

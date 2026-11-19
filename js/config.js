@@ -9,6 +9,7 @@
 window.HOSTELOS_CONFIG = {
   SUPABASE_URL: 'https://bbimfrhnsikpiztowlye.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJiaW1mcmhuc2lrcGl6dG93bHllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0MzMzNzMsImV4cCI6MjEwOTAwOTM3M30.uXHoAOykp8tT2at07LJgdxDAReD474odUdCiGcv2luQ',
+  VAPID_PUBLIC_KEY: 'BLYXNsamzeGRN76Fmay6zeSKP0osOT9acfLBGAlY4Ml-q12dWbY4uW9ilLb6u5trQhY0_FG-NaY_fWeKwiDFEyw',
   AUTH_EMAIL_DOMAIN: 'login.hostelos.app', // must match AUTH_EMAIL_DOMAIN on Vercel (if you set one)
   APP_NAME: 'Sarvlekh',
   // The domain a hostel's public page is advertised on. Set it once the domain points at this

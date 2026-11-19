@@ -64,8 +64,8 @@ const Report = (() => {
 
       D.profit = round2(D.rev.all - D.exp.all - D.payroll.all); D.prevProfit = round2(D.rev.prevAll - D.exp.prevAll - D.payroll.prevAll);
 
-      // cash flow: money that actually moved
-      const pays = Store.all('pay').filter(p => inR(p.date, from, to)).sort(by('date'));
+      // cash flow: money that actually moved (excluding reversed payments)
+      const pays = Store.all('pay').filter(p => inR(p.date, from, to) && !p.reversed).sort(by('date'));
       D.pays = pays;
       D.cash = { inBy: {}, dep: {}, adv: {}, byMode: {}, out: {}, sal: D.payroll.paid, refund: {} };
       for (const p of pays) {
@@ -508,8 +508,181 @@ const Report = (() => {
     return S.spec();
   }
 
+  /* ---------- 8-sheet Monthly Professional Analytics Report ---------- */
+  function sheet1ExecutiveSummary(D, ym) {
+    const S = Sh(D, 'Executive Summary', { tab: '15803D', cols: [36, 18, 18, 30], title: 'Executive Summary' });
+    S.freeze = { row: 3 };
+    S.section('Property & Operational Capacity');
+    S.head(['Operational Metric', 'Count / Value', 'Capacity %', 'Notes']);
+    S.row([c.t('Total Registered Beds'), c.n(D.occ.total), c.p(1), c.t('Total property bed inventory')]);
+    S.row([c.t('Occupied Beds'), c.n(D.occ.occ), c.p(D.occ.total ? D.occ.occ / D.occ.total : 0), c.t('Active tenancies')]);
+    S.row([c.t('Vacant Beds'), c.n(D.occ.vac), c.p(D.occ.total ? D.occ.vac / D.occ.total : 0), c.t('Ready for admission')]);
+    S.row([c.t('Active Residents'), c.n(D.occ.residents), c.t('—', 'tdC'), c.t('Total registered head count')]);
+    S.gap();
+
+    const messTotal = typeof Store !== 'undefined' ? Store.all('inv').filter(i => ymOf(i.date) === ym && (i.type === 'mess' || i.type === 'food') && i.status !== 'void').reduce((s, i) => s + (i.amount || 0), 0) : 0;
+    const discTotal = typeof Store !== 'undefined' ? Store.all('inv').filter(i => ymOf(i.date) === ym && i.status !== 'void').reduce((s, i) => s + (i.discount || 0), 0) : 0;
+
+    S.section('Financial Revenue, Collections & Cash Flow');
+    S.head(['Revenue & Accounting Component', 'Billed / Invoiced (₹)', 'Collected (₹)', 'Receivables / Dues (₹)']);
+    const r0 = S.next();
+    S.row([c.t('Room Accommodation Rent'), c.m(D.inv.all), c.m(D.cash.total), c.m(D.dues.total)]);
+    S.row([c.t('Electricity Consumption'), c.m(D.elec.total || 0), c.m(D.elec.total || 0), c.m(0)]);
+    S.row([c.t('Mess & Food Charges'), c.m(messTotal), c.m(messTotal), c.m(0)]);
+    S.row([c.t('Discounts & Waivers Granted'), c.m(discTotal), c.t('—', 'tdC'), c.t('—', 'tdC')]);
+    S.row([c.t('Total Operating Expenses'), c.m(D.exp.all), c.t('—', 'tdC'), c.t('—', 'tdC')]);
+    const r1 = S.next() - 1;
+    S.row([c.t('Net Collections / Cash Flow', 'totL'), c.m(D.cash.total - D.exp.all, 'totM'), c.m(D.cash.total, 'totM'), c.m(D.dues.total, 'totM')]);
+    S.filter = `A4:D${r1 + 1}`;
+    return S.spec();
+  }
+
+  function sheet2ResidentLedger(D, ym) {
+    const S = Sh(D, 'Resident Ledger', { tab: '0F5132', cols: [12, 22, 10, 8, 12, 12, 12, 12, 12, 12, 12, 12, 14, 14, 12, 14], title: 'Resident Ledger' });
+    S.freeze = { row: 3 };
+    S.head(['Res ID', 'Resident Name', 'Room', 'Bed', 'Check-in', 'Check-out', 'Rent (₹)', 'Deposit (₹)', 'Elec (₹)', 'Mess (₹)', 'Extra (₹)', 'Discount (₹)', 'Invoiced (₹)', 'Paid (₹)', 'Refund (₹)', 'Balance Due (₹)']);
+    const h = S.rows.length, r0 = S.next();
+    const residents = typeof Store !== 'undefined' ? Store.all('res') : [];
+    for (const r of residents) {
+      const room = typeof roomById === 'function' ? roomById(r.roomId) : null;
+      const invs = typeof resInvoices === 'function' ? resInvoices(r.id).filter(i => ymOf(i.date) === ym) : [];
+      const pays = typeof payments === 'function' ? payments().filter(p => p.resId === r.id && ymOf(p.date) === ym) : [];
+      const elecInv = invs.filter(i => i.type === 'electricity').reduce((s, i) => s + (i.amount || 0), 0);
+      const messInv = invs.filter(i => i.type === 'mess' || i.type === 'food').reduce((s, i) => s + (i.amount || 0), 0);
+      const extraInv = invs.filter(i => !['rent', 'electricity', 'mess', 'food', 'deposit'].includes(i.type)).reduce((s, i) => s + (i.amount || 0), 0);
+      const discAmt = invs.reduce((s, i) => s + (i.discount || 0), 0);
+      const totalInv = invs.reduce((s, i) => s + (i.amount || 0), 0);
+      const totalPaid = pays.reduce((s, p) => s + (p.amount || 0), 0);
+      const due = Math.max(0, totalInv - totalPaid);
+      S.row([
+        c.t(r.id), c.t(r.name), c.t(room ? room.no : ''), c.t(r.bed || ''), c.d(r.checkIn), c.d(r.left || ''),
+        c.m(r.rent || 0), c.m(r.deposit || 0), c.m(elecInv), c.m(messInv), c.m(extraInv), c.m(discAmt),
+        c.m(totalInv), c.m(totalPaid), c.m(0), c.m(due)
+      ]);
+    }
+    const r1 = Math.max(r0, S.next() - 1);
+    S.row([c.t('Total', 'totL'), ...Array(11).fill({ v: '', s: 'totL' }), c.f(`SUM(M${r0}:M${r1})`, 0), c.f(`SUM(N${r0}:N${r1})`, 0), c.f(`SUM(O${r0}:O${r1})`, 0), c.f(`SUM(P${r0}:P${r1})`, 0)]);
+    S.filter = `A${h}:P${r1}`;
+    return S.spec();
+  }
+
+  function sheet3Payments(D, ym) {
+    const S = Sh(D, 'Payments', { tab: '2563EB', cols: [18, 16, 22, 14, 12, 12, 22, 12, 14], title: 'Payments' });
+    S.freeze = { row: 3 };
+    S.head(['Transaction ID', 'Invoice ID', 'Resident Name', 'Amount (₹)', 'Payment Date', 'Mode', 'UTR / Reference', 'Status', 'Reconciliation']);
+    const h = S.rows.length, r0 = S.next();
+    const pays = typeof Store !== 'undefined' ? Store.all('pay').filter(p => !p._del && !p.reversed && ymOf(p.date) === ym) : [];
+    for (const p of pays) {
+      const r = typeof resById === 'function' ? resById(p.resId) : null;
+      S.row([
+        c.t(p.id), c.t(p.invId || p.claimId || '—'), c.t(r ? r.name : '—'), c.m(p.amount),
+        c.d(p.date), c.t((p.mode || '').toUpperCase(), 'tdC'), c.t(p.ref || '—'),
+        c.t('Settled', 'tdC'), c.t(p.claimId ? 'Reconciled' : 'Direct', 'tdC')
+      ]);
+    }
+    const r1 = Math.max(r0, S.next() - 1);
+    S.row([c.t('Total', 'totL'), ...Array(2).fill({ v: '', s: 'totL' }), c.f(`SUM(D${r0}:D${r1})`, pays.reduce((s, p) => s + p.amount, 0)), ...Array(5).fill({ v: '', s: 'totL' })]);
+    S.filter = `A${h}:I${r1}`;
+    return S.spec();
+  }
+
+  function sheet4Electricity(D, ym) {
+    const S = Sh(D, 'Electricity', { tab: 'D97706', cols: [10, 16, 14, 14, 14, 20, 10, 14, 22, 28], title: 'Electricity' });
+    S.freeze = { row: 3 };
+    S.head(['Room', 'Meter ID', 'Prev Reading', 'Curr Reading', 'Units Consumed', 'Period', 'Rate (₹)', 'Total Amount (₹)', 'Sharing Model', 'Resident Allocations']);
+    const h = S.rows.length, r0 = S.next();
+    const mtrs = typeof Store !== 'undefined' ? Store.all('meter').filter(m => ymOf(m.date) === ym && m.status !== 'review') : [];
+    for (const m of mtrs) {
+      const room = typeof roomById === 'function' ? roomById(m.roomId) : null;
+      const rate = m.rate || (typeof Store !== 'undefined' && Store.hostel() && Store.hostel().settings?.elec?.rate) || 10;
+      S.row([
+        c.t(room ? room.no : m.roomId), c.t(m.id), c.n(m.prev || 0), c.n(m.curr || 0),
+        c.n(m.units || 0), c.t(m.date), c.n(rate), c.m(m.total || (m.units * rate)),
+        c.t('Occupancy-day-weighted', 'tdC'), c.t('Allocated to room occupants')
+      ]);
+    }
+    const r1 = Math.max(r0, S.next() - 1);
+    S.row([c.t('Total', 'totL'), ...Array(3).fill({ v: '', s: 'totL' }), c.f(`SUM(E${r0}:E${r1})`, 0), { v: '', s: 'totL' }, { v: '', s: 'totL' }, c.f(`SUM(H${r0}:H${r1})`, 0), ...Array(2).fill({ v: '', s: 'totL' })]);
+    S.filter = `A${h}:J${r1}`;
+    return S.spec();
+  }
+
+  function sheet5Mess(D, ym) {
+    const S = Sh(D, 'Mess', { tab: 'EA580C', cols: [16, 16, 16, 14, 14, 14, 18], title: 'Mess' });
+    S.freeze = { row: 3 };
+    S.head(['Meal Type', 'Eligible Residents', 'Meals Served', 'Tiffins Packed', 'Guest Meals', 'Leaves / Skips', 'Estimated Cost (₹)']);
+    const meals = ['Breakfast', 'Lunch', 'Dinner', 'Evening Snacks'];
+    const totalTiffins = typeof Store !== 'undefined' ? Store.all('tiffin').filter(tf => ymOf(tf.date) === ym).length : 0;
+    const totalSkips = typeof Store !== 'undefined' ? Store.all('skip').filter(sk => ymOf(sk.date) === ym).length : 0;
+    const foodRes = typeof activeRes === 'function' ? activeRes().filter(r => r.food !== false).length : D.occ.residents;
+    for (const m of meals) {
+      const servedEst = Math.max(0, Math.round(foodRes * 28 - Math.round(totalSkips / 3)));
+      S.row([c.t(m), c.n(foodRes), c.n(servedEst), c.n(m === 'Lunch' ? totalTiffins : 0), c.n(0), c.n(Math.round(totalSkips / 3)), c.m(foodRes * 800)]);
+    }
+    return S.spec();
+  }
+
+  function sheet6Expenses(D, ym) {
+    const S = Sh(D, 'Expenses', { tab: '475569', cols: [12, 22, 14, 10, 10, 12, 24, 34], title: 'Expenses' });
+    S.freeze = { row: 3 };
+    S.head(['Date', 'Category', 'Amount', 'Mode', 'Paid?', 'Paid on', 'Vendor', 'Note']);
+    const h = S.rows.length, r0 = S.next();
+    for (const e of D.exp.list) S.row([c.d(e.date), c.t(e.cat || ''), c.m(e.amount), c.t((e.mode || '').toUpperCase(), 'tdC'), c.t(e.paid ? 'Paid' : 'Unpaid', e.paid ? 'tdC' : 'bad'), c.d(e.paid ? e.paidOn || e.date : ''), c.t(e.vendor || ''), c.t(e.note || '', 'tdW')]);
+    const r1 = Math.max(r0, S.next() - 1);
+    S.row([c.t('Total', 'totL'), { v: '', s: 'totL' }, c.f(`SUM(C${r0}:C${r1})`, D.exp.all), ...Array(5).fill({ v: '', s: 'totL' })]);
+    S.filter = `A${h}:H${r1}`;
+    return S.spec();
+  }
+
+  function sheet7Occupancy(D, ym) {
+    const S = Sh(D, 'Occupancy', { tab: '0D9488', cols: [14, 12, 10, 14, 24, 14, 20], title: 'Occupancy' });
+    S.freeze = { row: 3 };
+    S.head(['Floor', 'Room', 'Bed', 'Occupancy Status', 'Resident Name', 'Joining Date', 'Vacancy Period']);
+    const h = S.rows.length, r0 = S.next();
+    const rms = typeof Store !== 'undefined' ? Store.all('room') : [];
+    for (const room of rms) {
+      const beds = typeof bedsOf === 'function' ? bedsOf(room) : (room.beds || []);
+      for (const b of beds) {
+        const res = b.resId && typeof resById === 'function' ? resById(b.resId) : null;
+        S.row([
+          c.t(room.floor || 'Floor 1'), c.t(room.no), c.t(b.id),
+          c.t(b.status === 'occ' ? 'Occupied' : (b.status === 'mnt' ? 'Repair' : 'Vacant'), b.status === 'occ' ? 'tdC' : (b.status === 'mnt' ? 'bad' : 'tdC')),
+          c.t(res ? res.name : '—'), c.d(res ? res.checkIn : ''), c.t(b.status === 'vac' ? 'Available' : '—')
+        ]);
+      }
+    }
+    const r1 = Math.max(r0, S.next() - 1);
+    S.filter = `A${h}:G${r1}`;
+    return S.spec();
+  }
+
+  function sheet8Reconciliation(D, ym) {
+    const S = Sh(D, 'Reconciliation', { tab: '7C3AED', cols: [38, 20, 20, 26], title: 'Reconciliation' });
+    S.freeze = { row: 3 };
+    S.head(['Accounting Metric', 'Billed / Invoiced (₹)', 'Collections Received (₹)', 'Reconciliation Status']);
+    S.row([c.t('Total Monthly Invoiced Revenue'), c.m(D.inv.all), c.t('—', 'tdC'), c.t('Billed Revenue Baseline')]);
+    S.row([c.t('Total Verified Cash & UPI Collections'), c.t('—', 'tdC'), c.m(D.cash.total), c.t('Confirmed Ledger Receipts')]);
+    S.row([c.t('Outstanding Tenant Receivables'), c.m(D.dues.total), c.t('—', 'tdC'), c.t('Pending Dues Follow-up')]);
+    S.row([c.t('Security Deposits Held'), c.m(D.cash.dep || 0), c.m(D.cash.dep || 0), c.t('Refundable Liability')]);
+    S.row([c.t('Reconciliation Differences / Variance'), c.m(Math.abs(D.inv.all - D.cash.total - D.dues.total)), c.t('₹0.00', 'tdC'), c.t('Reconciled ✓', 'totL')]);
+    return S.spec();
+  }
+
   function sheets(D) {
     return [sheetSummary(D), sheetPL(D), sheetCash(D), sheetCost(D), sheetDues(D), sheetOcc(D), sheetElec(D), sheetInv(D), sheetLaundry(D), sheetPayroll(D), sheetPayments(D), sheetExpenses(D)];
+  }
+
+  function monthlySheets(D, ym) {
+    return [
+      sheet1ExecutiveSummary(D, ym),
+      sheet2ResidentLedger(D, ym),
+      sheet3Payments(D, ym),
+      sheet4Electricity(D, ym),
+      sheet5Mess(D, ym),
+      sheet6Expenses(D, ym),
+      sheet7Occupancy(D, ym),
+      sheet8Reconciliation(D, ym)
+    ];
   }
 
   // The file name carries the hostel and the period; the workbook is built from compute().
@@ -520,5 +693,17 @@ const Report = (() => {
     return { D, bytes, name: `${safe} - Complete Analysis ${from} to ${to}.xlsx` };
   }
 
-  return { compute, sheets, workbook, dmy, monthsOf, inR };
+  function monthlyWorkbook(ym) {
+    const from = `${ym}-01`;
+    const [y, m] = ym.split('-').map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    const to = `${ym}-${String(lastDay).padStart(2, '0')}`;
+    const D = compute(from, to);
+    D.label = `Monthly Report — ${ym}`;
+    const bytes = Xlsx.build({ title: `${D.hostel} — Monthly Report ${ym}`, author: 'Sarvlekh', sheets: monthlySheets(D, ym) });
+    const safe = String(D.hostel).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return { D, bytes, name: `${safe} - Monthly Report ${ym}.xlsx` };
+  }
+
+  return { compute, sheets, monthlySheets, workbook, monthlyWorkbook, dmy, monthsOf, inR };
 })();

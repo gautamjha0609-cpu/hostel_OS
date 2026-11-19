@@ -25,11 +25,13 @@ function boot() {
     advPlan, recordAdvance, advPaidAhead, addPenalty, waivePenalty, penaltyDue, resPenalties, penaltyList,
     attOn, attPeriods, attSet, attRoll, attMonth, attDoc, sendRinfo, rinfoReply, rinfos, rinfoUnread, rinfoCovering, CFG,
     applyModSwitch, modNeeds, modNeededBy, orgEnabled, MOD_DEPS, fmtYM, addMonths, invoices, myNotifs,
-    meterOccupants, setOpeningReading, lastMeter, moveReading, moveReadingHint, canMarkHk, punchIn, punchedToday, selfPunchOn, attFence, Geo,
-    remindersDue, markReminded, monthlyBillsDue, monthlyBillMsgs, meals, byTime, checkout, payrollFor,
-    rooms, residents, allRooms, allResidents, occupancy, dueList, shiftBed, vacantBeds, Xlsx, Report, repPresets, repRange, repIn, seedDemo, isDemoHostel, WaGw, Pwa, CFG, siteUrl, siteDomain, siteSlugProblem, SITE_RESERVED, stockOf, stockM, toM, fromM, postMove, countTo, postConsumption, catchUpConsumption, auditStock, ledger, itemMoves, lineTotal, prTotal, usageBooked, billMessage, receiptMessage, welcomeMessage, laundryMessage, tpl, WA_TPL, rs,
+    meterOccupants, setOpeningReading, lastMeter, pendingMeter, moveReading, moveReadingHint, canMarkHk, punchIn, punchedToday, selfPunchOn, attFence, Geo,
+    remindersDue, markReminded, monthlyBillsDue, monthlyBillMsgs, meals, byTime, checkout, payrollFor, staffSalarySummary,
+    rooms, residents, allRooms, allResidents, occupancy, dueList, shiftBed, swapBeds, vacantBeds, Xlsx, Report, repPresets, repRange, repIn, seedDemo, isDemoHostel, WaGw, Pwa, CFG, siteUrl, siteDomain, siteSlugProblem, SITE_RESERVED, stockOf, stockM, toM, fromM, postMove, countTo, postConsumption, catchUpConsumption, auditStock, ledger, itemMoves, lineTotal, prTotal, usageBooked, billMessage, receiptMessage, welcomeMessage, laundryMessage, tpl, WA_TPL, rs,
     hostelBlocks, blocksOn, blockScope, setBlockScope, withAllBlocks, roomBlock, resBlock, blockName, blockOrder,
     payments, resPays, siteCfg, siteLive, siteGaps, sitePhotos, sitePhotoUrl, SITE_PHOTOS, imgUrl, siteSlug, siteUrl,
+    correctReading, deleteReading, replaceMeter, registerMeter, getMeterForRoom, validateMeterReadingFraud, analyzeDigitSegments, parseMeterOcrText,
+    createAgreement, getActiveAgreement, renewAgreement, agreementDueRenewal, processVerifiedPaymentWebhook, reversePayment,
     ui: { tab: {}, q: {}, flt: {}, lim: {} } };`, ctx);
   return ctx.T;
 }
@@ -87,6 +89,44 @@ test('meter reading bills each resident; lower reading is rejected', () => {
   T.addReading({ roomId: 'r1', curr: 1000, prev: 900, date: '2026-02-01' });
   assert.equal(T.resDue(a.id), 1000);
   assert.throws(() => T.addReading({ roomId: 'r1', curr: 950 }), /less than previous/);
+});
+
+test('resident self-submitted meter reading lands in inbox for owner review and bills upon approval', async () => {
+  setupHostel('owner', { settings: { elec: { rate: 10, freeUnits: 0 } } });
+  const a = T.checkIn({ name: 'Rahul Sharma', phone: '9876543210', roomId: 'r1', bed: 'A', rent: 0, checkIn: '2026-01-01' });
+  T.setOpeningReading('r1', 1000, '2026-01-01');
+
+  // Resident submits meter reading from resident app with photo
+  const m = T.addReading({
+    roomId: 'r1',
+    curr: 1120,
+    date: '2026-01-31',
+    status: 'review',
+    submittedBy: a.name,
+    photo: 'meter_r1.jpg'
+  });
+
+  assert.equal(m.status, 'review');
+  assert.equal(T.resDue(a.id), 0, 'No bill generated yet while under review');
+
+  // Appears in owner Approvals inbox
+  const inbox = T.inboxItems().filter(x => x.k === 'meter');
+  assert.equal(inbox.length, 1);
+  assert.match(inbox[0].d, /Rahul Sharma/);
+
+  // Verify pendingMeter and lastMeter distinction
+  assert.equal(T.pendingMeter('r1').id, m.id);
+  assert.equal(T.lastMeter('r1').curr, 1000, 'lastMeter returns last billed/opening reading, not review');
+
+  // Roommate attempts duplicate submission for same room while one is under review
+  assert.throws(() => {
+    T.addReading({ roomId: 'r1', curr: 1125, status: 'review', submittedBy: 'Roommate' });
+  }, /already under review/, 'Prevents multiple roommates from submitting duplicate readings for the same room');
+
+  // Verify configurable scanRole setting in elec settings
+  assert.equal(T.S().elec.scanRole || 'both', 'both');
+  await T.Store.saveSettings({ elec: { scanRole: 'staff_only' } });
+  assert.equal(T.S().elec.scanRole, 'staff_only');
 });
 
 test('laundry: free pieces first, then charged per piece and billed', () => {
@@ -488,8 +528,14 @@ test('modules: switching off something another module needs takes that one with 
   assert.equal(a.modules.kitchen, false, 'the kitchen cannot plan without the mess menu');
   assert.equal(JSON.stringify(a.changed), JSON.stringify([['kitchen', false]]));
 
-  const b = T.applyModSwitch({}, 'staff', false);
-  assert.equal(b.modules.housekeeping, false, 'cleaning tasks are assigned to staff');
+  const b = T.applyModSwitch({}, 'landing', false);
+  assert.equal(b.modules.inquiries, false, 'inquiries cannot be received without the public landing page');
+  assert.equal(JSON.stringify(b.changed), JSON.stringify([['inquiries', false]]));
+
+  // Staff and housekeeping are independent: staff payroll is for all staff (cook, guard, cleaner, warden)
+  const c = T.applyModSwitch({}, 'staff', false);
+  assert.equal(c.modules.housekeeping, undefined, 'housekeeping room cleaning operates independently of staff payroll');
+  assert.equal(c.changed.length, 0);
 });
 
 test('modules: switching one on brings whatever it needs with it', () => {
@@ -498,8 +544,15 @@ test('modules: switching one on brings whatever it needs with it', () => {
   assert.equal(a.modules.mess, undefined);
   assert.equal(JSON.stringify(a.changed), JSON.stringify([['mess', true]]));
 
-  const b = T.applyModSwitch({ staff: false, housekeeping: false }, 'housekeeping', true);
-  assert.equal(b.modules.staff, undefined);
+  const b = T.applyModSwitch({ landing: false, inquiries: false }, 'inquiries', true);
+  assert.equal(b.modules.inquiries, undefined);
+  assert.equal(b.modules.landing, undefined);
+  assert.equal(JSON.stringify(b.changed), JSON.stringify([['landing', true]]));
+
+  // Turning on housekeeping does not force staff payroll module
+  const c = T.applyModSwitch({ staff: false, housekeeping: false }, 'housekeeping', true);
+  assert.equal(c.modules.housekeeping, undefined);
+  assert.equal(c.modules.staff, false, 'staff payroll remains off if owner only wants room cleaning');
 });
 
 test('modules: an unrelated switch moves nothing else', () => {
@@ -656,6 +709,63 @@ test('a resident moved to another wing takes their whole history with them', () 
   T.setBlockScope('a');
   assert.equal(T.payments().length, 0, 'and is no longer counted against the old wing');
   T.setBlockScope('');
+});
+
+test('swapBeds: swaps two residents across rooms atomically with custom or inherited rents', () => {
+  withBlocks();
+  const a = T.checkIn({ name: 'Amit', phone: '9000000001', roomId: 'r1', bed: 'A', rent: 6000, checkIn: '2026-01-01' });
+  const b = T.checkIn({ name: 'Bhavna', phone: '9000000002', roomId: 'r2', bed: 'A', rent: 7000, checkIn: '2026-01-01' });
+  const occBefore = T.occupancy();
+
+  // Swap with room rent inheritance
+  const res = T.swapBeds(a.id, b.id, { rentMode: 'room', note: 'Mutual exchange' });
+  assert.equal(res.resA.roomId, 'r2');
+  assert.equal(res.resA.bed, 'A');
+  assert.equal(res.resA.rent, 7000, 'Amit took Room 2 standard rent (7000)');
+
+  assert.equal(res.resB.roomId, 'r1');
+  assert.equal(res.resB.bed, 'A');
+  assert.equal(res.resB.rent, 6000, 'Bhavna took Room 1 standard rent (6000)');
+
+  // Verify beds status in room data
+  const r1 = T.Store.get('r1');
+  const r2 = T.Store.get('r2');
+  assert.equal(r1.beds.find(bed => bed.id === 'A').resId, b.id);
+  assert.equal(r2.beds.find(bed => bed.id === 'A').resId, a.id);
+
+  // Occupancy should remain strictly equal
+  const occAfter = T.occupancy();
+  assert.equal(occAfter.total, occBefore.total);
+  assert.equal(occAfter.occ, occBefore.occ);
+  assert.equal(occAfter.vac, occBefore.vac);
+});
+
+test('swapBeds: swaps two residents in the same room and validates self-swap/inactive error checks', () => {
+  withBlocks();
+  const a = T.checkIn({ name: 'Amit', phone: '9000000001', roomId: 'r1', bed: 'A', rent: 6000, checkIn: '2026-01-01' });
+  const b = T.checkIn({ name: 'Chhavi', phone: '9000000003', roomId: 'r1', bed: 'B', rent: 6200, checkIn: '2026-01-01' });
+
+  // Cannot swap with self
+  assert.throws(() => T.swapBeds(a.id, a.id), /themselves/);
+
+  // Same room swap keeping current rents
+  T.swapBeds(a.id, b.id, { rentMode: 'keep' });
+  const updatedA = T.resById(a.id);
+  const updatedB = T.resById(b.id);
+  assert.equal(updatedA.roomId, 'r1');
+  assert.equal(updatedA.bed, 'B');
+  assert.equal(updatedA.rent, 6000);
+  assert.equal(updatedB.roomId, 'r1');
+  assert.equal(updatedB.bed, 'A');
+  assert.equal(updatedB.rent, 6200);
+
+  const r1 = T.Store.get('r1');
+  assert.equal(r1.beds.find(bed => bed.id === 'B').resId, a.id);
+  assert.equal(r1.beds.find(bed => bed.id === 'A').resId, b.id);
+
+  // Cannot swap left/inactive resident
+  T.Store.patch(b.id, { status: 'left' });
+  assert.throws(() => T.swapBeds(a.id, b.id), /not active/);
 });
 
 test('billing ignores the wing filter - every block is charged', () => {

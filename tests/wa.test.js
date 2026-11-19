@@ -14,7 +14,7 @@ function fake(row) {
   const st = { row, sent: [] };
   global.fetch = async (url, opt = {}) => {
     const u = new URL(url), json = (s, b) => ({ ok: s < 400, status: s, text: async () => JSON.stringify(b), json: async () => b });
-    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/hostels') return json(200, [{ settings: global.__demo ? { demo: true } : {} }]);
+    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/hostels') return json(200, [{ settings: global.__demo ? { demo: true } : {}, modules: global.__modules || {} }]);
     if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/wa_gateways') {
       if ((opt.method || 'GET') === 'GET') return json(200, st.row ? [st.row] : []);
       if (opt.method === 'POST') { st.row = JSON.parse(opt.body)[0]; return json(201, {}); }
@@ -74,7 +74,7 @@ function fakeEvo(row, state = 'close') {
   const st = { row, state, calls: [], sent: [] };
   global.fetch = async (url, opt = {}) => {
     const u = new URL(url), m = opt.method || 'GET', json = (s, b) => ({ ok: s < 400, status: s, text: async () => JSON.stringify(b), json: async () => b });
-    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/hostels') return json(200, [{ settings: global.__demo ? { demo: true } : {} }]);
+    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/hostels') return json(200, [{ settings: global.__demo ? { demo: true } : {}, modules: global.__modules || {} }]);
     if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/wa_gateways') {
       if (m === 'GET') return json(200, st.row ? [st.row] : []);
       if (m === 'POST') { st.row = JSON.parse(opt.body)[0]; return json(201, {}); }
@@ -152,4 +152,73 @@ test('the demo hostel never sends: no gateway can be connected or used, whoever 
     await assert.rejects(actions.send({ hostel_id: H1, messages: [{ phone: '9876543210', text: 'x' }] }, owner), /demo hostel/);
     assert.equal(st.sent.length, 0);
   } finally { global.__demo = false; }
+});
+
+test('send is rejected when super admin has turned off automation module for hostel', async () => {
+  const metaRow = { hostel_id: H1, kind: 'meta', url: 'https://graph.facebook.com/v19.0', api_key: 'EAAB_token', session: '109988776655' };
+  fake(metaRow);
+  global.__modules = { automation: false };
+  try {
+    await assert.rejects(
+      actions.send({ hostel_id: H1, messages: [{ phone: '9876543210', text: 'Rent bill' }] }, owner),
+      /turned off by platform admin/
+    );
+  } finally {
+    global.__modules = null;
+  }
+});
+
+test('send supports Meta Cloud API template payload format', async () => {
+  const metaRow = { hostel_id: H1, kind: 'meta', url: 'https://graph.facebook.com/v19.0', api_key: 'EAAB_token', session: '109988776655' };
+  const st = fake(metaRow);
+  const tplPayload = {
+    template: {
+      name: 'monthly_bill_consolidated',
+      language: { code: 'en' },
+      components: [{ type: 'body', parameters: [{ type: 'text', text: 'Rahul' }, { type: 'text', text: 'Rs. 8,500' }] }]
+    }
+  };
+  const r = await actions.send({ hostel_id: H1, messages: [{ phone: '9876543210', text: tplPayload }] }, owner);
+  assert.equal(r.results[0].ok, true);
+  assert.equal(st.sent[0].body.type, 'template');
+  assert.equal(st.sent[0].body.template.name, 'monthly_bill_consolidated');
+});
+
+test('embedded_signup: exchanges Meta authorization code for customer-specific token and stores it', async () => {
+  process.env.META_APP_ID = 'app-123';
+  process.env.META_APP_SECRET = 'secret-456';
+  const st = { row: null, sent: [] };
+  global.fetch = async (url, opt = {}) => {
+    const u = new URL(url);
+    const json = (s, b) => ({ ok: s < 400, status: s, text: async () => JSON.stringify(b), json: async () => b });
+    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/hostels') return json(200, [{ settings: {} }]);
+    if (u.hostname === 'sb.test' && u.pathname === '/rest/v1/wa_gateways') {
+      if ((opt.method || 'GET') === 'GET') return json(200, st.row ? [st.row] : []);
+      if (opt.method === 'POST') { st.row = JSON.parse(opt.body)[0]; return json(201, {}); }
+    }
+    if (u.hostname === 'graph.facebook.com' && u.pathname === '/v19.0/oauth/access_token') {
+      assert.equal(u.searchParams.get('client_id'), 'app-123');
+      assert.equal(u.searchParams.get('client_secret'), 'secret-456');
+      assert.equal(u.searchParams.get('code'), 'meta-auth-code-789');
+      return json(200, { access_token: 'EAAB_customer_specific_token_h1', token_type: 'bearer' });
+    }
+    if (u.hostname === 'graph.facebook.com' && u.pathname.includes('/subscribed_apps')) {
+      return json(200, { success: true });
+    }
+    return json(404, {});
+  };
+
+  const res = await actions.embedded_signup({
+    hostel_id: H1,
+    code: 'meta-auth-code-789',
+    phone_number_id: 'phone-id-h1',
+    waba_id: 'waba-id-h1'
+  }, owner);
+
+  assert.equal(res.ok, true);
+  assert.equal(res.connected, true);
+  assert.equal(st.row.hostel_id, H1);
+  assert.equal(st.row.kind, 'meta');
+  assert.equal(st.row.session, 'phone-id-h1');
+  assert.equal(st.row.api_key, 'EAAB_customer_specific_token_h1');
 });

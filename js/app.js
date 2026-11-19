@@ -38,6 +38,7 @@ function homeFor() {
   const c = ctx();
   if (c.role === 'super' && !c.hostelId) return 'admin';
   if (c.role === 'resident') return 'r-home';
+  if (c.role === 'emitra') return 'emitra';
   if (isAdmin() || can('home')) return 'home';
   return myMods()[0] || 'me';
 }
@@ -47,17 +48,19 @@ function navGroups() {
   const c = ctx();
   if (c.role === 'super' && !c.hostelId) return [['', [['admin', 'Clients & hostels', 'building'], ['admin-users', 'All users', 'users'], ['admin-usage', 'Usage & health', 'chart']]]];
   if (c.role === 'resident') return [['', [['r-home', 'Home', 'home'], ['r-meals', 'Meals', 'utensils'], ['r-clean', 'Room cleaning', 'broom'], ['r-laundry', 'Laundry', 'shirt'], ['r-help', 'Help & notices', 'chat'], ['me', 'Profile', 'user']].filter(x => x[0] !== 'r-laundry' || orgEnabled('laundry')).filter(x => x[0] !== 'r-clean' || orgEnabled('housekeeping')).filter(x => x[0] !== 'r-meals' || orgEnabled('mess'))]];
-  const sec = (title, keys) => [title, keys.filter(k => can(k)).map(k => [k, MOD[k].l, MOD[k].icon])];
+  if (c.role === 'emitra') return [['', [['emitra', 'Verification queue', 'shield'], ['me', 'Profile', 'user']]]];
+  const sec = (title, keys) => [title, keys.filter(k => can(k)).map(k => [k, MOD[k] ? MOD[k].l : k, MOD[k] ? MOD[k].icon : 'circle'])];
   return [
     sec('', ['home', 'inbox']),
-    sec('Stay & money', ['rooms', 'residents', 'payments', 'electricity', 'expenses']),
+    sec('Stay & money', ['inquiries', 'rooms', 'residents', 'payments', 'electricity', 'expenses']),
     sec('Daily operations', ['mess', 'kitchen', 'housekeeping', 'laundry', 'attendance', 'gate', 'complaints']),
-    sec('Team & admin', ['staff', 'notices', 'reports', 'automation', 'settings']),
+    sec('Team & admin', ['staff', 'notices', 'reports', 'automation', 'emitra', 'settings']),
   ].filter(g => g[1].length);
 }
 function bottomNav() {
   const c = ctx();
   if (c.role === 'resident') return navGroups()[0][1].filter(x => ['r-home', 'r-meals', 'r-clean', 'r-laundry', 'me'].includes(x[0])).slice(0, 5);
+  if (c.role === 'emitra') return [['emitra', 'Verification queue', 'shield'], ['me', 'Profile', 'user']];
   if (c.role === 'super' && !c.hostelId) return [['admin', 'Clients', 'building'], ['admin-users', 'Users', 'users'], ['admin-usage', 'Usage', 'chart'], ['me', 'Profile', 'user']];
   const flat = navGroups().flatMap(g => g[1]);
   const pref = isAdmin() ? ['home', 'residents', 'payments', 'inbox'] : flat.map(x => x[0]);
@@ -66,6 +69,8 @@ function bottomNav() {
 }
 function badgeFor(k) {
   if (k === 'inbox') return inboxItems().length;
+  if (k === 'inquiries') return Store.all('inquiry').filter(x => !x.data || (x.data.status || 'new') === 'new').length;
+  if (k === 'emitra') return (typeof emitraPendingQueue === 'function' ? emitraPendingQueue().length : 0);
   if (k === 'complaints') return Store.all('cmp').filter(c => c.status === 'open').length;
   if (k === 'housekeeping' && !isAdmin()) return hkTasks().filter(x => x.date === today() && x.staffId === ctx().refId && x.status === 'pending').length;
   return 0;
@@ -209,13 +214,14 @@ A.punchin = async el => {
 /* ===================================================================== login & setup */
 function renderLogin(err) {
   document.title = `${t('Log in')} · ${CFG.APP_NAME || 'Sarvlekh'}`;
+  const lastUser = (typeof LS !== 'undefined' && LS.get('hostelos.last_user')) || '';
   // The brand mark is part of the background picture (phone and desktop each have their own);
   // this is only the sign-in panel: under the mark on a phone, to its right on a desktop.
   const EYE = '<svg class="i eye-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="i eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4M6.5 6.6C3.7 8.4 2 12 2 12s3.5 7 10 7c1.6 0 3-.4 4.3-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
   $('#app').innerHTML = `<div class="auth login"><div class="box">
     <form id="loginForm" class="lcard" novalidate>
       <h1>${esc(t('Log in'))}</h1><p class="sub">${esc(t('Hostel & PG management, simple and fast'))}</p>
-      <label class="lf"><span class="lic">${ico('user')}</span><input name="u" placeholder="${esc(t('User ID'))}" autocomplete="username" autocapitalize="none" required></label>
+      <label class="lf"><span class="lic">${ico('user')}</span><input name="u" placeholder="${esc(t('User ID'))}" autocomplete="username" autocapitalize="none" value="${esc(lastUser)}" required></label>
       <label class="lf"><span class="lic">${ico('lock')}</span><input name="p" type="password" placeholder="${esc(t('Password'))}" autocomplete="current-password" required>
         <button type="button" class="eye" data-act="pwtoggle" aria-label="${esc(t('Show password'))}">${EYE}</button>
         ${typeof Mascot !== 'undefined' ? `<div class="eleph" id="spy" aria-hidden="true">${Mascot.svg()}</div>` : ''}</label>
@@ -224,7 +230,20 @@ function renderLogin(err) {
       <button class="lbtn" type="submit">${esc(t('Log in'))}</button>
       <div class="llang"><button type="button" class="btn ghost sm" data-act="lang">${LANG === 'hi' ? 'English' : 'हिन्दी'}</button></div>
     </form>
-    ${CLOUD ? '' : `<div class="demo">${group('Demo logins — tap to try', [['ramesh.sharma', '9876500001', 'Owner (2 PGs)', 'building'], ['aman.gupta', '9812300001', 'Resident', 'user'], ['raju.cook', '9876500003', 'Cook', 'utensils'], ['sunita.hk', '9876500004', 'Housekeeping', 'broom'], ['mohan.laundry', '9876500005', 'Laundry', 'shirt'], ['gate.guard', '9876500006', 'Security guard', 'shield'], ['admin', 'admin123', 'Super admin', 'key']].map(([u, p, l, i]) => li({ icon: i, t: t(l), d: `${u} / ${p}`, act: 'demologin', attrs: `data-u="${u}" data-p="${p}"` })).join(''), t('Demo mode: data stays in this browser. Add Supabase keys in js/config.js to go live.'))}</div>`}
+    ${CLOUD ? '' : `<div class="demo">${group('Demo logins — tap to try', [
+      ['9876500001', '9876500001', 'Owner (Sunrise Boys PG)', 'building'],
+      ['9876543210', '9876543210', 'Owner (Aravali Student Residency)', 'building'],
+      ['9876500007.sunrise', '9876500007', 'Manager (Vikram Singh)', 'briefcase'],
+      ['9876500008.sunrise', '9876500008', 'Warden (Shanti Warden)', 'shield'],
+      ['9811100001.aravali', '9811100001', 'Resident (Aryan Sharma)', 'user'],
+      ['9812300001.sunrise', '9812300001', 'Resident (Aman Gupta)', 'user'],
+      ['9812345678.sunrise', '9812345678', 'Resident (Test User)', 'user'],
+      ['9876500003.sunrise', '9876500003', 'Cook (Raju)', 'utensils'],
+      ['9876500004.sunrise', '9876500004', 'Housekeeping (Sunita)', 'broom'],
+      ['9876500005.sunrise', '9876500005', 'Laundry (Mohan)', 'shirt'],
+      ['9876500006.sunrise', '9876500006', 'Security guard (Bahadur)', 'shield'],
+      ['admin', 'admin123', 'Super admin', 'key']
+    ].map(([u, p, l, i]) => li({ icon: i, t: t(l), d: `${u} / ${p}`, act: 'demologin', attrs: `data-u="${u}" data-p="${p}"` })).join(''), t('Demo mode: data stays in this browser. Add Supabase keys in js/config.js to go live.'))}</div>`}
   </div></div>`;
   if (typeof Mascot !== 'undefined') Mascot.mount($('#loginForm'), !!err);
   $('#loginForm').onsubmit = async e => {
@@ -236,12 +255,43 @@ function renderLogin(err) {
 }
 async function doLogin(u, p) {
   const b = $('#loginForm button[type=submit]'); if (b) { b.disabled = true; b.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px"></span>'; }
-  try { await Backend.login(u, p); await afterLogin(); }
+  try {
+    const uid = await Backend.login(u, p);
+    if (typeof AuthCache !== 'undefined') AuthCache.save(u, p, uid);
+    await afterLogin();
+  }
   catch (e) { renderLogin(t(e.message)); }
 }
 async function afterLogin() {
   try { await Store.loadMeta(); }
-  catch (e) { if (e.status === 401) { await Backend.logout(); renderLogin(); return; } $('#app').innerHTML = `<div class="auth"><div class="box card">${empty('Could not load your account', t(e.message), btn('Try again', 'reload'))}</div></div>`; return; }
+  catch (e) {
+    if (e.status === 401) {
+      if (typeof AuthCache !== 'undefined') {
+        const creds = await AuthCache.get().catch(() => null);
+        if (creds && creds.u && creds.p) {
+          try {
+            await Backend.login(creds.u, creds.p);
+            await Store.loadMeta();
+          } catch (reErr) {
+            await Backend.logout();
+            renderLogin();
+            return;
+          }
+        } else {
+          await Backend.logout();
+          renderLogin();
+          return;
+        }
+      } else {
+        await Backend.logout();
+        renderLogin();
+        return;
+      }
+    } else {
+      $('#app').innerHTML = `<div class="auth"><div class="box card">${empty('Could not load your account', t(e.message), btn('Try again', 'reload'))}</div></div>`;
+      return;
+    }
+  }
   if (Store.me.is_super) await loadScript('/js/ui-admin.js').catch(e => console.error(e));
   if (!contexts().length) { renderNoAccess(); return; }
   if (Store.me.must_change) toast('Please change your password from Profile', 'ok');
@@ -300,10 +350,16 @@ A.logout = () => {
     });
     return;
   }
-  confirmBox(t('Log out from this device?'), async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); }, 'Log out', 'bad');
+  confirmBox(t('Log out from this device?'), async () => {
+    if (typeof AuthCache !== 'undefined') AuthCache.clear();
+    await Store.logout();
+    history.replaceState(null, '', '/');
+    renderLogin();
+  }, 'Log out', 'bad');
 };
 A.logout_safe = async () => {
   closeModal();
+  if (typeof AuthCache !== 'undefined') AuthCache.clear();
   await Store.logout({ safeSwitch: true });
   history.replaceState(null, '', '/');
   renderLogin();
@@ -311,6 +367,7 @@ A.logout_safe = async () => {
 };
 A.logout_force = async () => {
   closeModal();
+  if (typeof AuthCache !== 'undefined') AuthCache.clear();
   await Store.logout({ forceDiscard: true });
   history.replaceState(null, '', '/');
   renderLogin();
@@ -330,20 +387,203 @@ A.pwtoggle = el => {
 };
 A.demologin = el => doLogin(el.dataset.u, el.dataset.p);
 // Installing as an app: js/pwa.js works out what this browser can do. The menu button, the profile row and
-// the two-minute pop-up all end up here.
+// the pop-up all end up here.
 A.install = () => Pwa.open(true);
 A.pwainstall = () => Pwa.prompt();
-A.pwalater = () => Pwa.snooze(7);
+A.pwalater = () => Pwa.snooze(2);
 A.pwanever = () => Pwa.snooze(365);
 
 /* ===================================================================== notifications & palette */
 A.notifs = () => {
   const list = myNotifs().slice(0, 60);
-  sheet('Notifications', list.length ? `<div class="group">${list.map(n => li({ icon: 'bell', ic: n.read ? 'mute' : '', t: n.title, d: `${n.body ? n.body + ' · ' : ''}${ago(n.ts)}`, act: n.link ? 'ntfgo' : '', attrs: `data-id="${n.id}" data-to="${esc(n.link || '')}"` })).join('')}</div>` : empty('No notifications', 'You are all caught up.'),
+  const psupp = typeof Pwa !== 'undefined' && Pwa.isPushSupported && Pwa.isPushSupported();
+  const perm = psupp ? Pwa.getPushPermission() : 'unsupported';
+  let pushCtrl = '';
+  if (psupp) {
+    if (perm === 'granted') {
+      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('bell', 'sm')} <b>${esc(t('Push notifications'))}</b></span><span class="badge ok">${ico('check', 'xs')} ${esc(t('Active'))}</span></div>`;
+    } else if (perm === 'denied') {
+      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('alert', 'sm')} <b>${esc(t('Push blocked'))}</b></span><button class="btn xs warn" data-act="enablepush">${esc(t('Unblock instructions'))}</button></div>`;
+    } else {
+      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('bell', 'sm')} <b>${esc(t('Push notifications'))}</b></span><button class="btn sm primary" data-act="enablepush">${ico('bell', 'sm')} ${esc(t('Enable'))}</button></div>`;
+    }
+  }
+
+  const itemsHtml = list.length
+    ? `<div class="xs muted" style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+         <span>👆 ${esc(t('Tap or swipe to dismiss notice'))}</span>
+         <span class="muted" id="ntfUnreadCount">${list.filter(n => !n.read).length} ${esc(t('unread'))}</span>
+       </div>
+       <div class="group ntf-list" id="ntfGroup">
+         ${list.map(n => `
+           <div class="ntf-wrap" id="ntf-wrap-${n.id}" data-id="${n.id}" style="position:relative;overflow:hidden;border-bottom:1px solid var(--line);background:var(--bad,#ef4444);transition:max-height 0.25s ease, opacity 0.25s ease, margin 0.25s ease;">
+             <div class="ntf-swipe-bg" style="position:absolute;inset:0;background:var(--bad,#ef4444);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:12px;font-weight:600">
+               <span>${ico('trash', 'xs')} ${esc(t('Dismissed'))}</span>
+               <span>${esc(t('Dismissed'))} ${ico('trash', 'xs')}</span>
+             </div>
+             <div class="ntf-item li" data-id="${n.id}" data-to="${esc(n.link || '')}" style="position:relative;background:var(--surface,var(--bg));touch-action:pan-y;transition:transform 0.15s ease, opacity 0.15s ease;cursor:pointer;-webkit-user-select:none;user-select:none;display:flex;align-items:center;gap:12px;padding:12px 14px">
+               <span class="ic ${n.read ? 'mute' : 'info'}">${ico('bell', 'sm')}</span>
+               <span class="body" style="flex:1;min-width:0">
+                 <span class="t" style="font-weight:${n.read ? '500' : '700'};font-size:14px;color:var(--text)">${esc(n.title)}</span>
+                 <span class="d" style="font-size:12px;color:var(--muted)">${n.body ? esc(n.body) + ' · ' : ''}${ago(n.ts)}</span>
+               </span>
+               ${n.link ? `<span class="xs muted">${ico('chevron-right', 'xs')}</span>` : ''}
+               <button class="ibtn xs muted ntf-del-btn" data-id="${n.id}" title="${esc(t('Dismiss'))}" aria-label="${esc(t('Dismiss'))}" style="padding:4px;margin-left:4px">✕</button>
+             </div>
+           </div>
+         `).join('')}
+       </div>`
+    : empty('No notifications', 'You are all caught up.');
+
+  sheet('Notifications', `${pushCtrl}<div id="ntfContainer">${itemsHtml}</div>`,
     { foot: list.some(n => !n.read) ? `<button class="btn block" data-act="ntfread">${esc(t('Mark all as read'))}</button>` : '' });
+
+  setTimeout(() => initNotifGestures(), 20);
 };
-A.ntfread = () => { myNotifs().filter(n => !n.read).forEach(n => Store.patch(n.id, { read: true })); closeModal(); updateChrome(); };
-A.ntfgo = el => { Store.patch(el.dataset.id, { read: true }); closeModal(); go(el.dataset.to); };
+
+function initNotifGestures() {
+  const container = $('#ntfGroup');
+  if (!container) return;
+
+  const dismissNotif = (id, targetEl, andNavigate) => {
+    const wrap = $(`#ntf-wrap-${id}`) || (targetEl && targetEl.closest('.ntf-wrap'));
+    if (wrap) {
+      wrap.style.maxHeight = wrap.offsetHeight + 'px';
+      wrap.style.overflow = 'hidden';
+      wrap.offsetHeight; // reflow
+      wrap.style.opacity = '0';
+      wrap.style.maxHeight = '0px';
+      wrap.style.padding = '0px';
+      wrap.style.margin = '0px';
+      wrap.style.border = 'none';
+      setTimeout(() => {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        const remaining = container.querySelectorAll('.ntf-wrap');
+        if (!remaining.length) {
+          const parent = $('#ntfContainer');
+          if (parent) parent.innerHTML = `<div class="card">${empty('No notifications', 'You are all caught up.')}</div>`;
+          const footBtn = $('[data-act="ntfread"]');
+          if (footBtn) footBtn.style.display = 'none';
+        }
+      }, 260);
+    }
+
+    Store.patch(id, { read: true, dismissed: true });
+    updateChrome();
+
+    const countEl = $('#ntfUnreadCount');
+    if (countEl) {
+      const unread = myNotifs().filter(n => !n.read).length;
+      countEl.textContent = `${unread} ${t('unread')}`;
+    }
+
+    if (andNavigate) {
+      closeModal();
+      go(andNavigate);
+    }
+  };
+
+  container.querySelectorAll('.ntf-item').forEach(item => {
+    let startX = 0, startY = 0, currentX = 0, isDragging = false, isHorizontal = null;
+    const id = item.dataset.id;
+    const to = item.dataset.to;
+
+    // Direct tap on close button ✕
+    const closeBtn = item.querySelector('.ntf-del-btn');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        e.preventDefault();
+        dismissNotif(id, item, null);
+      });
+    }
+
+    // Touch events for mobile phones (slide / swipe to dismiss)
+    item.addEventListener('touchstart', e => {
+      if (e.target.closest('.ntf-del-btn')) return;
+      const t0 = e.touches[0];
+      startX = t0.clientX;
+      startY = t0.clientY;
+      currentX = 0;
+      isDragging = true;
+      isHorizontal = null;
+      item.style.transition = 'none';
+    }, { passive: true });
+
+    item.addEventListener('touchmove', e => {
+      if (!isDragging) return;
+      const t0 = e.touches[0];
+      const dx = t0.clientX - startX;
+      const dy = t0.clientY - startY;
+
+      if (isHorizontal === null) {
+        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+          isHorizontal = Math.abs(dx) > Math.abs(dy);
+        }
+      }
+
+      if (isHorizontal) {
+        currentX = dx;
+        item.style.transform = `translateX(${dx}px)`;
+        item.style.opacity = `${Math.max(0.2, 1 - Math.abs(dx) / 280)}`;
+      }
+    }, { passive: true });
+
+    item.addEventListener('touchend', e => {
+      if (!isDragging) return;
+      isDragging = false;
+      item.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
+
+      if (isHorizontal && Math.abs(currentX) > 65) {
+        // Swiped past threshold -> slide out completely and dismiss
+        const dir = currentX > 0 ? 1 : -1;
+        item.style.transform = `translateX(${dir * 120}%)`;
+        item.style.opacity = '0';
+        setTimeout(() => dismissNotif(id, item, null), 150);
+      } else if (isHorizontal) {
+        // Released before threshold -> snap back
+        item.style.transform = 'translateX(0px)';
+        item.style.opacity = '1';
+      }
+    });
+
+    // Pointer/Click event
+    item.addEventListener('click', e => {
+      if (e.target.closest('.ntf-del-btn')) return;
+      // If was dragging horizontally, ignore click
+      if (isHorizontal && Math.abs(currentX) > 10) return;
+
+      if (to) {
+        // Has a destination page -> mark read and navigate
+        dismissNotif(id, item, to);
+      } else {
+        // No destination page -> dismiss notice on tap ("click kra toh notification htt jaye")
+        item.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
+        item.style.transform = 'translateX(100%)';
+        item.style.opacity = '0';
+        setTimeout(() => dismissNotif(id, item, null), 150);
+      }
+    });
+  });
+}
+
+A.enablepush = async () => {
+  if (typeof Pwa !== 'undefined' && Pwa.togglePushWorkflow) {
+    await Pwa.togglePushWorkflow();
+    A.notifs();
+  }
+};
+A.ntfread = () => {
+  myNotifs().forEach(n => Store.patch(n.id, { read: true, dismissed: true }));
+  closeModal();
+  updateChrome();
+  toast(t('All notifications cleared'), 'ok');
+};
+A.ntfgo = el => {
+  Store.patch(el.dataset.id, { read: true, dismissed: true });
+  closeModal();
+  if (el.dataset.to) go(el.dataset.to);
+};
 A.palette = () => {
   openModal({ title: 'Search', cls: 'pal', body: `<input id="palq" placeholder="${esc(t('Search residents, rooms, pages…'))}" autocomplete="off"><div id="palr" class="group" style="margin-top:8px"></div>` });
   const q = $('#palq'), out = $('#palr');
@@ -384,6 +624,68 @@ A.wanext = () => {
   const q = ui.waq, m = q && q.list[q.i];
   if (m && m.x) markReminded([m.x]);   // a reminder counts as sent once its WhatsApp opens
   setTimeout(() => { if (ui.waq) { ui.waq.i++; renderWaQueue(); } }, 400);
+};
+A.sendbulkemailnotice = async () => {
+  const q = ui.waq;
+  if (!q || !q.list || !q.list.length) return;
+  const list = q.list;
+  closeModal();
+  toast(t('Publishing notices & sending emails to {n} residents…', { n: list.length }));
+
+  const h = Store.hostel() || {};
+  const hostelTitle = h.name || 'Hostel';
+  let emailCount = 0;
+  let noticeCount = 0;
+
+  for (const item of list) {
+    const r = item.r || (item.x && item.x.r) || resById(item.resId) || residents().find(x => phone10(x.phone) === phone10(item.phone));
+    if (!r) continue;
+
+    // 1. Post to resident panel notice section (ntf)
+    notify({
+      to: 'res',
+      resId: r.id,
+      title: q.title || t('Fee Reminder & Notice'),
+      body: item.text,
+      category: 'fee',
+      link: 'r-home'
+    });
+    noticeCount++;
+
+    // 2. Send branded email if resident has email address
+    if (r.email && isValidEmail(r.email)) {
+      const due = resDue(r.id);
+      const emailHtml = renderBrandedEmailHtml({
+        hostelName: hostelTitle,
+        title: q.title || t('Fee Reminder & Notice'),
+        headline: t('Payment Reminder & Statement'),
+        recipientName: r.name,
+        bodyLines: item.text,
+        amountDue: due,
+        payLink: payLink(due, `${r.name} ${roomName(r.roomId)}`, { resId: r.id }),
+        date: fmtDate(today())
+      });
+      sendBrandedEmail({
+        to: r.email,
+        subject: `${hostelTitle} · ${q.title || t('Fee Reminder')}`,
+        html: emailHtml,
+        text: item.text,
+        resId: r.id,
+        hostelId: h.id
+      }).catch(err => console.warn('Email warning:', err.message));
+      emailCount++;
+    }
+  }
+
+  toast(t('Published to {n} resident app notices{e} ✓', {
+    n: noticeCount,
+    e: emailCount ? ` · ${emailCount} emails sent` : ''
+  }), 'ok');
+
+  // Mark pending reminders/bills in admin inbox as completed
+  const inbox = Store.all('ntf').filter(x => x.to === 'admin' && (x.title.toLowerCase().includes('reminder') || x.title.toLowerCase().includes('bill')));
+  for (const n of inbox) Store.patch(n.id, { read: true, dismissed: true });
+  render();
 };
 A.print = () => { document.body.classList.add('printing'); window.print(); setTimeout(() => document.body.classList.remove('printing'), 500); };
 function setTheme(v) {
@@ -526,8 +828,46 @@ async function boot() {
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !told) { told = true; toast(t('A new version is ready.'), 'ok', { label: t('Reload'), run: () => location.reload() }); } });
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
+  // Restore session from IDB if missing in localStorage
+  if (!Backend.uid()) {
+    try {
+      const s = await IDB.get(CLOUD ? 'hostelos.session' : 'hostelos.demo.session');
+      if (s && s.uid) {
+        if (CLOUD) Cloud.session = s; else Demo.session = s;
+        LS.set(CLOUD ? 'hostelos.session' : 'hostelos.demo.session', s);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // If still no session, check cached login credentials to automatically authenticate
+  if (!Backend.uid() && typeof AuthCache !== 'undefined') {
+    try {
+      const creds = await AuthCache.get();
+      if (creds && creds.u && creds.p) {
+        await Backend.login(creds.u, creds.p);
+      }
+    } catch (e) {
+      console.warn('Auto-login with cached credentials failed:', e);
+    }
+  }
+
   if (Backend.uid()) {
-    try { await afterLogin(); } catch (e) { console.error(e); renderLogin(); }
+    try { await afterLogin(); }
+    catch (e) {
+      console.error(e);
+      if (typeof AuthCache !== 'undefined') {
+        try {
+          const creds = await AuthCache.get();
+          if (creds && creds.u && creds.p) {
+            await Backend.login(creds.u, creds.p);
+            await afterLogin();
+            if (typeof Pwa !== 'undefined') Pwa.start();
+            return;
+          }
+        } catch (reErr) { console.error('Re-login failed:', reErr); }
+      }
+      renderLogin();
+    }
   } else route();
   if (typeof Pwa !== 'undefined') Pwa.start();
 }

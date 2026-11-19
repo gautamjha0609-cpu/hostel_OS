@@ -32,7 +32,7 @@
   };
   var box = document.getElementById('box'), geo = null;
   var api = function (body) {
-    return fetch('api/public/visit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ h: H, k: K }, body)) })
+    return fetch('/api/public/visit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ h: H, k: K }, body)) })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) { var e = new Error(d.error || T.fail); e.status = r.status; throw e; } return d; }); });
   };
   var shell = function (inner) { box.innerHTML = '<img class="logo" src="icons/icon.svg" alt="" width="104" height="88"><h1>' + esc(NAME || T.title) + '</h1><p class="sub">' + esc(T.title) + '</p>' + inner; };
@@ -42,13 +42,30 @@
     var f = function (id, label, attrs) { return '<div class="full"><label class="f" for="' + id + '">' + esc(label) + '</label><input id="' + id + '" ' + (attrs || '') + ' autocomplete="one-off"></div>'; };
     shell('<form id="vf" class="card" novalidate autocomplete="off"><div class="fgrid">' +
       f('v_name', T.name + ' *', 'type="text" maxlength="80" required') +
-      f('v_phone', T.phone + ' *', 'type="tel" inputmode="tel" maxlength="14" required') +
+      f('v_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
       f('v_meet', T.meet, 'type="text" maxlength="80"') +
       f('v_room', T.room, 'type="text" maxlength="20"') +
       f('v_purpose', T.purpose, 'type="text" maxlength="80" value="' + esc(T.meeting) + '"') +
       f('v_place', T.from, 'type="text" maxlength="160"') +
       '<div class="full"><button class="btn sm" type="button" id="v_loc">' + esc(T.loc) + '</button> <span class="hint" id="v_locmsg"></span></div>' +
       '</div><div class="ferr" id="v_err" role="alert"></div><button class="btn primary block" type="submit" id="v_go" style="margin-top:14px">' + esc(T.submit) + '</button></form>');
+
+    var vf = document.getElementById('vf');
+    var sanitizeVisit = function (el) {
+      if (!el) return;
+      if (el.id === 'v_phone') {
+        var val = el.value.replace(/\D/g, '');
+        if (val.length > 10 && val.startsWith('91')) val = val.slice(2);
+        else if (val.length > 10 && val.startsWith('0')) val = val.slice(1);
+        el.value = val.slice(0, 10);
+      } else if (el.id === 'v_name') {
+        try { el.value = el.value.replace(/[^\p{L}\p{M}\s.\-']/gu, '').slice(0, 80); }
+        catch (_) { el.value = el.value.replace(/[^a-zA-Z\s.\-']/g, '').slice(0, 80); }
+      }
+    };
+    vf.addEventListener('input', function (e) { sanitizeVisit(e.target); });
+    vf.addEventListener('paste', function (e) { setTimeout(function () { sanitizeVisit(e.target); }, 0); });
+
     document.getElementById('v_loc').onclick = function () {
       var m = document.getElementById('v_locmsg'); m.textContent = T.finding;
       Geo.locate().then(function (p) { geo = { lat: p.lat, lng: p.lng }; document.getElementById('v_place').value = p.text; m.textContent = ''; })

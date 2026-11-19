@@ -3,6 +3,8 @@
 
 const URL_ = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const sbUrl = () => (process.env.SUPABASE_URL || URL_ || '').replace(/\/$/, '');
+const sbKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY || KEY || '';
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 
@@ -12,9 +14,10 @@ async function sb(path, { method = 'GET', body, headers = {}, timeout = 8000 } =
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeout);
   let r, text;
   try {
-    r = await fetch(URL_ + path, {
+    const u = sbUrl(), k = sbKey();
+    r = await fetch(u + path, {
       method, signal: ctl.signal,
-      headers: { apikey: KEY, Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json', ...headers },
+      headers: { apikey: k, Authorization: 'Bearer ' + k, 'Content-Type': 'application/json', ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     text = await r.text();
@@ -52,7 +55,7 @@ async function caller(req) {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
   let user;
   try {
-    const r = await fetch(URL_ + '/auth/v1/user', { headers: { apikey: KEY, Authorization: 'Bearer ' + token }, signal: ctl.signal });
+    const r = await fetch(sbUrl() + '/auth/v1/user', { headers: { apikey: sbKey(), Authorization: 'Bearer ' + token }, signal: ctl.signal });
     if (r.status === 401 || r.status === 403) throw new HttpError(401, 'Session expired, please log in again');
     if (!r.ok) throw new HttpError(502, 'Could not check your login. Please try again.');
     user = await r.json();
@@ -101,7 +104,7 @@ function limit(key, max, windowMs) {
   if (!b || b.reset < now) { b = { n: 0, reset: now + windowMs }; buckets.set(key, b); }
   if (++b.n > max) throw new HttpError(429, 'Too many requests — wait a minute and try again');
 }
-const clientIp = req => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
+const clientIp = req => String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
 
 // Reads the JSON body whether the platform parsed it for us or handed us a stream. A body that is
 // not JSON is the caller's mistake (400), not ours (500).
@@ -114,6 +117,33 @@ async function readJson(req) {
     const raw = Buffer.concat(chunks).toString('utf8');
     return raw ? JSON.parse(raw) : {};
   } catch (e) { throw new HttpError(400, 'The request was not valid JSON'); }
+}
+
+async function readBodyWithRaw(req) {
+  try {
+    let rawString = '';
+    let jsonBody = {};
+    if (typeof req.rawBody === 'string') rawString = req.rawBody;
+    else if (Buffer.isBuffer(req.rawBody)) rawString = req.rawBody.toString('utf8');
+
+    if (req.body && typeof req.body === 'object') {
+      jsonBody = req.body;
+      if (!rawString) rawString = JSON.stringify(req.body);
+      return { raw: rawString, json: jsonBody };
+    }
+    if (typeof req.body === 'string') {
+      rawString = req.body;
+      jsonBody = JSON.parse(req.body || '{}');
+      return { raw: rawString, json: jsonBody };
+    }
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    rawString = Buffer.concat(chunks).toString('utf8');
+    jsonBody = rawString ? JSON.parse(rawString) : {};
+    return { raw: rawString, json: jsonBody };
+  } catch (e) {
+    throw new HttpError(400, 'The request was not valid JSON');
+  }
 }
 
 // Names that are never a hostel's address (the app, mail, the API...). Same list as scripts/set-domain.js and js/domain.js.
@@ -130,6 +160,24 @@ function cleanPhone(s) {
   return null;
 }
 
+function cleanAadhaar(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str || /[a-zA-Z]/.test(str)) return null;
+  const d = str.replace(/\D/g, '');
+  return d.length === 12 ? d : null;
+}
+
+function isValidPersonName(s) {
+  if (typeof s !== 'string') return false;
+  const str = s.trim();
+  try {
+    return /^[\p{L}\p{M}\s.\-']{2,80}$/u.test(str);
+  } catch (_) {
+    return /^[a-zA-Z\s.\-']{2,80}$/.test(str);
+  }
+}
+
 const isValidEmail = s => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
 
-module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, cleanPhone, isValidEmail };
+module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, readBodyWithRaw, cleanPhone, cleanAadhaar, isValidPersonName, isValidEmail };

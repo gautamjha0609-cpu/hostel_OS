@@ -7,3 +7,9 @@ scripts/loadtest.js
 scripts/restore.js
 scripts/set-domain.js
 env.local.example
+supabase
+workers
+artifacts
+docs
+wrangler.toml
+*.md

@@ -1,0 +1,58 @@
+name: Production Release Gate & Hardening
+
+on:
+  push:
+    branches: [ main, production-readiness ]
+  pull_request:
+    branches: [ main, production-readiness ]
+
+jobs:
+  audit-and-test:
+    name: Production Hardening & Release Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Supply Chain & Dependency Audit
+        run: |
+          npm audit --audit-level=high
+
+      - name: Syntax & Lint Verification
+        run: |
+          find . -name "*.js" -not -path "*/node_modules/*" -not -path "*/artifacts/*" -not -path "*/.git/*" -exec node --check {} +
+
+      - name: Core Unit & Domain Regressions (301 Tests)
+        run: |
+          npm test
+
+      - name: Cloudflare Worker Edge Integration (15 Tests)
+        run: |
+          node --test tests/cloudflare_worker.test.js
+
+      - name: Database Master Migration Invariant Tests (5 Tests)
+        run: |
+          node tests/verify_migrations.js
+
+      - name: Payment Webhook Reversal & Settlement (8 Tests)
+        run: |
+          node tests/verify_payment_webhook.js
+
+      - name: Offline Outbox Synchronization (3 Tests)
+        run: |
+          node tests/verify_offline_sync.js
+
+      - name: Encrypted AES-256 Backup & Disaster Recovery (6 Tests)
+        run: |
+          node tests/verify_backup_restore.js
+
+      - name: Web Push Notification & Service Worker (5 Tests)
+        run: |
+          node tests/verify_push_notifications.js

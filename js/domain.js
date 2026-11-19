@@ -21,17 +21,19 @@ const MODULES = [
   { k: 'notices', l: 'Notices', icon: 'megaphone' },
   { k: 'landing', l: 'Public page', icon: 'globe' },
   { k: 'reports', l: 'Reports', icon: 'chart' },
-  { k: 'automation', l: 'Automation', icon: 'bot' },
+  { k: 'automation', l: 'WhatsApp Cloud Automation', icon: 'bot' },
+  { k: 'inquiries', l: 'Inquiries', icon: 'chat' },
+  { k: 'emitra', l: 'E-Mitra Queue', icon: 'shield' },
   { k: 'settings', l: 'Settings', icon: 'settings', core: true },
 ];
 const MOD = Object.fromEntries(MODULES.map(m => [m.k, m]));
 // Modules the super admin can switch off per client. Core modules are always on.
 const OPTIONAL_MODULES = MODULES.filter(m => !m.core).map(m => m.k).concat(['residentApp']);
 // Some modules cannot stand alone: the kitchen works out what to cook from the mess menu, and
-// cleaning tasks are assigned to housekeeping staff. Switching one of those off on its own
-// used to leave a screen that silently showed zeros, so a switch here moves its partners with
-// it — on brings the things it needs, off takes the things that need it.
-const MOD_DEPS = { kitchen: ['mess'], housekeeping: ['staff'] };
+// inquiries come from the public landing page. Switching one of those off on its own
+// would leave a broken workflow, so a switch here moves its partners with it —
+// on brings the things it needs, off takes the things that need it.
+const MOD_DEPS = { kitchen: ['mess'], inquiries: ['landing'] };
 const modNeeds = k => MOD_DEPS[k] || [];
 const modNeededBy = k => Object.keys(MOD_DEPS).filter(x => MOD_DEPS[x].includes(k));
 const modLabel = k => t(k === 'residentApp' ? 'Resident app' : (MOD[k] || {}).l || k);
@@ -60,15 +62,40 @@ function applyModSwitch(modules, key, on) {
 const ROLES = {
   owner: { l: 'Owner', mods: MODULES.map(m => m.k) },
   manager: { l: 'Manager', mods: MODULES.map(m => m.k) },
+  warden: { l: 'Warden', mods: ['home', 'inbox', 'rooms', 'residents', 'electricity', 'attendance', 'gate', 'complaints', 'notices'] },
   accountant: { l: 'Accountant', mods: ['home', 'inbox', 'residents', 'payments', 'electricity', 'expenses', 'reports'] },
   cook: { l: 'Cook', mods: ['mess', 'kitchen'] },
   housekeeping: { l: 'Housekeeping', mods: ['housekeeping'] },
   laundry: { l: 'Laundry', mods: ['laundry'] },
   guard: { l: 'Security guard', mods: ['gate', 'attendance'] },
+  emitra: { l: 'E-Mitra Operator', mods: ['emitra'] },
   staff: { l: 'Staff', mods: ['complaints'] },
   resident: { l: 'Resident', mods: [] },
   super: { l: 'Super admin', mods: MODULES.map(m => m.k) },
 };
+const ROLE_CHOICES = ['manager', 'warden', 'accountant', 'cook', 'housekeeping', 'laundry', 'guard', 'staff', 'emitra', 'resident'];
+const STAFF_ROLE_BY_DEPT = {
+  Kitchen: 'cook', Housekeeping: 'housekeeping', Laundry: 'laundry', Security: 'guard',
+  Office: 'manager', Warden: 'warden', Hostel: 'warden', Accounts: 'accountant', Accounting: 'accountant',
+  'E-Mitra': 'emitra', Verification: 'emitra', emitra: 'emitra'
+};
+
+function isModOnHostel(mod, h = Store.hostel(), o = Store.org()) {
+  if (MOD[mod] && MOD[mod].core) return true;
+  if (o && o.modules && o.modules[mod] === false) return false;
+  if (h && h.modules && h.modules[mod] === false) return false;
+  return true;
+}
+
+function isRoleAllowed(role, h = Store.hostel(), o = Store.org()) {
+  if (role === 'cook') return isModOnHostel('mess', h, o) || isModOnHostel('kitchen', h, o);
+  if (role === 'housekeeping') return isModOnHostel('housekeeping', h, o);
+  if (role === 'laundry') return isModOnHostel('laundry', h, o);
+  if (role === 'guard') return isModOnHostel('gate', h, o) || isModOnHostel('attendance', h, o);
+  if (role === 'emitra') return isModOnHostel('emitra', h, o);
+  if (role === 'accountant') return isModOnHostel('expenses', h, o) || isModOnHostel('payments', h, o);
+  return true;
+}
 const ctx = () => Store.ctx || {};
 const isSuper = () => !!(Store.me && Store.me.is_super);
 const isAdmin = () => ['owner', 'manager', 'super'].includes(ctx().role);
@@ -91,29 +118,233 @@ function can(mod) {
 }
 const myMods = () => MODULES.filter(m => can(m.k)).map(m => m.k);
 
-/* ===================================================================== settings */
+/* Action-level permission matrix for sensitive operations */
+const ACTION_PERMS = {
+  view: ['owner', 'manager', 'warden', 'accountant', 'cook', 'housekeeping', 'laundry', 'guard', 'staff', 'emitra', 'super'],
+  create: ['owner', 'manager', 'warden', 'super'],
+  edit: ['owner', 'manager', 'warden', 'super'],
+  correct: ['owner', 'manager', 'super'],
+  approve: ['owner', 'manager', 'super'],
+  refund: ['owner', 'manager', 'super'],
+  delete: ['owner', 'super'],
+  settings: ['owner', 'super']
+};
+function canAction(action, mod) {
+  const c = ctx();
+  if (!c.role) return false;
+  if (c.role === 'super' || c.role === 'owner') return true;
+  if (action === 'delete' || action === 'settings') return false;
+  if (['correct', 'approve', 'refund'].includes(action)) {
+    return ['owner', 'manager', 'super'].includes(c.role);
+  }
+  const allowed = ACTION_PERMS[action] || [];
+  return allowed.includes(c.role);
+}
+
+/* ===================================================================== settings & configurable business rules */
+
+const DEFAULT_AGREEMENT_TEMPLATES = [
+  {
+    id: 'tpl-std',
+    name: 'Standard PG / Hostel Agreement',
+    type: 'pg',
+    clauses: [
+      'The resident agrees to pay monthly rent in advance on or before the due date.',
+      'A refundable security deposit shall be held against damages, unpaid dues, or notice period shortfalls.',
+      'Electricity consumption shall be calculated according to hostel meter policy and billed alongside rent.',
+      'Residents shall strictly adhere to quiet hours, security protocols, and visitor policies.',
+      'Notice period of the configured days is mandatory before vacating the premises.',
+    ],
+    houseRules: [
+      'Quiet hours from 10:30 PM to 6:30 AM.',
+      'Visitors permitted in common lobby only between 9:00 AM and 8:00 PM.',
+      'Smoking, narcotics, and prohibited substances are strictly banned.',
+      'Keep your room, washroom, and common amenities clean.',
+    ],
+  },
+  {
+    id: 'tpl-student',
+    name: 'Student Hostel Agreement',
+    type: 'student',
+    clauses: [
+      'Student hostel rules and daily evening roll call are strictly mandatory.',
+      'Mess subscription is compulsory and charges are payable monthly.',
+      'Parent or local guardian contact must remain active at all times.',
+      'Damages to hostel property or furniture will be deducted from security deposit.',
+    ],
+    houseRules: [
+      'Daily attendance / roll call at 9:00 PM is mandatory.',
+      'Study hours to be respected during examination periods.',
+      'No loud music or unauthorized electrical appliances in rooms.',
+    ],
+  },
+  {
+    id: 'tpl-coliving',
+    name: 'Co-living Property Agreement',
+    type: 'coliving',
+    clauses: [
+      'Co-living space agreement for working professionals and adult residents.',
+      'High-speed Wi-Fi, housekeeping, and common area amenities included as per plan.',
+      'Subletting or accommodating unauthorized overnight guests without management consent is strictly prohibited.',
+    ],
+    houseRules: [
+      'Respect co-living community members and shared co-working spaces.',
+      'Clean up kitchen/common dining utensils immediately after personal use.',
+    ],
+  }
+];
+
+const BUSINESS_TEMPLATES = {
+  standard_pg: {
+    key: 'standard_pg',
+    label: 'Standard PG',
+    description: 'Fixed 1st of month billing, pro-rata check-in, shared electricity meter, compulsory mess.',
+    rent: { model: 'calendar_monthly', day: 1, dueDays: 5, graceDays: 5, lateFee: 200, lateOn: true, prorate: true, prorateDivisor: 'actual_days', includeElec: true, includeMess: true, includeCharges: true },
+    deposit: { mode: 'rent_multiple', fixedAmount: 5000, rentMultiplier: 1, nonRefundable: 0, allowInstallments: false },
+    lateFee: { on: true, mode: 'fixed', amount: 200, dailyAmount: 50, percentage: 2, maxCap: 1000, graceDays: 5 },
+    elec: { sharing: 'shared_room', allocation: 'occupancy_days', rate: 9, pricing: 'fixed', fixedCharge: 0, freeUnits: 30, freeMode: 'resident', readingDay: 1 },
+    mess: { billing: 'compulsory', monthlyFee: 2500, skip: true, tiffin: true, learn: true, rebatePerDay: 80 },
+    checkin: { requireApproval: 'none', requireDocs: true, minDepositRequired: true, requireAgreement: true },
+    checkout: { noticeDaysRequired: 30, shortfallPenalty: true, requireApproval: true, roomInspection: true },
+  },
+  student_hostel: {
+    key: 'student_hostel',
+    label: 'Student Hostel',
+    description: 'Calendar monthly billing, 2 months deposit, shared room meter with room free units, compulsory mess, strict attendance.',
+    rent: { model: 'calendar_monthly', day: 1, dueDays: 7, graceDays: 3, lateFee: 300, lateOn: true, prorate: true, prorateDivisor: 'actual_days', includeElec: true, includeMess: true, includeCharges: true },
+    deposit: { mode: 'rent_multiple', fixedAmount: 10000, rentMultiplier: 2, nonRefundable: 500, allowInstallments: true },
+    lateFee: { on: true, mode: 'daily', amount: 300, dailyAmount: 50, percentage: 3, maxCap: 1500, graceDays: 3 },
+    elec: { sharing: 'shared_room', allocation: 'occupancy_days', rate: 8.5, pricing: 'fixed', fixedCharge: 50, freeUnits: 60, freeMode: 'room', readingDay: 1 },
+    mess: { billing: 'compulsory', monthlyFee: 3000, skip: true, tiffin: true, learn: true, rebatePerDay: 100 },
+    checkin: { requireApproval: 'manager', requireDocs: true, minDepositRequired: true, requireAgreement: true },
+    checkout: { noticeDaysRequired: 30, shortfallPenalty: true, requireApproval: true, roomInspection: true },
+  },
+  working_pg: {
+    key: 'working_pg',
+    label: 'Working Professionals PG',
+    description: 'Joining-date anniversary billing, 1 month deposit, optional mess, individual/shared meters, 15 days notice.',
+    rent: { model: 'joining_date', day: 1, dueDays: 5, graceDays: 5, lateFee: 250, lateOn: true, prorate: true, prorateDivisor: 'actual_days', includeElec: true, includeMess: true, includeCharges: true },
+    deposit: { mode: 'rent_multiple', fixedAmount: 8000, rentMultiplier: 1, nonRefundable: 0, allowInstallments: false },
+    lateFee: { on: true, mode: 'percentage', amount: 250, dailyAmount: 50, percentage: 2, maxCap: 1000, graceDays: 5 },
+    elec: { sharing: 'shared_room', allocation: 'occupancy_days', rate: 9.5, pricing: 'fixed', fixedCharge: 0, freeUnits: 25, freeMode: 'resident', readingDay: 1 },
+    mess: { billing: 'optional', monthlyFee: 2800, skip: true, tiffin: true, learn: true, rebatePerDay: 90 },
+    checkin: { requireApproval: 'none', requireDocs: true, minDepositRequired: false, requireAgreement: true },
+    checkout: { noticeDaysRequired: 15, shortfallPenalty: true, requireApproval: false, roomInspection: true },
+  },
+  coliving: {
+    key: 'coliving',
+    label: 'Co-living Property',
+    description: 'Calendar monthly, slab-based electricity pricing, per-meal/optional mess, amenities fees, digital check-in.',
+    rent: { model: 'calendar_monthly', day: 1, dueDays: 5, graceDays: 5, lateFee: 500, lateOn: true, prorate: true, prorateDivisor: 'actual_days', includeElec: true, includeMess: true, includeCharges: true },
+    deposit: { mode: 'fixed', fixedAmount: 15000, rentMultiplier: 1, nonRefundable: 1000, allowInstallments: false },
+    lateFee: { on: true, mode: 'percentage', amount: 500, dailyAmount: 100, percentage: 5, maxCap: 2500, graceDays: 5 },
+    elec: { sharing: 'shared_room', allocation: 'occupancy_days', rate: 10, pricing: 'slab', slabs: [{ upTo: 100, rate: 8 }, { upTo: 250, rate: 10 }, { upTo: 999999, rate: 12 }], fixedCharge: 100, freeUnits: 0, freeMode: 'resident', readingDay: 1 },
+    mess: { billing: 'per_meal', monthlyFee: 3500, mealRates: { breakfast: 50, lunch: 90, snacks: 40, dinner: 90 }, skip: true, tiffin: true, learn: true, rebatePerDay: 120 },
+    checkin: { requireApproval: 'manager', requireDocs: true, minDepositRequired: true, requireAgreement: true },
+    checkout: { noticeDaysRequired: 30, shortfallPenalty: true, requireApproval: true, roomInspection: true },
+  },
+  custom: {
+    key: 'custom',
+    label: 'Custom Setup',
+    description: 'Custom hostel business configuration tailored to specific property rules.',
+  }
+};
+
 const DEFAULT_SETTINGS = {
-  pay: { upiId: '', payee: '', phone: '', bank: '', note: '' },
-  rent: { day: 1, graceDays: 5, lateFee: 200, lateOn: true, prorate: true },
-  elec: { rate: 9, freeUnits: 30, freeMode: 'resident', readingDay: 1 },
+  pay: { upiId: '', payee: '', phone: '', bank: '', note: '', provider: 'direct_upi' },
+  rent: {
+    model: 'calendar_monthly', // 'calendar_monthly' | 'joining_date' | 'custom'
+    day: 1,
+    dueDays: 5,
+    graceDays: 5,
+    lateFee: 200,
+    lateOn: true,
+    prorate: true,
+    prorateDivisor: 'actual_days', // 'actual_days' | 'fixed_30'
+    includeElec: true,
+    includeMess: true,
+    includeCharges: true,
+  },
+  deposit: {
+    mode: 'custom', // 'fixed' | 'rent_multiple' | 'per_bed' | 'custom'
+    fixedAmount: 0,
+    rentMultiplier: 1,
+    nonRefundable: 0,
+    allowInstallments: false,
+    minCheckInDeposit: 0,
+  },
+  lateFee: {
+    on: true,
+    mode: 'fixed', // 'fixed' | 'daily' | 'percentage'
+    amount: 200,
+    dailyAmount: 50,
+    percentage: 2,
+    maxCap: 1000,
+    graceDays: 5,
+  },
+  elec: {
+    sharing: 'shared_room', // 'shared_room' | 'individual' | 'property_level'
+    allocation: 'occupancy_days', // 'occupancy_days' | 'equal' | 'room_alloc'
+    rate: 9,
+    pricing: 'fixed', // 'fixed' | 'slab'
+    slabs: [{ upTo: 100, rate: 8 }, { upTo: 250, rate: 10 }, { upTo: 999999, rate: 12 }],
+    fixedCharge: 0,
+    freeUnits: 30,
+    freeMode: 'resident', // 'resident' | 'room'
+    readingDay: 1,
+    requireApproval: false,
+    scanRole: 'both', // 'both' | 'staff_only' | 'resident_only'
+  },
   laundry: { freePcs: 30, rate: 10 },
   meals: [
     { k: 'breakfast', l: 'Breakfast', time: '08:00', cutoff: '22:00', prev: true, tCutoff: '21:00', tPrev: true },
     { k: 'lunch', l: 'Lunch', time: '13:00', cutoff: '10:00', prev: false, tCutoff: '09:30', tPrev: false },
     { k: 'dinner', l: 'Dinner', time: '20:30', cutoff: '17:00', prev: false, tCutoff: '16:00', tPrev: false },
   ],
-  mess: { skip: true, tiffin: true, learn: true },
+  mess: {
+    billing: 'included', // 'included' | 'compulsory' | 'optional' | 'per_meal'
+    monthlyFee: 2500,
+    mealRates: { breakfast: 40, lunch: 70, snacks: 30, dinner: 70 },
+    rebatePerDay: 80,
+    minLeaveDays: 2,
+    skip: true,
+    tiffin: true,
+    learn: true,
+  },
+  charges: [],
+  checkin: {
+    requireApproval: 'none', // 'none' | 'owner' | 'manager'
+    requireDocs: false,
+    minDepositRequired: false,
+    requireAgreement: false,
+  },
+  checkout: {
+    noticeDaysRequired: 30,
+    shortfallPenalty: true,
+    requireApproval: false,
+    scanRole: 'both', // 'both' | 'staff_only' | 'resident_only'
+    roomInspection: true,
+  },
+  agreements: {
+    templates: DEFAULT_AGREEMENT_TEMPLATES,
+    defaultTemplateId: 'tpl-std',
+  },
   kitchen: { cookCanReceive: true },
   docs: { required: ['Aadhaar card', 'Passport photo'] },
   staffDocs: { required: ['Aadhaar card', 'Passport photo'] },
   // remind: automatic payment reminders, N days after the oldest unpaid bill was due.
   // gw: on/off marker for the owner's self-hosted gateway (the secrets live server-side).
-  // `monthly` is the only message the gateway sends by itself: one bill a month per resident with
-  // rent and electricity together. It waits for the room's meter reading, or goes anyway from
-  // `fallbackDay` so a missed reading never holds up the rent.
-  wa: { auto: true, lang: 'en', tpl: {}, remind: { on: true, days: [1, 5, 10] }, monthly: { on: true, fallbackDay: 10 }, gw: { on: false, kind: '' } },
+  wa: {
+    auto: true,
+    lang: 'en',
+    tpl: {},
+    remind: { on: true, days: [1, 5, 10] },
+    monthly: { on: true, fallbackDay: 10 },
+    gw: { on: false, kind: '' },
+    mode: 'click_to_chat', // 'click_to_chat' | 'official_api'
+  },
   expenseCats: ['Groceries', 'Vegetables & milk', 'Gas', 'Electricity bill', 'Water', 'Internet', 'Salary', 'Maintenance', 'Cleaning supplies', 'Rent', 'Other'],
-  departments: ['Kitchen', 'Housekeeping', 'Laundry', 'Security', 'Maintenance', 'Office'],
+  departments: ['Kitchen', 'Housekeeping', 'Laundry', 'Security', 'Maintenance', 'Office', 'Warden', 'Accounts', 'E-Mitra'],
   units: ['kg', 'g', 'L', 'ml', 'pcs', 'pkt', 'dozen'],
   auto: { rent: true, late: true, hk: true, missed: true, stock: true, lowstock: true, meter: true, checkout: true },
   // markBy: who may mark a room cleaned — 'staff' (the assigned housekeeper), 'admin'
@@ -137,11 +368,66 @@ const DEFAULT_SETTINGS = {
   // the owner because each state runs its own site and the deep links change without notice.
   police: { on: true, state: '', portals: {}, dueDays: 7, blockWithoutId: false },
 };
-let _setCache = { src: null, val: null };
-function S() {
-  const src = (Store.hostel() || {}).settings || {};
-  if (_setCache.src !== src) _setCache = { src, val: deepMerge(DEFAULT_SETTINGS, src) };
-  return _setCache.val;
+
+let _setCache = { srcH: null, srcO: null, val: null };
+function S(hostelId, resId) {
+  const h = hostelId ? ((Store.hostels || []).find(x => x.id === hostelId) || null) : Store.hostel();
+  const o = h ? ((Store.orgs || []).find(x => x.id === h.org_id) || null) : Store.org();
+  const srcH = (h || {}).settings || {};
+  const srcO = (o || {}).settings || {};
+  if (!hostelId && !resId && _setCache.srcH === srcH && _setCache.srcO === srcO) {
+    return _setCache.val;
+  }
+  const merged = deepMerge(DEFAULT_SETTINGS, deepMerge(srcO, srcH));
+  if (resId) {
+    const r = resById(resId);
+    if (r && r.billingPolicy) {
+      return deepMerge(merged, r.billingPolicy);
+    }
+  }
+  if (!hostelId && !resId) {
+    _setCache = { srcH, srcO, val: merged };
+  }
+  return merged;
+}
+
+function effectiveSettings(hostelId, resId) {
+  const h = hostelId ? ((Store.hostels || []).find(x => x.id === hostelId) || null) : Store.hostel();
+  const o = h ? ((Store.orgs || []).find(x => x.id === h.org_id) || null) : Store.org();
+  const r = resId ? resById(resId) : null;
+  const cfg = S(hostelId, resId);
+  return {
+    settings: cfg,
+    version: (h && h.settings && h.settings.policyVersion) || 1,
+    effectiveDate: (h && h.settings && h.settings.effectiveDate) || (h && h.created_at) || today(),
+    hierarchy: {
+      platform: 'DEFAULT_SETTINGS',
+      organization: o ? o.name : null,
+      hostel: h ? h.name : null,
+      resident: r ? r.name : null,
+      hasOrgOverrides: !!(o && o.settings && Object.keys(o.settings).length),
+      hasHostelOverrides: !!(h && h.settings && Object.keys(h.settings).length),
+      hasResidentExceptions: !!(r && r.billingPolicy && Object.keys(r.billingPolicy).length)
+    }
+  };
+}
+
+function applyBusinessTemplate(templateKey) {
+  const tpl = BUSINESS_TEMPLATES[templateKey];
+  if (!tpl) throw new AppError('Unknown business template: ' + templateKey);
+  const curVer = ((Store.hostel() || {}).settings && Store.hostel().settings.policyVersion) || 1;
+  return {
+    businessTemplate: templateKey,
+    policyVersion: curVer + 1,
+    effectiveDate: today(),
+    rent: clone(tpl.rent || {}),
+    deposit: clone(tpl.deposit || {}),
+    lateFee: clone(tpl.lateFee || {}),
+    elec: clone(tpl.elec || {}),
+    mess: clone(tpl.mess || {}),
+    checkin: clone(tpl.checkin || {}),
+    checkout: clone(tpl.checkout || {})
+  };
 }
 // Meals are always shown in serving-time order, whatever order they were added in.
 const byTime = ms => ms.slice().sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
@@ -152,8 +438,10 @@ const mealName = k => t(mealByKey(k).l);
 
 /* ===================================================================== documents
  * ID papers stay private (see Files in data.js); each Open mints a ten-minute link. */
-function docOpen(d) {
-  return d && d.path ? `<button class="btn sm" data-act="opendoc" data-path="${esc(d.path)}">${esc(t('Open'))}</button>` : badge('Missing', 'warn');
+function docOpen(d, resId = null) {
+  const resAttr = resId ? ` data-res="${esc(resId)}"` : '';
+  const typeAttr = d && d.type ? ` data-type="${esc(d.type)}"` : '';
+  return d && d.path ? `<button class="btn sm" data-act="opendoc" data-path="${esc(d.path)}"${resAttr}${typeAttr}>${esc(t('Open'))}</button>` : badge('Missing', 'warn');
 }
 // Papers of someone who left are deleted DOC_KEEP_DAYS after the day they left.
 const docsGoneOn = r => (r && r.status === 'left' && r.left ? addDays(r.left, DOC_KEEP_DAYS) : '');
@@ -223,11 +511,11 @@ const PV_STATES = [
   ['OTHER', 'Other / set my own link', '', 'portal'],
 ];
 const PV_STATUS = {
-  none:      ['Not started', 'bad'],
-  submitted: ['Submitted',   'warn'],
-  verified:  ['Verified',    'ok'],
-  rejected:  ['Rejected',    'bad'],
-  exempt:    ['Not required', 'mute'],
+  none: ['Not started', 'bad'],
+  submitted: ['Submitted', 'warn'],
+  verified: ['Verified', 'ok'],
+  rejected: ['Rejected', 'bad'],
+  exempt: ['Not required', 'mute'],
 };
 const PV_DOC_TYPES = ['Police verification acknowledgement', 'Police verification certificate'];
 
@@ -242,6 +530,8 @@ function pvPortal(state) {
   return (row && row[2]) || '';
 }
 const pvStateName = st => { const r = PV_STATES.find(x => x[0] === (st || S().police.state)); return r ? r[1] : ''; };
+const hostelName = () => (Store.hostel() || {}).name || '';
+if (typeof window !== 'undefined') window.hostelName = hostelName;
 
 // Everything the portal form asks for, in one block the owner can paste field by field.
 function pvDetails(r) {
@@ -276,6 +566,13 @@ function pvSet(resId, patch) {
   if (patch.status && patch.status !== pvOf(r).status) pv.changedOn = today();
   Store.patch(resId, { pv });
   if (patch.status) alog('pv', t('Police verification for {n}: {s}', { n: r.name, s: t(PV_STATUS[patch.status] ? PV_STATUS[patch.status][0] : patch.status) }));
+  try {
+    if (typeof checkAndAutoSendAgreement === 'function') {
+      checkAndAutoSendAgreement(resId);
+    }
+  } catch (err) {
+    console.warn('Auto agreement trigger in pvSet warning:', err.message);
+  }
   return pv;
 }
 
@@ -313,8 +610,10 @@ function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = tod
   if ((a.docs || []).length) Store.patch(r.id, { docs: a.docs.map(d => ({ ...d })) });
   // credit a verification the resident did themselves; the owner can still change it
   if (a.pv && (a.pv.self || a.pv.refNo)) {
-    pvSet(r.id, { status: a.pv.refNo ? 'submitted' : 'none', refNo: a.pv.refNo || '', state: a.pv.state || '',
-      submittedOn: a.pv.refNo ? (a.date || today()) : null, note: t('Filed by the resident at registration') });
+    pvSet(r.id, {
+      status: a.pv.refNo ? 'submitted' : 'none', refNo: a.pv.refNo || '', state: a.pv.state || '',
+      submittedOn: a.pv.refNo ? (a.date || today()) : null, note: t('Filed by the resident at registration')
+    });
   }
   Store.patch(signupId, { status: 'admitted', resId: r.id, admittedOn: today(), admittedBy: Store.me && Store.me.full_name });
   alog('signup', t('{n} admitted from a self check-in', { n: a.name }));
@@ -368,7 +667,7 @@ const resInScope = r => inScope(Store.get(r && r.roomId));
 const payInScope = p => resInScope(Store.get(p && p.resId));
 // Payments narrowed to the chosen block. Expenses have no resident and stay hostel-wide —
 // gas, salaries and the internet bill are not a wing's to carry.
-const payments = () => { const b = blockScope(); const a = Store.all('pay'); return b ? a.filter(payInScope) : a; };
+const payments = () => { const b = blockScope(); const a = Store.all('pay').filter(p => !p.reversed); return b ? a.filter(payInScope) : a; };
 
 /* ===================================================================== derived indexes
  * "What does this resident owe?" used to walk every invoice in the hostel. Asked once per row
@@ -473,7 +772,7 @@ function siteUrl() {
 function siteGaps() {
   const c = siteCfg();
   return [!c.about ? t('a few lines about the hostel') : '', !(c.roomTypes || []).length ? t('at least one room type with its price') : '',
-    !sitePhotoUrl('hero') ? t('a header photo') : '', !siteWa() ? t('a WhatsApp number for enquiries') : ''].filter(Boolean);
+  !sitePhotoUrl('hero') ? t('a header photo') : '', !siteWa() ? t('a WhatsApp number for enquiries') : ''].filter(Boolean);
 }
 
 /* ===================================================================== lookups */
@@ -538,14 +837,30 @@ const INV_TYPES = { rent: 'Rent', deposit: 'Security deposit', electricity: 'Ele
 // Create (or keep) an invoice. Existing credit is applied automatically.
 function addInvoice(o) {
   if (o.id && Store.get(o.id)) return Store.get(o.id);
-  const inv = Store.put('inv', { paid: 0, waived: 0, date: today(), ...o, amount: round2(o.amount) });
+  const amt = round2(o.amount);
+  if (!isFinite(amt) || isNaN(amt) || amt <= 0) throw new AppError('Invoice amount must be positive');
+  if (amt > 10000000) throw new AppError('Invoice amount cannot exceed ₹10,000,000');
+  const inv = Store.put('inv', { paid: 0, waived: 0, date: today(), ...o, amount: amt });
   const r = resById(inv.resId);
   if (r && r.credit > 0 && inv.amount > 0 && can('payments')) {
     const use = Math.min(r.credit, inv.amount);
     inv.paid = round2(use); inv.creditUsed = round2(use);
     Store.put('inv', inv); Store.patch(r.id, { credit: round2(r.credit - use) });
   }
+  alog('invoice_created', `${r ? r.name : inv.resId}: ${inr(amt)} (${inv.type || 'invoice'})`, { invId: inv.id, type: inv.type, amount: amt });
   return inv;
+}
+
+// Provider-specific payment reference classifier: distinguishes UPI RRN, Bank UTR, Gateway IDs and Test references
+function classifyPaymentRef(ref) {
+  if (!ref || typeof ref !== 'string') return { valid: false, type: 'unknown', reason: t('Reference is empty') };
+  const s = ref.trim();
+  if (s.length < 6 || s.length > 35) return { valid: false, type: 'unknown', reason: t('Reference must be 6 to 35 characters') };
+  if (/^\d{12}$/.test(s)) return { valid: true, type: 'upi_rrn', label: t('UPI Reference (RRN)'), ref: s };
+  if (/^(UPI|TEST|SIM|DEMO)[A-Za-z0-9_-]{6,26}$/i.test(s)) return { valid: true, type: 'internal_test', label: t('Test Payment Reference'), ref: s };
+  if (/^pay_[A-Za-z0-9]{14,}$/.test(s) || /^cf_[A-Za-z0-9_-]{8,}$/.test(s) || /^setu_[A-Za-z0-9_-]{8,}$/.test(s)) return { valid: true, type: 'gateway_id', label: t('Payment Gateway ID'), ref: s };
+  if (/^[A-Za-z0-9]{8,26}$/.test(s)) return { valid: true, type: 'bank_utr', label: t('Bank UTR / Transaction Reference'), ref: s };
+  return { valid: false, type: 'invalid', reason: t('Reference contains invalid characters') };
 }
 
 // FIFO allocation: oldest dues first, extra money becomes advance credit.
@@ -557,6 +872,17 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   if (!isFinite(amount) || isNaN(amount) || !(amount > 0)) throw new Error('Enter an amount');
   if (amount > 10000000) throw new Error('Amount cannot exceed ₹10,000,000');
   const idmpKey = idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : uid('idmp-'));
+
+  // Idempotency guards
+  if (claimId) {
+    const existingClaimPay = Store.all('pay').find(p => p.claimId === claimId && !p._del && !p.reversed);
+    if (existingClaimPay) return existingClaimPay;
+  }
+  if (idmpKey) {
+    const existingIdmpPay = Store.all('pay').find(p => p.idempotencyKey === idmpKey && !p._del && !p.reversed);
+    if (existingIdmpPay) return existingIdmpPay;
+  }
+
   let left = amount; const alloc = [];
   const skip = new Set(exclude || []);
   const open = openInv(resId).filter(i => !skip.has(i.id));
@@ -570,9 +896,57 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   }
   if (left > 0) Store.patch(resId, { credit: round2((r.credit || 0) + left) });
   const no = (S().receiptNo || 0) + Store.all('pay').length + 1;
-  const pay = Store.put('pay', { resId, roomId: r.roomId, amount, mode, ref, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
-  notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}` });
+  const refType = ref ? classifyPaymentRef(ref).type : null;
+  const pay = Store.put('pay', { resId, roomId: r.roomId, amount, mode, ref, refType, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
+  alog('payment_recorded', `${r.name}: ${inr(amount)} (${mode})`, { payId: pay.id, resId, amount, mode, ref, claimId });
+  notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}`, category: 'payment' });
   return pay;
+}
+
+// Reversal entry: never silently hard-delete verified financial transactions
+function reversePayment(payId, reason = '') {
+  if (!canAction('refund')) throw new AppError('Unauthorized: only owner, manager or super admin can reverse payments');
+  const p = Store.get(payId);
+  if (!p || p.kind !== 'pay') throw new AppError('Payment not found');
+  if (p.reversed) throw new AppError('Payment is already reversed');
+  if (!reason || !String(reason).trim()) throw new AppError('A reason for reversal is required');
+  const r = resById(p.resId);
+  // 1. Revert allocations from invoices
+  for (const a of (p.alloc || [])) {
+    const inv = Store.get(a.inv);
+    if (inv) {
+      inv.paid = Math.max(0, round2((inv.paid || 0) - a.amt));
+      Store.put('inv', inv);
+    }
+  }
+  // 2. Revert any credit that was granted
+  if (p.credit > 0 && r) {
+    const newCredit = Math.max(0, round2((r.credit || 0) - p.credit));
+    Store.patch(r.id, { credit: newCredit });
+  }
+  // 3. Mark payment as reversed
+  Store.patch(payId, {
+    reversed: true,
+    reversedAt: nowIso(),
+    reversedBy: Store.me && Store.me.full_name,
+    reversalReason: String(reason).trim()
+  });
+  alog('payment_reversal', `${inr(p.amount)} for ${r ? r.name : p.resId}: ${reason}`, {
+    payId,
+    amount: p.amount,
+    resId: p.resId,
+    reason: String(reason).trim()
+  });
+  if (p.resId) {
+    notify({
+      to: 'res',
+      resId: p.resId,
+      title: t('Payment reversed'),
+      body: `${inr(p.amount)} · ${reason}`,
+      category: 'payment'
+    });
+  }
+  return Store.get(payId);
 }
 
 /* ===================================================================== penalties
@@ -591,8 +965,10 @@ function addPenalty({ resId, amount, reason, date = today(), due = '' }) {
   if (amount > 1000000) throw new AppError('Penalty cannot exceed ₹1,000,000');
   reason = String(reason || '').trim(); if (!reason) throw new AppError('Please write the reason');
   if (reason.length > 120) throw new AppError('Reason cannot exceed 120 characters');
-  const inv = addInvoice({ resId, roomId: r.roomId, type: 'penalty', reason, amount, date,
-    title: `${t('Penalty')} - ${reason}`, period: ymOf(date), due: due || addDays(date, 7) });
+  const inv = addInvoice({
+    resId, roomId: r.roomId, type: 'penalty', reason, amount, date,
+    title: `${t('Penalty')} - ${reason}`, period: ymOf(date), due: due || addDays(date, 7)
+  });
   notify({ to: 'res', resId, title: t('Penalty added'), body: `${inr(amount)} - ${reason}` });
   alog('penalty', `${r.name}: ${inr(amount)} - ${reason}`);
   return inv;
@@ -641,8 +1017,10 @@ function recordAdvance({ resId, amount, months, mode = 'cash', ref = '', date = 
   for (const row of plan.rows) {
     if (row.exists) continue;
     const d = rentDue(row.ym);
-    addInvoice({ id: row.id, resId, roomId: r.roomId, type: 'rent', period: row.ym,
-      title: `${t('Rent')} ${fmtYM(row.ym)}`, amount: round2(r.rent || 0), date: d, due: addDays(d, graceDays) });
+    addInvoice({
+      id: row.id, resId, roomId: r.roomId, type: 'rent', period: row.ym,
+      title: `${t('Rent')} ${fmtYM(row.ym)}`, amount: round2(r.rent || 0), date: d, due: addDays(d, graceDays)
+    });
   }
   // Read the real balances back: addInvoice may have spent advance credit the resident
   // already had, which would make a discount worked out beforehand too large.
@@ -680,10 +1058,25 @@ function upiUri(amount, note) {
   return `upi://pay?pa=${encodeURIComponent(p.upiId)}&pn=${encodeURIComponent(p.payee || (Store.hostel() || {}).name || '')}&am=${round2(amount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(String(note).slice(0, 60))}`;
 }
 // WhatsApp only links http(s), so we send a link to our static pay page that opens any UPI app + shows QR.
-function payLink(amount, note) {
+function payLink(amount, note, extra = {}) {
   const p = S().pay; if (!p.upiId) return '';
-  const q = new URLSearchParams({ pa: p.upiId, pn: p.payee || (Store.hostel() || {}).name || '', am: round2(amount).toFixed(2), tn: String(note).slice(0, 60), h: (Store.hostel() || {}).name || '' });
+  const hid = (Store.hostel() || {}).id || (Store.ctx || {}).hostelId || '';
+  const q = new URLSearchParams({
+    pa: p.upiId,
+    pn: p.payee || (Store.hostel() || {}).name || '',
+    am: round2(amount).toFixed(2),
+    tn: String(note).slice(0, 60),
+    h: (Store.hostel() || {}).name || '',
+    ...(hid ? { hostel_id: hid } : {}),
+    ...(extra && extra.resId ? { res_id: extra.resId } : {}),
+    ...(extra && extra.invId ? { inv_id: extra.invId } : {})
+  });
   return `${baseUrl()}pay.html?${q}`;
+}
+function upiPayUrl(resId, amount) {
+  const r = resId ? resById(resId) : null;
+  const note = r ? `Rent - ${r.name}` : 'PG dues';
+  return payLink(amount, note, { resId }) || '';
 }
 /* WhatsApp messages. Plain text on purpose: no emoji and no rupee sign. Emoji arrive as empty boxes
  * on older phones and on WhatsApp Web / desktop, and the rupee sign is missing from some fonts, so a
@@ -694,7 +1087,7 @@ const rs = n => 'Rs. ' + Math.round(+n || 0).toLocaleString('en-IN');
 const WA_TPL = {
   en: {
     welcome: 'Hello {name},\n\nWelcome to *{hostel}*.\n\n*Your stay*\nRoom: {room}, Bed {bed}\nMonthly rent: {rent}\nSecurity deposit: {deposit}\n\n*Your app login*\nApp: {link}\nUser ID: *{username}*\nPassword: *{password}*\n\nPlease change your password after you log in for the first time.\n\nRegards,\n{hostel}',
-    bill: 'Hello {name},\n\nHere is your bill at *{hostel}*.\n\n{lines}\n\n*Total due: {total}*\n\nPay with any UPI app:\n{paylink}\n\nAfter paying, please enter the UTR number or upload the screenshot in the app:\n{link}\n\nThank you,\n{hostel}',
+    bill: 'Hello {name},\n\nHere is your monthly bill at *{hostel}*.\n\n{lines}\n\n*Total due: {total}*\n\nPay with any UPI app (GPay / PhonePe / Paytm):\n{paylink}\n\nAfter paying, please enter the UTR number in the pay link to confirm.\n\nThank you,\n{hostel}',
     reminder: 'Hello {name},\n\nThis is a gentle reminder from *{hostel}*. The following is still pending:\n\n{lines}\n\n*Total due: {total}*\n\nYou can pay here:\n{paylink}\n\nIf you have already paid, please ignore this message.\n\nRegards,\n{hostel}',
     receipt: 'Hello {name},\n\nWe have received your payment. Thank you.\n\nAmount: *{amount}* ({mode})\nDate: {date}\nReceipt no: {no}\nBalance due: {balance}\n\nRegards,\n{hostel}',
     laundryIn: 'Hello {name},\n\nWe have received *{pcs} clothes* for laundry on {date}.\nFree pieces left this month: {free}{charge}\n\nRegards,\n{hostel}',
@@ -705,7 +1098,7 @@ const WA_TPL = {
   },
   hi: {
     welcome: 'नमस्ते {name},\n\n*{hostel}* में आपका स्वागत है।\n\n*आपका कमरा*\nकमरा: {room}, बेड {bed}\nमासिक किराया: {rent}\nसिक्योरिटी डिपॉज़िट: {deposit}\n\n*आपका ऐप लॉगिन*\nऐप: {link}\nयूज़र ID: *{username}*\nपासवर्ड: *{password}*\n\nपहली बार लॉगिन करने के बाद कृपया अपना पासवर्ड बदल लें।\n\nधन्यवाद,\n{hostel}',
-    bill: 'नमस्ते {name},\n\n*{hostel}* में आपका बिल यह है।\n\n{lines}\n\n*कुल बकाया: {total}*\n\nकिसी भी UPI ऐप से भुगतान करें:\n{paylink}\n\nभुगतान के बाद ऐप में UTR नंबर डालें या स्क्रीनशॉट अपलोड करें:\n{link}\n\nधन्यवाद,\n{hostel}',
+    bill: 'नमस्ते {name},\n\n*{hostel}* में आपका इस महीने का बिल यह है।\n\n{lines}\n\n*कुल बकाया: {total}*\n\nकिसी भी UPI ऐप (GPay / PhonePe / Paytm) से भुगतान करें:\n{paylink}\n\nभुगतान के बाद लिंक में UTR नंबर दर्ज करें:\n\nधन्यवाद,\n{hostel}',
     reminder: 'नमस्ते {name},\n\n*{hostel}* की ओर से यह एक विनम्र याद दिलाना है। नीचे दिया गया भुगतान अभी बाकी है:\n\n{lines}\n\n*कुल बकाया: {total}*\n\nयहाँ से भुगतान करें:\n{paylink}\n\nअगर आप भुगतान कर चुके हैं तो कृपया इस संदेश को अनदेखा करें।\n\nधन्यवाद,\n{hostel}',
     receipt: 'नमस्ते {name},\n\nआपका भुगतान मिल गया है। धन्यवाद।\n\nराशि: *{amount}* ({mode})\nतारीख: {date}\nरसीद नंबर: {no}\nबाकी: {balance}\n\nधन्यवाद,\n{hostel}',
     laundryIn: 'नमस्ते {name},\n\n{date} को लॉन्ड्री के लिए *{pcs} कपड़े* मिले हैं।\nइस महीने फ्री बचे: {free}{charge}\n\nधन्यवाद,\n{hostel}',
@@ -730,7 +1123,7 @@ const waUrl = (phone, text) => `https://wa.me/${phone10(phone).length === 10 ? '
 // The demo hostel is for showing and testing: nothing is ever sent from it, whatever is connected.
 const isDemoHostel = () => !!((Store.hostel() || {}).settings || {}).demo;
 const WaGw = {
-  on: () => typeof CLOUD !== 'undefined' && CLOUD && !isDemoHostel() && !!(S().wa.gw && S().wa.gw.on),
+  on: () => typeof CLOUD !== 'undefined' && CLOUD && !isDemoHostel() && orgEnabled('automation'),
   async send(list, onProgress) {
     const out = [];
     for (let i = 0; i < list.length; i += 5) {
@@ -762,13 +1155,127 @@ function waSheet(list, title = 'Send on WhatsApp') {
 function renderWaQueue() {
   const q = ui.waq; if (!q) return;
   const done = q.i >= q.list.length, m = q.list[Math.min(q.i, q.list.length - 1)];
+  const isBulk = q.list.length > 1;
   const body = done
     ? `<div class="empty"><b>${esc(t('All sent'))} 🎉</b>${esc(t('{n} messages', { n: q.list.length }))}</div>`
-    : `${q.list.length > 1 ? `<div class="row sb" style="margin-bottom:8px"><b>${esc(m.label || '')}</b><span class="badge acc">${q.i + 1} / ${q.list.length}</span></div>` : ''}
-       <div class="card" style="white-space:pre-wrap;font-size:14.5px;max-height:44dvh;overflow:auto">${esc(m.text)}</div>
-       <div class="hint" style="margin-top:8px">${esc(t('WhatsApp opens with this message typed. Just press Send.'))}</div>`;
-  openModal({ title: q.title, body, foot: done ? `<button class="btn primary block" data-act="close">${esc(t('Done'))}</button>`
-    : `${q.list.length > 1 ? `<button class="btn" data-act="waskip">${esc(t('Skip'))}</button>` : `<button class="btn" data-act="close">${esc(t('Close'))}</button>`}<a class="btn wa" style="flex:1" href="${esc(waUrl(m.phone, m.text))}" target="_blank" rel="noopener" data-act="wanext">${ico('wa', 'sm')} ${esc(t('Open WhatsApp'))}</a>` });
+    : `
+      ${isBulk ? `
+        <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg, rgba(37,99,235,0.08), rgba(59,130,246,0.04));border:1px solid rgba(37,99,235,0.22);padding:14px;border-radius:12px">
+          <div class="row sb" style="margin-bottom:6px">
+            <b style="color:var(--accent);font-size:14px">${ico('mail', 'sm')} ${esc(t('Bulk Action: Email + App Notice'))}</b>
+            <span class="badge ok">${q.list.length} ${esc(t('recipients'))}</span>
+          </div>
+          <p class="xs muted" style="margin:0 0 8px;line-height:1.3">
+            ${esc(t('Send invoice email & app notice to all residents in 1 click.'))}
+          </p>
+          <button type="button" class="btn primary sm" data-act="sendbulkemailnotice" style="width:100%;justify-content:center">
+            ${ico('send', 'sm')} ${esc(t('Send All ({n}) via Email + App Notice', { n: q.list.length }))}
+          </button>
+        </div>
+        <div class="row nw" style="align-items:center;gap:10px;margin:12px 0 10px">
+          <div style="flex:1;height:1px;background:var(--line)"></div>
+          <span class="muted xs uppercase" style="letter-spacing:0.05em">${esc(t('OR SEND INDIVIDUALLY ON WHATSAPP'))}</span>
+          <div style="flex:1;height:1px;background:var(--line)"></div>
+        </div>
+      ` : ''}
+      ${isBulk ? `<div class="row sb" style="margin-bottom:8px"><b>${esc(m.label || '')}</b><span class="badge acc">${q.i + 1} / ${q.list.length}</span></div>` : ''}
+      <div class="card" style="white-space:pre-wrap;font-size:14.5px;max-height:36dvh;overflow:auto">${esc(m.text)}</div>
+      <div class="hint" style="margin-top:8px">${esc(t('Tap "Open WhatsApp" below to message this resident individually.'))}</div>
+    `;
+  openModal({
+    title: q.title, body, foot: done ? `<button class="btn primary block" data-act="close">${esc(t('Done'))}</button>`
+      : `${isBulk ? `<button class="btn" data-act="waskip">${esc(t('Skip'))}</button>` : `<button class="btn" data-act="close">${esc(t('Close'))}</button>`}<a class="btn wa" style="flex:1" href="${esc(waUrl(m.phone, m.text))}" target="_blank" rel="noopener" data-act="wanext">${ico('wa', 'sm')} ${esc(t('Open WhatsApp'))}</a>`
+  });
+}
+
+function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill', headline = 'Payment Notice', recipientName = 'Resident', bodyLines = '', amountDue = 0, payLink = '', date = '' }) {
+  const safeLines = esc(bodyLines).replace(/\n/g, '<br>');
+  const year = new Date().getFullYear();
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${esc(title)}</title>
+</head>
+<body style="margin:0;padding:20px 10px;background-color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1e293b;-webkit-font-smoothing:antialiased">
+  <div style="max-width:580px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 20px rgba(0,0,0,0.06)">
+    <!-- Header Banner -->
+    <div style="background:linear-gradient(135deg, #1e3a8a 0%, #2563eb 60%, #3b82f6 100%);padding:28px 24px 24px;text-align:center;color:#ffffff">
+      <div style="display:inline-block;background:rgba(255,255,255,0.22);backdrop-filter:blur(4px);padding:5px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#ffffff;margin-bottom:10px">
+        🏨 ${esc(title.toUpperCase())}
+      </div>
+      <h1 style="margin:0;font-size:24px;font-weight:800;letter-spacing:-0.02em;color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.1)">${esc(hostelName)}</h1>
+      <div style="margin-top:6px;font-size:13.5px;color:#dbeafe">${date ? esc(date) : ''} · Official Communication</div>
+    </div>
+
+    <!-- Content Area -->
+    <div style="padding:28px 24px 20px">
+      <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:12px">
+        Hello ${esc(recipientName)},
+      </div>
+      <div style="font-size:14.5px;line-height:1.6;color:#334155;margin-bottom:20px">
+        Please find your latest notice and stay billing details below for <b>${esc(hostelName)}</b>:
+      </div>
+
+      ${amountDue > 0 ? `
+      <!-- Total Due Card -->
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:20px;margin-bottom:22px;text-align:center">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#991b1b">Total Amount Pending</div>
+        <div style="font-size:32px;font-weight:800;color:#dc2626;margin:6px 0 4px">₹${amountDue.toLocaleString('en-IN')}</div>
+        <div style="font-size:12.5px;color:#7f1d1d">Kindly clear dues before the due date to avoid late fee penalties.</div>
+      </div>
+      ` : ''}
+
+      <!-- Detailed Breakdown -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:22px">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#64748b;margin-bottom:8px">Notice & Statement Summary</div>
+        <div style="font-size:13.5px;line-height:1.65;color:#1e293b;font-family:monospace">
+          ${safeLines}
+        </div>
+      </div>
+
+      ${payLink ? `
+      <!-- Pay Button -->
+      <div style="text-align:center;margin:24px 0 20px">
+        <a href="${payLink}" style="display:inline-block;background:#2563eb;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;padding:13px 32px;border-radius:10px;box-shadow:0 4px 14px rgba(37,99,235,0.35);letter-spacing:0.02em">
+          💳 Pay Online / UPI Now →
+        </a>
+        <div style="font-size:12px;color:#64748b;margin-top:8px">Zero hassle instant payment verification & receipt</div>
+      </div>
+      ` : ''}
+
+      <div style="font-size:13px;line-height:1.5;color:#64748b;border-top:1px solid #f1f5f9;padding-top:16px;margin-top:20px">
+        Have questions or already paid? You can submit your payment transaction UTR directly in your Sarvlekh resident app, or contact the PG administration.
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f1f5f9;padding:18px 24px;text-align:center;font-size:12px;color:#64748b;border-top:1px solid #e2e8f0">
+      <div><b>${esc(hostelName)}</b> · Powered by Sarvlekh Hostel Management</div>
+      <div style="margin-top:4px;color:#94a3b8">© ${year} All rights reserved.</div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+async function sendBrandedEmail({ to, subject, html, text, resId, hostelId }) {
+  if (!to || !isValidEmail(to)) return false;
+  if (typeof Backend !== 'undefined' && Backend.admin) {
+    return Backend.admin('send_resident_email', {
+      to,
+      subject,
+      html,
+      text,
+      res_id: resId || null,
+      hostel_id: hostelId || (Store.ctx && Store.ctx.hostelId) || null
+    }).catch(err => {
+      console.warn('Backend send_resident_email fallback:', err.message);
+      return { ok: true, offline: true };
+    });
+  }
+  return { ok: true };
 }
 
 // Bill text for a resident: every open invoice + total + UPI pay link.
@@ -776,7 +1283,8 @@ function billMessage(r, kind = 'bill', invs) {
   const open = invs || openInv(r.id), total = sum(open, invBal), lang = waLang(r);
   const lines = open.map(i => `${i.title}: ${rs(invBal(i))}`).join('\n');
   const note = `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim();
-  return { total, text: tpl(kind, { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, lines, total: rs(total), paylink: payLink(total, note) || t('(ask owner for UPI)'), link: appUrl() }, lang) };
+  const invId = open.length === 1 ? open[0].id : undefined;
+  return { total, text: tpl(kind, { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, lines, total: rs(total), paylink: payLink(total, note, { resId: r.id, invId }) || t('(ask owner for UPI)'), link: appUrl() }, lang) };
 }
 function receiptMessage(pay) {
   const r = resById(pay.resId);
@@ -853,10 +1361,14 @@ const rinfoCovering = (resId, date) => rinfos().filter(x => x.resId === resId
 function sendRinfo({ resId, type, from = '', to = '', text = '' }) {
   const r = resById(resId); if (!r) throw new AppError('Resident not found');
   if (from && to && to < from) throw new AppError('End date is before start date');
-  const x = Store.put('rinfo', { resId, roomId: r.roomId, type, from: from || null, to: to || from || null,
-    text: String(text || '').trim(), status: 'new', date: today(), ts: nowIso() });
-  notify({ to: 'admin', title: rinfoLabel(type), link: 'complaints',
-    body: `${r.name} - ${roomName(r.roomId)}${x.text ? ': ' + x.text : ''}` });
+  const x = Store.put('rinfo', {
+    resId, roomId: r.roomId, type, from: from || null, to: to || from || null,
+    text: String(text || '').trim(), status: 'new', date: today(), ts: nowIso()
+  });
+  notify({
+    to: 'admin', title: rinfoLabel(type), link: 'complaints',
+    body: `${r.name} - ${roomName(r.roomId)}${x.text ? ': ' + x.text : ''}`
+  });
   return x;
 }
 function rinfoReply(id, reply = '') {
@@ -869,33 +1381,55 @@ function rinfoReply(id, reply = '') {
 /* ===================================================================== notifications & log */
 // to: 'admin' | 'res' (needs resId) | 'staff' (needs staffId) | 'cook' | 'role:<role>'
 let SEEDING = false;
-function notify({ to, resId, staffId, title, body = '', link = '', id }) {
+function notify({ to, resId, staffId, title, body = '', link = '', id, category = 'general' }) {
   if (SEEDING) return null;
   // a resident's own row-level access needs res_id on everything they create
   if (!resId && isResident()) resId = ctx().refId;
-  return Store.put('ntf', { id: id || undefined, to, resId: resId || null, staffId: staffId || null, title, body, link, date: today(), ts: nowIso(), read: false });
+  const n = Store.put('ntf', { id: id || undefined, to, resId: resId || null, staffId: staffId || null, title, body, link, category, date: today(), ts: nowIso(), read: false });
+  // Browser push notification dispatch if registered
+  if (typeof Pwa !== 'undefined' && Pwa.dispatchPush) {
+    Pwa.dispatchPush({ to, resId, staffId, title, body, link, category, id: n.id });
+  }
+  return n;
 }
 function myNotifs() {
-  const c = ctx(), all = Store.all('ntf');
+  const c = ctx(), all = Store.all('ntf').filter(n => !n.dismissed);
   let list;
   if (isAdmin()) list = all.filter(n => n.to === 'admin');
   else if (isResident()) list = all.filter(n => n.to === 'res' && n.resId === c.refId);
   else list = all.filter(n => (n.to === 'staff' && n.staffId === c.refId) || n.to === 'role:' + c.role);
   return list.sort(by('ts', -1));
 }
-function alog(rule, msg) { Store.put('log', { date: today(), ts: nowIso(), rule, msg }); }
+function alog(rule, msg, meta = {}) {
+  const actor = (typeof Store !== 'undefined' && Store.me)
+    ? { id: Store.me.id, name: Store.me.full_name, role: (Store.ctx || {}).role || 'user' }
+    : { id: 'system', name: 'System', role: 'system' };
+  return Store.put('log', { date: today(), ts: nowIso(), rule, msg, actor, meta: meta || {} });
+}
 
 /* ===================================================================== rooms & residents */
-function bedsOf(room) { return room.beds || []; }
+function bedsOf(room) { return room && room.beds ? room.beds : []; }
 function vacantBeds() {
   const out = [];
-  for (const r of rooms()) for (const b of bedsOf(r)) if (b.status === 'vac') out.push({ room: r, bed: b });
+  for (const r of rooms()) {
+    for (const b of bedsOf(r)) {
+      const res = b.resId ? resById(b.resId) : null;
+      const isOcc = b.status === 'occ' && res && (res.status === 'active' || res.status === 'notice');
+      if (b.status === 'vac' || (!isOcc && b.status !== 'mnt')) out.push({ room: r, bed: b });
+    }
+  }
   return out;
 }
 function occupancy() {
   let total = 0, occ = 0;
-  for (const r of rooms()) for (const b of bedsOf(r)) { if (b.status !== 'mnt') total++; if (b.status === 'occ') occ++; }
-  return { total, occ, vac: total - occ, pct: pct(occ, total) };
+  for (const r of rooms()) {
+    for (const b of bedsOf(r)) {
+      if (b.status !== 'mnt') total++;
+      const res = b.resId ? resById(b.resId) : null;
+      if (b.status === 'occ' && res && (res.status === 'active' || res.status === 'notice')) occ++;
+    }
+  }
+  return { total, occ, vac: Math.max(0, total - occ), pct: pct(occ, total) };
 }
 function setBed(roomId, bedId, patch) {
   const room = roomById(roomId); if (!room) return;
@@ -903,9 +1437,368 @@ function setBed(roomId, bedId, patch) {
   Store.put('room', room);
 }
 
+function reconcileBeds() {
+  if (typeof Store === 'undefined' || typeof Store.all !== 'function') return false;
+  const allRes = Store.all('res');
+  const activeMap = new Map();
+  for (const r of allRes) {
+    if (r.status === 'active' || r.status === 'notice') {
+      activeMap.set(r.id, r);
+    }
+  }
+
+  let changed = false;
+  for (const room of Store.all('room')) {
+    let roomDirty = false;
+    const curBeds = bedsOf(room);
+    const newBeds = curBeds.map(b => {
+      if (b.status === 'occ') {
+        const r = b.resId ? activeMap.get(b.resId) : null;
+        if (!r || r.roomId !== room.id || r.bed !== b.id) {
+          roomDirty = true;
+          return { ...b, status: 'vac', resId: null };
+        }
+      } else if (b.status === 'vac' && b.resId) {
+        roomDirty = true;
+        return { ...b, resId: null };
+      }
+      return b;
+    });
+
+    if (roomDirty) {
+      room.beds = newBeds;
+      Store.put('room', room);
+      changed = true;
+    }
+  }
+
+  for (const r of activeMap.values()) {
+    if (r.roomId && r.bed) {
+      const room = roomById(r.roomId);
+      if (room) {
+        const bed = bedsOf(room).find(b => b.id === r.bed);
+        if (bed && (bed.status !== 'occ' || bed.resId !== r.id)) {
+          room.beds = bedsOf(room).map(b => b.id === r.bed ? { ...b, status: 'occ', resId: r.id } : b);
+          Store.put('room', room);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return changed;
+}
+
 function rentDue(ym) { const d = Math.min(S().rent.day, daysIn(ym)); return `${ym}-${pad(d)}`; }
+
+/* ===================================================================== multi-cycle billing & settlement */
+
+function residentCycleFor(r, target = today()) {
+  const settings = S(r ? r.hostelId : null, r ? r.id : null);
+  const rPolicy = (r && r.billingPolicy) || settings.rent;
+  const model = rPolicy.model || 'calendar_monthly';
+  const targetDate = target.length === 7 ? `${target}-01` : target;
+  const targetYM = ymOf(targetDate);
+
+  if (model === 'calendar_monthly') {
+    const rentDay = Math.min(rPolicy.day || 1, daysIn(targetYM));
+    const cycleStart = `${targetYM}-${pad(rentDay)}`;
+    const nextYM = addMonths(targetYM, 1);
+    const nextStartDay = Math.min(rPolicy.day || 1, daysIn(nextYM));
+    const cycleEnd = addDays(`${nextYM}-${pad(nextStartDay)}`, -1);
+    const cycleId = `cycle-cal-${r ? r.id : 'x'}-${targetYM}`;
+    return {
+      model: 'calendar_monthly',
+      cycleId,
+      cycleStart,
+      cycleEnd,
+      periodLabel: fmtYM(targetYM),
+      periodKey: targetYM,
+      rentDay,
+      dueDate: addDays(cycleStart, rPolicy.dueDays || rPolicy.graceDays || 5)
+    };
+  }
+
+  // Joining-date based billing anniversary
+  const checkIn = (r && r.checkIn) || targetDate;
+  const annivDay = +checkIn.slice(8, 10);
+  const clampedStartDay = Math.min(annivDay, daysIn(targetYM));
+  let cycleStart = `${targetYM}-${pad(clampedStartDay)}`;
+
+  if (targetDate < cycleStart && target.length > 7) {
+    const prevYM = addMonths(targetYM, -1);
+    const prevStartDay = Math.min(annivDay, daysIn(prevYM));
+    cycleStart = `${prevYM}-${pad(prevStartDay)}`;
+  }
+
+  const cycleStartYM = ymOf(cycleStart);
+  const nextYM = addMonths(cycleStartYM, 1);
+  const nextClampedStartDay = Math.min(annivDay, daysIn(nextYM));
+  const nextCycleStart = `${nextYM}-${pad(nextClampedStartDay)}`;
+  const cycleEnd = addDays(nextCycleStart, -1);
+  const cycleId = `cycle-anniv-${r ? r.id : 'x'}-${cycleStart}`;
+
+  return {
+    model: 'joining_date',
+    cycleId,
+    cycleStart,
+    cycleEnd,
+    anniversaryDay: annivDay,
+    periodLabel: `${fmtShort(cycleStart)} – ${fmtShort(cycleEnd)}`,
+    periodKey: `${cycleStart}_${cycleEnd}`,
+    dueDate: addDays(cycleStart, rPolicy.dueDays || rPolicy.graceDays || 5)
+  };
+}
+
+function calcCheckInRent({ checkInDate = today(), monthlyRent = 0, policy, divisor, customAmount } = {}) {
+  const rent = Math.max(0, +monthlyRent || 0);
+  const ym = ymOf(checkInDate);
+  const dim = daysIn(ym);
+  const day = +checkInDate.slice(8, 10);
+  const effPolicy = policy !== undefined ? policy : S().rent.prorate;
+  const effDivisor = divisor || S().rent.prorateDivisor || 'actual_days';
+  const totalDays = effDivisor === 'fixed_30' ? 30 : dim;
+  const occupiedDays = dim - day + 1;
+  const dailyRate = totalDays > 0 ? round2(rent / totalDays) : 0;
+
+  let amount = rent;
+  let formula = 'Full monthly rent';
+
+  if (customAmount != null && !isNaN(customAmount)) {
+    amount = Math.max(0, round2(+customAmount));
+    formula = 'Custom adjustment';
+  } else if (effPolicy === 'next_cycle') {
+    amount = 0;
+    formula = 'Start billing from next cycle (₹0 first period)';
+  } else if (effPolicy === false || effPolicy === 'full') {
+    amount = rent;
+    formula = `Full month charge (₹${rent})`;
+  } else if (day > 1 && effPolicy) {
+    amount = round2((rent * occupiedDays) / totalDays);
+    formula = `Pro-rata: (₹${rent} × ${occupiedDays} days) / ${totalDays} days divisor`;
+  }
+
+  return {
+    amount,
+    monthlyRent: rent,
+    period: ym,
+    checkInDate,
+    day,
+    totalDays,
+    occupiedDays,
+    dailyRate,
+    formula,
+    divisor: effDivisor,
+    policy: effPolicy
+  };
+}
+
+function calcDepositAmount({ monthlyRent = 0, bedDeposit = 0, depositSettings } = {}) {
+  const cfg = depositSettings || S().deposit || {};
+  const rent = Math.max(0, +monthlyRent || 0);
+  let total = 0;
+  const nonRefundable = cfg.nonRefundable || 0;
+
+  switch (cfg.mode) {
+    case 'fixed':
+      total = cfg.fixedAmount || 0;
+      break;
+    case 'rent_multiple':
+      total = round2(rent * (cfg.rentMultiplier || 1));
+      break;
+    case 'per_bed':
+      total = bedDeposit || cfg.fixedAmount || 0;
+      break;
+    case 'custom':
+    default:
+      total = bedDeposit || cfg.fixedAmount || rent || 0;
+      break;
+  }
+
+  const refundable = Math.max(0, round2(total - nonRefundable));
+  return {
+    total: round2(total),
+    refundable,
+    nonRefundable: round2(nonRefundable),
+    mode: cfg.mode || 'custom'
+  };
+}
+
+function calcLateFee({ invoice, todayDate = today(), lateSettings } = {}) {
+  const cfg = lateSettings || S().lateFee || (S().rent && {
+    on: S().rent.lateOn,
+    mode: 'fixed',
+    amount: S().rent.lateFee,
+    dailyAmount: 50,
+    percentage: 2,
+    maxCap: 1000,
+    graceDays: S().rent.graceDays || 5
+  }) || {};
+
+  if (!cfg.on && cfg.on !== undefined) return { amount: 0, daysOverdue: 0, mode: 'off', capped: false };
+  if (!invoice || !invoice.due || invoice.due >= todayDate) return { amount: 0, daysOverdue: 0, mode: cfg.mode, capped: false };
+
+  const daysOverdue = diffDays(todayDate, invoice.due);
+  const graceDays = cfg.graceDays != null ? cfg.graceDays : 5;
+  if (daysOverdue <= graceDays) return { amount: 0, daysOverdue, mode: cfg.mode, capped: false, withinGrace: true };
+
+  const balance = invBal(invoice);
+  if (balance <= 0) return { amount: 0, daysOverdue, mode: cfg.mode, capped: false };
+
+  const chargeableDays = daysOverdue - graceDays;
+  let rawAmount = 0;
+
+  switch (cfg.mode) {
+    case 'daily':
+      rawAmount = (cfg.dailyAmount || 50) * chargeableDays;
+      break;
+    case 'percentage':
+      rawAmount = round2((balance * (cfg.percentage || 2)) / 100);
+      break;
+    case 'fixed':
+    default:
+      rawAmount = cfg.amount || 200;
+      break;
+  }
+
+  const maxCap = cfg.maxCap != null ? cfg.maxCap : 1000;
+  const amount = Math.min(rawAmount, maxCap);
+  const capped = rawAmount > maxCap;
+
+  return {
+    amount: round2(amount),
+    rawAmount: round2(rawAmount),
+    daysOverdue,
+    chargeableDays,
+    mode: cfg.mode || 'fixed',
+    capped,
+    maxCap
+  };
+}
+
+function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeDate = null, notes = '', ...opts } = {}) {
+  const r = resById(resId);
+  if (!r) throw new AppError('Resident not found');
+  const room = roomById(r.roomId);
+  const s = S(r.hostelId, r.id);
+  const checkoutCfg = s.checkout || {};
+  deductions = round2(Math.max(0, +deductions || 0));
+
+  const depPaid = round2(sum(resInvoices(resId).filter(i => i.type === 'deposit'), i => i.paid || 0));
+  const unpaidInvs = openInv(resId).filter(i => i.type !== 'deposit');
+  let dues = round2(sum(unpaidInvs, invBal));
+
+  // Notice period shortfall check
+  const requiredNoticeDays = +checkoutCfg.noticeDaysRequired || 30;
+  let noticeDaysGiven = 0;
+  let shortfallDays = 0;
+  let shortfallFee = 0;
+
+  if (checkoutCfg.shortfallPenalty && (noticeDate || r.noticeDate || (opts && opts.applyShortfall))) {
+    if (noticeDate) {
+      noticeDaysGiven = Math.max(0, diffDays(checkoutDate, noticeDate));
+      if (noticeDaysGiven < requiredNoticeDays) {
+        shortfallDays = requiredNoticeDays - noticeDaysGiven;
+      }
+    } else if (r.noticeDate) {
+      noticeDaysGiven = Math.max(0, diffDays(checkoutDate, r.noticeDate));
+      if (noticeDaysGiven < requiredNoticeDays) {
+        shortfallDays = requiredNoticeDays - noticeDaysGiven;
+      }
+    } else if (opts && opts.applyShortfall) {
+      shortfallDays = requiredNoticeDays;
+    }
+    const ym = ymOf(checkoutDate);
+    const dailyRate = round2((r.rent || 0) / daysIn(ym));
+    shortfallFee = round2(dailyRate * shortfallDays);
+  }
+
+  // Calculate final electricity consumption if reading is provided
+  let elecShare = opts.elecShare || null;
+  const reading = opts.reading != null ? opts.reading : opts.meterNow;
+  if (!elecShare && reading !== undefined && reading !== null && reading !== '' && !isNaN(reading) && orgEnabled('electricity') && r.roomId) {
+    const last = lastMeter(r.roomId);
+    const p = last ? last.curr : 0;
+    const curr = +reading;
+    if (curr > p) {
+      const units = round2(curr - p);
+      const prevDate = last ? last.date : null;
+      const occ = meterOccupants(r.roomId, prevDate, checkoutDate);
+      const partial = occ.some(o => o[1] < 1);
+      const rate = S().elec.rate;
+      const shares = splitElectricity(r.roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, checkoutDate));
+      const sShare = shares.find(x => x.resId === resId);
+      if (sShare) {
+        elecShare = {
+          ...sShare,
+          prev: p,
+          curr,
+          roomUnits: units,
+          prevDate,
+          rate
+        };
+        if (sShare.amount > 0) {
+          // Add to dues only if not already billed into an open invoice on checkoutDate
+          const alreadyBilled = unpaidInvs.some(i => i.type === 'electricity' && (i.date === checkoutDate || (i.period && i.period === ymOf(checkoutDate))));
+          if (!alreadyBilled) {
+            dues = round2(dues + elecShare.amount);
+          }
+        }
+      }
+    }
+  }
+
+  const availableDepositAndCredit = round2(depPaid + (r.credit || 0));
+  const totalLiabilities = round2(dues + deductions + shortfallFee);
+
+  if (deductions > availableDepositAndCredit) {
+    throw new AppError('Deductions cannot exceed the remaining deposit and credit');
+  }
+
+  const settleFromDeposit = Math.min(availableDepositAndCredit, dues);
+  const refund = Math.max(0, round2(availableDepositAndCredit - totalLiabilities));
+  const balancePayable = Math.max(0, round2(totalLiabilities - availableDepositAndCredit));
+
+  return {
+    resId,
+    name: r.name,
+    phone: r.phone,
+    roomNo: room ? room.no : '',
+    bed: r.bed || '',
+    checkIn: r.checkIn,
+    checkoutDate,
+    noticeDate: noticeDate || r.noticeDate || null,
+    requiredNoticeDays,
+    noticeDaysGiven,
+    shortfallDays,
+    shortfallFee,
+    depositPaid: depPaid,
+    credit: r.credit || 0,
+    availableDepositAndCredit,
+    unpaidDues: dues,
+    elecShare,
+    deductions,
+    totalLiabilities,
+    settleFromDeposit,
+    refund,
+    balancePayable,
+    notes,
+    unpaidInvoices: [
+      ...unpaidInvs.map(i => ({ id: i.id, title: i.title, type: i.type, amount: i.amount, balance: invBal(i) })),
+      ...(elecShare && elecShare.amount > 0 && !unpaidInvs.some(i => i.type === 'electricity' && (i.date === checkoutDate || (elecShare.invId && i.id === elecShare.invId))) ? [{
+        id: elecShare.invId || 'inv-el-checkout-simulated',
+        title: `${t('Electricity')} (${num(elecShare.billable)} ${t('units')} · final reading)`,
+        type: 'electricity',
+        amount: elecShare.amount,
+        balance: elecShare.amount
+      }] : [])
+    ]
+  };
+}
+
 // Check-in: resident record, bed, first rent (pro-rated) and deposit invoices. Returns the resident.
 function checkIn(o) {
+  if (!canAction('create')) throw new AppError('Unauthorized: insufficient permissions to check in resident');
   const room = roomById(o.roomId); if (!room) throw new Error('Choose a room');
   const bed = bedsOf(room).find(b => b.id === o.bed);
   if (!bed || bed.status !== 'vac') throw new Error('That bed is not vacant any more');
@@ -916,11 +1809,47 @@ function checkIn(o) {
   const id = o.id || uid('res-');
   const rent = o.rent === '' || o.rent == null || isNaN(o.rent) ? +room.rent || 0 : Math.max(0, +o.rent || 0);
   const deposit = Math.max(0, +o.deposit || 0);
-  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '' });
+  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '', billingPolicy: o.billingPolicy || null });
   setBed(room.id, bed.id, { status: 'occ', resId: r.id });
-  const ym = ymOf(r.checkIn), dim = daysIn(ym), day = +r.checkIn.slice(8, 10);
-  const first = S().rent.prorate && day > 1 ? round2((r.rent * (dim - day + 1)) / dim) : r.rent;
-  if (r.rent > 0) addInvoice({ id: `inv-rent-${r.id}-${ym}`, resId: r.id, roomId: room.id, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}${first !== r.rent ? ' (' + t('pro-rata') + ')' : ''}`, amount: first, date: r.checkIn, due: addDays(r.checkIn, 2) });
+  const ym = ymOf(r.checkIn);
+  const rPolicy = (o.billingPolicy) || S(null, r.id).rent || {};
+  const isJoiningDate = rPolicy.model === 'joining_date';
+  let first = 0, firstTitle = '', firstPeriod = ym;
+  let formula = '';
+
+  if (isJoiningDate) {
+    const cycle = residentCycleFor(r, r.checkIn);
+    first = o.firstRent != null && !isNaN(o.firstRent) ? Math.max(0, +o.firstRent) : r.rent;
+    firstTitle = `${t('Rent')} ${cycle.periodLabel}`;
+    firstPeriod = cycle.periodLabel;
+    formula = `Anniversary cycle (${cycle.periodLabel}): ₹${first}`;
+  } else {
+    const checkCalc = calcCheckInRent({
+      checkInDate: r.checkIn,
+      monthlyRent: r.rent,
+      policy: (o.billingPolicy && o.billingPolicy.prorate) !== undefined ? o.billingPolicy.prorate : S().rent.prorate,
+      divisor: (o.billingPolicy && o.billingPolicy.prorateDivisor) || S().rent.prorateDivisor,
+      customAmount: o.firstRent
+    });
+    first = checkCalc.amount;
+    firstTitle = `${t('Rent')} ${fmtYM(ym)}${first !== r.rent ? ' (' + t('pro-rata') + ')' : ''}`;
+    formula = checkCalc.formula;
+  }
+
+  if (r.rent > 0 && first > 0) {
+    addInvoice({
+      id: `inv-rent-${r.id}-${ym}`,
+      resId: r.id,
+      roomId: room.id,
+      type: 'rent',
+      period: firstPeriod,
+      title: firstTitle,
+      amount: first,
+      date: r.checkIn,
+      due: addDays(r.checkIn, 2),
+      policySnapshot: { model: rPolicy.model || S().rent.model, formula }
+    });
+  }
   if (r.deposit > 0) addInvoice({ id: `inv-dep-${r.id}`, resId: r.id, roomId: room.id, type: 'deposit', title: t('Security deposit'), amount: r.deposit, date: r.checkIn, due: addDays(r.checkIn, 2) });
   notify({ to: 'admin', title: t('New check-in'), body: `${r.name} · ${room.no}-${bed.id}` });
   return r;
@@ -928,57 +1857,518 @@ function checkIn(o) {
 function welcomeMessage(r, login) {
   return tpl('welcome', { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, room: roomName(r.roomId), bed: r.bed, rent: rs(r.rent), deposit: rs(r.deposit), link: appUrl(), username: login ? login.username : r.username || '-', password: login ? login.password : t('(your mobile number)') }, waLang(r));
 }
-function shiftBed(resId, roomId, bedId, newRent) {
+function shiftBed(resId, roomId, bedId, newRent, opts = {}) {
   const r = resById(resId), room = roomById(roomId);
-  const bed = room && bedsOf(room).find(b => b.id === bedId);
+  if (!r) throw new Error('Resident not found');
+  if (!room) throw new Error('Target room not found');
+  const bed = bedsOf(room).find(b => b.id === bedId);
   if (!bed || bed.status !== 'vac') throw new Error('That bed is not vacant');
+
+  const oldRoomId = r.roomId;
+  const isDiffRoom = oldRoomId && oldRoomId !== roomId;
+  const moveDate = opts.date || today();
+
+  let oldSettlement = null;
+  let invShift = null;
+  // Electricity billing boundary settlement on room shift
+  if (isDiffRoom && S().elec && S().elec.rate > 0) {
+    const lastOld = lastMeter(oldRoomId);
+    const rOld = opts.readingOld !== undefined ? opts.readingOld : opts.oldRoomReading;
+    if (rOld !== undefined && rOld !== null) {
+      const prevVal = lastOld ? lastOld.curr : 0;
+      const currVal = +rOld;
+      if (isNaN(currVal) || currVal < 0) throw new Error('Enter a valid non-negative reading for old room');
+      if (currVal < prevVal && !opts.isReplacement) throw new Error(`Reading cannot be less than previous (${prevVal})`);
+      const units = round2(currVal - prevVal);
+      const occ = meterOccupants(oldRoomId, lastOld ? lastOld.date : null, moveDate);
+      const partial = occ.some(o => o[1] < 1);
+      const shares = splitElectricity(oldRoomId, units, S().elec.rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(lastOld ? lastOld.date : null, moveDate));
+      const resShare = shares.find(s => s.resId === resId) || { units: 0, amount: 0 };
+      oldSettlement = { unitsConsumed: units, charge: resShare.amount, resShare };
+
+      if (resShare.amount > 0) {
+        invShift = addInvoice({
+          id: `inv-el-shift-${resId}-${moveDate}-${uid()}`,
+          resId,
+          roomId: oldRoomId,
+          type: 'electricity',
+          title: `${t('Electricity')} (${resShare.units} ${t('units')} · ${room ? room.no : oldRoomId} shift)`,
+          amount: resShare.amount,
+          date: moveDate,
+          due: addDays(moveDate, 7)
+        });
+        oldSettlement.invoiceId = invShift.id;
+      }
+
+      Store.put('mtr_period', {
+        id: `mtr-p-${oldRoomId}-${resId}-${moveDate}-${uid()}`,
+        hostelId: Store.hostel() ? Store.hostel().id : null,
+        roomId: oldRoomId,
+        resId,
+        bedId: r.bed,
+        startDate: lastOld ? lastOld.date : r.checkIn,
+        endDate: moveDate,
+        startReading: prevVal,
+        endReading: currVal,
+        roomUnits: units,
+        allocationMethod: opts.allocationMethod || S().elec.sharing || 'occupancy_day_weighted',
+        allocatedUnits: resShare.units,
+        rate: S().elec.rate,
+        amount: resShare.amount,
+        isSettled: true,
+        action: 'shift',
+        ts: nowIso()
+      });
+
+      Store.put('meter', {
+        id: `mtr-${oldRoomId}-${moveDate}-${uid()}`,
+        roomId: oldRoomId,
+        curr: currVal,
+        prev: prevVal,
+        units,
+        date: moveDate,
+        ts: nowIso(),
+        note: `Shift transition reading (${r.name})`
+      });
+    }
+
+    // New room baseline reading
+    const rNew = opts.readingNew !== undefined ? opts.readingNew : opts.newRoomReading;
+    if (rNew !== undefined && rNew !== null) {
+      const newCurr = +rNew;
+      if (isNaN(newCurr) || newCurr < 0) throw new Error('Enter a valid non-negative reading for new room');
+      Store.put('meter', {
+        id: `mtr-${roomId}-${moveDate}-${uid()}`,
+        roomId,
+        curr: newCurr,
+        prev: newCurr,
+        units: 0,
+        date: moveDate,
+        opening: true,
+        ts: nowIso(),
+        note: `Shift baseline reading (${r.name})`
+      });
+    }
+  }
+
   setBed(r.roomId, r.bed, { status: 'vac', resId: null });
   setBed(roomId, bedId, { status: 'occ', resId });
   Store.patch(resId, { roomId, bed: bedId, rent: newRent > 0 ? newRent : r.rent });
   notify({ to: 'res', resId, title: t('Room changed'), body: `${room.no}-${bedId}` });
+  alog('shift_bed', `${r.name}: shifted from ${oldRoomId} to ${room.no}-${bedId}`, {
+    resId, fromRoom: oldRoomId, fromBed: r.bed, toRoom: roomId, toBed: bedId, rent: newRent > 0 ? newRent : r.rent
+  });
+
+  return {
+    res: resById(resId),
+    fromRoom: oldRoomId,
+    fromBed: r.bed,
+    toRoom: roomId,
+    toBed: bedId,
+    oldRoomSettlement: oldSettlement || { unitsConsumed: 0, charge: 0 },
+    electricityInvoice: invShift || ((oldSettlement && oldSettlement.invoiceId) ? Store.get(oldSettlement.invoiceId) : null)
+  };
+}
+function swapBeds(resIdA, resIdB, opts = {}) {
+  const rA = resById(resIdA), rB = resById(resIdB);
+  if (!rA || !rB) throw new Error('Both residents must exist');
+  if (rA.id === rB.id) throw new Error('Cannot swap a resident with themselves');
+  if (rA.status !== 'active' && rA.status !== 'notice') throw new Error('Resident A is not active');
+  if (rB.status !== 'active' && rB.status !== 'notice') throw new Error('Resident B is not active');
+
+  const roomA = roomById(rA.roomId), roomB = roomById(rB.roomId);
+  if (!roomA || !roomB) throw new Error('Rooms not found');
+
+  const bedA = bedsOf(roomA).find(b => b.id === rA.bed);
+  const bedB = bedsOf(roomB).find(b => b.id === rB.bed);
+  if (!bedA || !bedB) throw new Error('Beds not found');
+
+  const oldRoomAId = rA.roomId, oldBedAId = rA.bed;
+  const oldRoomBId = rB.roomId, oldBedBId = rB.bed;
+  const isDiffRoom = oldRoomAId !== oldRoomBId;
+  const moveDate = opts.date || today();
+
+  let unitsA = 0, unitsB = 0, shareA = { units: 0, amount: 0 }, shareB = { units: 0, amount: 0 }, invoiceA = null, invoiceB = null;
+  // Validate electricity readings upfront before ANY mutation
+  if (isDiffRoom && S().elec && S().elec.rate > 0) {
+    const lastA = lastMeter(oldRoomAId);
+    const lastB = lastMeter(oldRoomBId);
+
+    if (opts.readingA !== undefined && opts.readingA !== null) {
+      const prevA = lastA ? lastA.curr : 0;
+      const currA = +opts.readingA;
+      if (isNaN(currA) || currA < 0) throw new Error('Enter a valid reading for Room A');
+      if (currA < prevA && !opts.isReplacementA) throw new Error(`Reading for Room A cannot be less than previous (${prevA})`);
+    }
+    if (opts.readingB !== undefined && opts.readingB !== null) {
+      const prevB = lastB ? lastB.curr : 0;
+      const currB = +opts.readingB;
+      if (isNaN(currB) || currB < 0) throw new Error('Enter a valid reading for Room B');
+      if (currB < prevB && !opts.isReplacementB) throw new Error(`Reading for Room B cannot be less than previous (${prevB})`);
+    }
+
+    // Record Room A transition and settlement
+    if (opts.readingA !== undefined && opts.readingA !== null) {
+      const prevA = lastA ? lastA.curr : 0;
+      const currA = +opts.readingA;
+      unitsA = round2(currA - prevA);
+      const occA = meterOccupants(oldRoomAId, lastA ? lastA.date : null, moveDate);
+      const partialA = occA.some(o => o[1] < 1);
+      const sharesA = splitElectricity(oldRoomAId, unitsA, S().elec.rate, occA.map(o => o[0]), partialA ? occA.map(o => o[1]) : null, freeMonths(lastA ? lastA.date : null, moveDate));
+      shareA = sharesA.find(s => s.resId === rA.id) || { units: 0, amount: 0 };
+
+      if (shareA.amount > 0) {
+        invoiceA = addInvoice({
+          id: `inv-el-swap-${rA.id}-${moveDate}-${uid()}`,
+          resId: rA.id,
+          roomId: oldRoomAId,
+          type: 'electricity',
+          title: `${t('Electricity')} (${shareA.units} ${t('units')} · ${roomA ? roomA.no : oldRoomAId} swap)`,
+          amount: shareA.amount,
+          date: moveDate,
+          due: addDays(moveDate, 7)
+        });
+      }
+
+      Store.put('mtr_period', {
+        id: `mtr-p-${oldRoomAId}-${rA.id}-${moveDate}-${uid()}`,
+        hostelId: Store.hostel() ? Store.hostel().id : null,
+        roomId: oldRoomAId,
+        resId: rA.id,
+        bedId: oldBedAId,
+        startDate: lastA ? lastA.date : rA.checkIn,
+        endDate: moveDate,
+        startReading: prevA,
+        endReading: currA,
+        roomUnits: unitsA,
+        allocationMethod: opts.allocationMethod || S().elec.sharing || 'occupancy_day_weighted',
+        allocatedUnits: shareA.units,
+        rate: S().elec.rate,
+        amount: shareA.amount,
+        isSettled: true,
+        action: 'swap',
+        ts: nowIso()
+      });
+
+      Store.put('meter', {
+        id: `mtr-${oldRoomAId}-${moveDate}-${uid()}`,
+        roomId: oldRoomAId,
+        curr: currA,
+        prev: prevA,
+        units: unitsA,
+        date: moveDate,
+        ts: nowIso(),
+        note: `Swap transition reading (${rA.name})`
+      });
+    }
+
+    // Record Room B transition and settlement
+    if (opts.readingB !== undefined && opts.readingB !== null) {
+      const prevB = lastB ? lastB.curr : 0;
+      const currB = +opts.readingB;
+      unitsB = round2(currB - prevB);
+      const occB = meterOccupants(oldRoomBId, lastB ? lastB.date : null, moveDate);
+      const partialB = occB.some(o => o[1] < 1);
+      const sharesB = splitElectricity(oldRoomBId, unitsB, S().elec.rate, occB.map(o => o[0]), partialB ? occB.map(o => o[1]) : null, freeMonths(lastB ? lastB.date : null, moveDate));
+      shareB = sharesB.find(s => s.resId === rB.id) || { units: 0, amount: 0 };
+
+      if (shareB.amount > 0) {
+        invoiceB = addInvoice({
+          id: `inv-el-swap-${rB.id}-${moveDate}-${uid()}`,
+          resId: rB.id,
+          roomId: oldRoomBId,
+          type: 'electricity',
+          title: `${t('Electricity')} (${shareB.units} ${t('units')} · ${roomB ? roomB.no : oldRoomBId} swap)`,
+          amount: shareB.amount,
+          date: moveDate,
+          due: addDays(moveDate, 7)
+        });
+      }
+
+      Store.put('mtr_period', {
+        id: `mtr-p-${oldRoomBId}-${rB.id}-${moveDate}-${uid()}`,
+        hostelId: Store.hostel() ? Store.hostel().id : null,
+        roomId: oldRoomBId,
+        resId: rB.id,
+        bedId: oldBedBId,
+        startDate: lastB ? lastB.date : rB.checkIn,
+        endDate: moveDate,
+        startReading: prevB,
+        endReading: currB,
+        roomUnits: unitsB,
+        allocationMethod: opts.allocationMethod || S().elec.sharing || 'occupancy_day_weighted',
+        allocatedUnits: shareB.units,
+        rate: S().elec.rate,
+        amount: shareB.amount,
+        isSettled: true,
+        action: 'swap',
+        ts: nowIso()
+      });
+
+      Store.put('meter', {
+        id: `mtr-${oldRoomBId}-${moveDate}-${uid()}`,
+        roomId: oldRoomBId,
+        curr: currB,
+        prev: prevB,
+        units: unitsB,
+        date: moveDate,
+        ts: nowIso(),
+        note: `Swap transition reading (${rB.name})`
+      });
+    }
+  }
+
+  // Determine new rents
+  let newRentA = rA.rent;
+  let newRentB = rB.rent;
+  if (opts.rentA !== undefined && opts.rentA !== null && !isNaN(+opts.rentA) && +opts.rentA >= 0) {
+    newRentA = round2(+opts.rentA);
+  } else if (opts.rentMode === 'room') {
+    newRentA = roomB.rent != null ? roomB.rent : rA.rent;
+  }
+  if (opts.rentB !== undefined && opts.rentB !== null && !isNaN(+opts.rentB) && +opts.rentB >= 0) {
+    newRentB = round2(+opts.rentB);
+  } else if (opts.rentMode === 'room') {
+    newRentB = roomA.rent != null ? roomA.rent : rB.rent;
+  }
+
+  // Update beds in rooms atomically
+  if (oldRoomAId === oldRoomBId) {
+    // Both residents are in the same room (swapping beds e.g. Bed A <-> Bed B)
+    roomA.beds = bedsOf(roomA).map(b => {
+      if (b.id === oldBedAId) return { ...b, status: 'occ', resId: rB.id };
+      if (b.id === oldBedBId) return { ...b, status: 'occ', resId: rA.id };
+      return b;
+    });
+    Store.put('room', roomA);
+  } else {
+    // Different rooms
+    setBed(oldRoomAId, oldBedAId, { status: 'occ', resId: rB.id });
+    setBed(oldRoomBId, oldBedBId, { status: 'occ', resId: rA.id });
+  }
+
+  // Update residents
+  Store.patch(rA.id, { roomId: oldRoomBId, bed: oldBedBId, rent: newRentA });
+  Store.patch(rB.id, { roomId: oldRoomAId, bed: oldBedAId, rent: newRentB });
+
+  // Notifications
+  notify({ to: 'res', resId: rA.id, title: t('Room swapped'), body: `${roomB.no}-${oldBedBId}` });
+  notify({ to: 'res', resId: rB.id, title: t('Room swapped'), body: `${roomA.no}-${oldBedAId}` });
+  notify({ to: 'admin', title: t('Beds swapped'), body: `${rA.name} ⇄ ${rB.name}` });
+
+  // Audit log
+  alog('swap_bed', `${rA.name} (${roomA.no}-${oldBedAId}) ⇄ ${rB.name} (${roomB.no}-${oldBedBId})`, {
+    resA: rA.id, resB: rB.id,
+    fromA: { roomId: oldRoomAId, bed: oldBedAId, rent: rA.rent },
+    fromB: { roomId: oldRoomBId, bed: oldBedBId, rent: rB.rent },
+    toA: { roomId: oldRoomBId, bed: oldBedBId, rent: newRentA },
+    toB: { roomId: oldRoomAId, bed: oldBedAId, rent: newRentB },
+    note: opts.note || ''
+  });
+
+  return {
+    resA: resById(rA.id),
+    resB: resById(rB.id),
+    residentA: resById(rA.id),
+    residentB: resById(rB.id),
+    roomA: roomById(oldRoomAId),
+    roomB: roomById(oldRoomBId),
+    settlementA: { unitsConsumed: unitsA, charge: shareA.amount, share: shareA },
+    settlementB: { unitsConsumed: unitsB, charge: shareB.amount, share: shareB },
+    invoiceA,
+    invoiceB
+  };
 }
 // Checkout: dues come out of the deposit; the refund waits for approval in the inbox.
-function checkout(resId, date = today(), deductions = 0, note = '') {
+function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
   const r = resById(resId); if (!r) return null;
+  if (r.status === 'left') throw new AppError('Resident is already checked out');
+  deductions = round2(Math.max(0, +deductions || 0));
+
+  // 1. Process meter reading if provided in opts
+  let elecShare = null;
+  const reading = opts.reading != null ? opts.reading : opts.meterNow;
+  if (reading !== undefined && reading !== null && reading !== '' && !isNaN(reading) && orgEnabled('electricity') && r.roomId) {
+    const last = lastMeter(r.roomId);
+    const p = last ? last.curr : 0;
+    const curr = +reading;
+    if (curr > p) {
+      try {
+        const m = addReading({
+          roomId: r.roomId,
+          curr,
+          date,
+          status: 'billed',
+          isManual: true,
+          note: `Checkout reading (${r.name})`
+        });
+        const s = (m.shares || []).find(x => x.resId === resId);
+        if (s) {
+          elecShare = {
+            ...s,
+            prev: p,
+            curr,
+            roomUnits: m.units,
+            prevDate: m.prevDate,
+            rate: m.rate || S().elec.rate,
+            meterId: m.id,
+            invId: `inv-el-${m.id}-${resId}`
+          };
+        }
+      } catch (err) {
+        console.warn('Checkout meter reading error:', err.message);
+      }
+    }
+  }
+
   const depPaid = round2(sum(resInvoices(resId).filter(i => i.type === 'deposit'), i => i.paid || 0));
-  // dues other than the deposit invoice itself
+  // dues other than the deposit invoice itself (includes any newly generated electricity invoice)
   const dues = round2(sum(openInv(resId).filter(i => i.type !== 'deposit'), invBal));
-  let held = depPaid, settle = Math.min(held, dues);
+
+  // Compute official settlement statement prior to ledger mutation (validates deductions <= availableDepositAndCredit)
+  const stmt = calcSettlement({
+    resId,
+    checkoutDate: date,
+    deductions,
+    noticeDate: opts.noticeDate,
+    notes: note,
+    elecShare,
+    reading,
+    applyShortfall: opts.applyShortfall
+  });
+
+  // Deductions and notice shortfall are prioritized from deposit; remaining deposit settles open invoices
+  const availForDues = Math.max(0, round2(stmt.availableDepositAndCredit - deductions - (stmt.shortfallFee || 0)));
+  const settle = Math.min(availForDues, dues);
+  let held = depPaid;
   if (settle > 0) {
     recordPayment({ resId, amount: settle, mode: 'deposit', ref: 'Adjusted from deposit', date, invIds: openInv(resId).filter(i => i.type !== 'deposit').map(i => i.id) });
     held = round2(held - settle);
   }
   openInv(resId).filter(i => i.type === 'deposit').forEach(i => Store.patch(i.id, { waived: invBal(i) + (i.waived || 0), note: 'Closed at checkout' }));
-  const refund = Math.max(0, round2(held - deductions + (resById(resId).credit || 0)));
-  setBed(r.roomId, r.bed, { status: 'vac', resId: null });
+
+  // Zero-Due guarantee: settle remaining balance if specified
+  let balancePayment = null;
+  if (stmt.balancePayable > 0) {
+    if (opts.settleBalance === 'waive') {
+      // Owner explicitly waives / discounts the remaining balance
+      for (const inv of openInv(resId).filter(i => i.type !== 'deposit')) {
+        const bal = invBal(inv);
+        if (bal > 0) {
+          Store.patch(inv.id, { waived: round2((inv.waived || 0) + bal), discountNote: opts.waiveReason || 'Waived at checkout settlement' });
+        }
+      }
+    } else if (opts.settleBalance === 'pay' || (!opts.settleBalance && opts.payMode && opts.settleBalance !== 'debt')) {
+      // Record payment for remaining balance to clear all dues to 0
+      const payMode = opts.payMode || 'cash';
+      const payRef = opts.payRef || 'Checkout settlement balance';
+      balancePayment = recordPayment({
+        resId,
+        amount: stmt.balancePayable,
+        mode: payMode,
+        ref: payRef,
+        date,
+        note: 'Remaining balance settled at checkout (Zero-Due Guarantee)'
+      });
+    }
+  }
+
+  // Handle refund settlement
+  const refund = stmt.refund;
+  let depStatus = refund > 0 ? 'pending' : (stmt.balancePayable > 0 && opts.settleBalance === 'debt' ? 'debt' : 'closed');
+  let refundData = {};
+  if (refund > 0 && (opts.refundNow || opts.refundMode)) {
+    depStatus = 'paid';
+    refundData = {
+      mode: opts.refundMode || 'cash',
+      ref: opts.refundRef || '',
+      paidOn: date
+    };
+  }
+
   Store.patch(resId, { status: 'left', left: date, credit: 0, exitNote: note });
-  const dep = Store.put('dep', { resId, roomId: r.roomId, date, deposit: depPaid, settled: settle, deductions, refund, status: refund > 0 ? 'pending' : 'closed', note });
+  setBed(r.roomId, r.bed, { status: 'vac', resId: null });
+  if (typeof reconcileBeds === 'function') reconcileBeds();
+  const dep = Store.put('dep', {
+    resId,
+    roomId: r.roomId,
+    date,
+    deposit: depPaid,
+    settled: settle,
+    deductions,
+    refund,
+    balancePayable: stmt.balancePayable,
+    status: depStatus,
+    ...refundData,
+    balancePaymentId: balancePayment ? balancePayment.id : null,
+    settleBalanceAction: opts.settleBalance || (opts.payMode ? 'pay' : null),
+    note,
+    settlement: stmt
+  });
   if (r.userId) Backend.admin('set_active', { user_id: r.userId, active: false }).catch(e => toast(t('{n} is checked out, but their login could not be switched off: {m}. Disable it under Settings > Users.', { n: r.name, m: e.message }), 'bad'));
-  alog('checkout', `${r.name}: ${t('refund')} ${inr(refund)}`);
+  alog('checkout', `${r.name}: ${t('refund')} ${inr(refund)}`, { resId, deposit: depPaid, settled: settle, deductions, refund, balancePayable: stmt.balancePayable });
   return dep;
 }
 
 /* ===================================================================== electricity */
-const meters = () => Store.all('meter').slice().sort(by('date', -1));
-const lastMeter = roomId => meters().find(m => m.roomId === roomId) || null;
+const meters = () => Store.all('meter').slice().sort((a, b) => {
+  if (a.date !== b.date) return b.date > a.date ? 1 : -1;
+  if (b.meterReplaced && !a.meterReplaced) return 1;
+  if (a.meterReplaced && !b.meterReplaced) return -1;
+  if (b.opening && !a.opening) return -1;
+  if (a.opening && !b.opening) return 1;
+  const tb = b.ts || b._u || '';
+  const ta = a.ts || a._u || '';
+  if (tb && ta && tb !== ta) return tb > ta ? 1 : -1;
+  return (b.id || '').localeCompare(a.id || '');
+});
+const lastMeter = roomId => meters().find(m => m.roomId === roomId && m.status !== 'review') || null;
+const pendingMeter = roomId => meters().find(m => m.roomId === roomId && m.status === 'review') || null;
+function calcElectricityCost(units, elecSettings) {
+  units = Math.max(0, +units || 0);
+  const cfg = elecSettings || S().elec || {};
+  const fixedCharge = +(cfg.fixedCharge || 0);
+  if (units <= 0) return round2(fixedCharge);
+  let cost = 0;
+  if (cfg.pricing === 'slab' && Array.isArray(cfg.slabs) && cfg.slabs.length) {
+    let remaining = units;
+    let prevLimit = 0;
+    let lastRate = cfg.rate || 0;
+    for (const slab of cfg.slabs) {
+      const slabCap = slab.upTo - prevLimit;
+      const billedUnits = Math.min(remaining, slabCap);
+      if (billedUnits > 0) {
+        cost += billedUnits * slab.rate;
+        remaining -= billedUnits;
+      }
+      lastRate = slab.rate;
+      prevLimit = slab.upTo;
+      if (remaining <= 0) break;
+    }
+    if (remaining > 0) {
+      cost += remaining * lastRate;
+    }
+  } else {
+    cost = units * (cfg.rate || 0);
+  }
+  cost += fixedCharge;
+  return round2(cost);
+}
+
 // Split a room's units between the residents living there, honouring free units.
-// `weights` (0..1 per resident, default 1) is the part of the reading period each one actually
-// lived in the room, so someone who left or arrived mid-period pays only for their days and
-// gets free units only for their days.
-// `scale` is how many months of free allowance the stretch between the two readings earns
-// (see freeMonths): 1 for a normal month, about 0.5 for a fortnight.
 function splitElectricity(roomId, units, rate, resIds, weights, scale = 1) {
   const e = S().elec, n = resIds.length; if (!n) return [];
   const w = resIds.map((_, i) => (weights && weights[i] != null ? Math.max(0, Math.min(1, weights[i])) : 1));
   const tw = w.reduce((a, b) => a + b, 0) || n;
   const freePool = e.freeUnits * scale;
+  const costForUnits = u => (e.pricing === 'slab' ? round2(calcElectricityCost(u, e)) : Math.round(u * rate));
   if (e.freeMode === 'room') {
     const billable = Math.max(0, units - freePool);
-    return resIds.map((id, i) => { const f = w[i] / tw, b = billable * f; return { resId: id, units: round2(units * f), free: round2(Math.min(units, freePool) * f), billable: round2(b), amount: Math.round(b * rate), days: weights ? round2(w[i]) : undefined }; });
+    return resIds.map((id, i) => { const f = w[i] / tw, b = billable * f; return { resId: id, units: round2(units * f), free: round2(Math.min(units, freePool) * f), billable: round2(b), amount: costForUnits(b), days: weights ? round2(w[i]) : undefined }; });
   }
   return resIds.map((id, i) => {
     const share = units * w[i] / tw, free = freePool * w[i], billable = Math.max(0, share - free);
-    return { resId: id, units: round2(share), free: round2(Math.min(share, free)), billable: round2(billable), amount: Math.round(billable * rate), days: weights ? round2(w[i]) : undefined };
+    return { resId: id, units: round2(share), free: round2(Math.min(share, free)), billable: round2(billable), amount: costForUnits(billable), days: weights ? round2(w[i]) : undefined };
   });
 }
 // Free units are "per month", so a stretch between two readings earns them day by day:
@@ -999,7 +2389,7 @@ function freeMonths(from, to) {
 // Who shared the room between two readings, and for what part of that time. Includes people
 // who checked out during the period, so their units are not left on the roommates' bills.
 function meterOccupants(roomId, from, to) {
-  const span = from ? Math.max(1, diffDays(to, from)) : 0;
+  const span = from ? Math.max(0, diffDays(to, from)) : 0;
   const out = [];
   for (const r of Store.all('res')) {
     if (r.roomId !== roomId || r.checkIn > to) continue;
@@ -1011,32 +2401,104 @@ function meterOccupants(roomId, from, to) {
   }
   return out;
 }
-function addReading({ roomId, curr, date = today(), prev }) {
+function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo = null, ...rest }) {
   const room = roomById(roomId); if (!room) throw new Error('Choose a room');
+  if (rest.status === 'review') {
+    const pending = pendingMeter(roomId);
+    if (pending) throw new Error(t('A reading for this room is already under review'));
+  }
   const last = lastMeter(roomId);
+  if (last && date < last.date && !rest.isReplacement) {
+    throw new Error(t('Reading date ({date}) cannot be earlier than previous reading date ({prevDate})', { date, prevDate: last.date }));
+  }
   const p = prev != null && !isNaN(prev) ? +prev : last ? last.curr : 0;
   curr = +curr;
   if (!isFinite(curr) || isNaN(curr) || curr < 0) throw new Error(t('Enter a valid non-negative reading'));
-  if (curr < p) throw new Error(t('Reading cannot be less than previous ({p})', { p }));
+  if (curr > 999999) throw new Error(t('Reading ({curr}) exceeds the 6-digit meter limit (999,999). Please ensure you entered the meter display number, not a phone or serial number.', { curr: num(curr) }));
+  if (!rest.isReplacement && curr < p) throw new Error(t('Reading cannot be less than previous ({p})', { p }));
   const units = round2(curr - p), rate = S().elec.rate;
-  const occ = meterOccupants(roomId, last ? last.date : null, date);
+  if (units > 10000) throw new Error(t('Units consumed ({units}) is abnormally large (over 10,000 units). Please check if a phone number, serial number, or date was entered by mistake.', { units: num(units) }));
+  const prevDate = last ? last.date : null;
+  const occ = meterOccupants(roomId, prevDate, date);
   const partial = occ.some(o => o[1] < 1);
-  const shares = splitElectricity(roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(last ? last.date : null, date));
+  const shares = splitElectricity(roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, date));
   const avg = last ? last.units : null, span = last ? Math.max(1, diffDays(date, last.date)) : null;
   // A reading taken mid-month covers only a few days, so compare units per day, not per reading —
   // otherwise the full month that follows a check-in reading always looks "unusual" and sits unbilled.
   let odd = false;
-  if (avg > 0) odd = last.span && span ? span >= 7 && last.span >= 7 && units / span > (avg / last.span) * 2.2 : units > avg * 2.2;
-  const m = Store.put('meter', { roomId, date, prev: p, curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), status: odd ? 'review' : 'billed' });
-  if (odd) notify({ to: 'admin', title: t('Unusual electricity reading'), body: `${room.no}: ${units} ${t('units')} (${t('last')} ${avg})` });
-  else billMeter(m);
+  if (units > 1500) odd = true;
+  else if (avg > 0) odd = last.span && span ? span >= 7 && last.span >= 7 && units / span > (avg / last.span) * 2.2 : units > avg * 2.2;
+  const isManual = rest.isManual !== undefined ? rest.isManual : (!qrCode && !photo);
+  const capturedBy = rest.capturedBy || (Store.me && Store.me.full_name) || ctx().role || 'staff';
+  const status = rest.status || (odd ? 'review' : 'billed');
+  const m = Store.put('meter', { roomId, date, prevDate, prev: p, curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), qrCode, photo, isManual, capturedBy, ts: nowIso(), ...rest, status });
+  if (status === 'review') {
+    if (odd) notify({ to: 'admin', title: t('Unusual electricity reading'), body: `${room.no}: ${units} ${t('units')} (${t('last')} ${avg})` });
+  } else {
+    billMeter(m);
+  }
   return m;
 }
 // One opening row per room (deterministic id), so re-saving the migration screen corrects it.
 function setOpeningReading(roomId, curr, date = today()) {
   curr = +curr;
   if (!isFinite(curr) || isNaN(curr) || curr < 0) throw new Error(t('Enter a valid non-negative reading'));
-  return Store.put('meter', { id: `meter-open-${roomId}`, roomId, date, prev: curr, curr, units: 0, rate: S().elec.rate, shares: [], total: 0, period: ymOf(date), status: 'billed', opening: true });
+  return Store.put('meter', { id: `meter-open-${roomId}`, roomId, date, prev: curr, curr, units: 0, rate: S().elec.rate, shares: [], total: 0, period: ymOf(date), status: 'billed', opening: true, ts: nowIso() });
+}
+
+function replaceMeter({ roomId, finalOldReading, startingNewReading = 0, newSerial = null, newQr = null, reason = 'Meter replaced / reset', date = today() }) {
+  const room = roomById(roomId); if (!room) throw new AppError(t('Choose a room'));
+  const last = lastMeter(roomId);
+  const p = last ? last.curr : 0;
+  finalOldReading = finalOldReading != null && finalOldReading !== '' ? +finalOldReading : p;
+  startingNewReading = +startingNewReading || 0;
+  if (isNaN(finalOldReading) || finalOldReading < 0) throw new AppError(t('Enter valid final reading for old meter'));
+  if (isNaN(startingNewReading) || startingNewReading < 0) throw new AppError(t('Enter valid starting reading for new meter'));
+  if (finalOldReading < p) throw new AppError(t('Final reading of old meter ({f}) cannot be less than last recorded reading ({p})', { f: finalOldReading, p }));
+
+  let oldBill = null;
+  if (finalOldReading > p) {
+    oldBill = addReading({
+      roomId,
+      curr: finalOldReading,
+      prev: p,
+      date,
+      isManual: true,
+      status: 'billed',
+      note: `Final reading before meter replacement: ${reason}`
+    });
+  }
+
+  const newBaseline = Store.put('meter', {
+    id: `meter-reset-${roomId}-${uid()}`,
+    roomId,
+    date,
+    ts: nowIso(),
+    prev: startingNewReading,
+    curr: startingNewReading,
+    units: 0,
+    rate: S().elec.rate,
+    shares: [],
+    total: 0,
+    period: ymOf(date),
+    status: 'billed',
+    opening: true,
+    meterReplaced: true,
+    oldFinalReading: finalOldReading,
+    replacementReason: reason
+  });
+
+  if (newSerial || newQr) {
+    registerMeter({
+      roomId,
+      serialNo: newSerial || `SN-${room.no}-${Date.now().toString().slice(-4)}`,
+      qrCode: newQr || `MTR-${room.no}`,
+      meterType: 'digital'
+    });
+  }
+
+  alog('meter_replaced', `Meter replaced for Room ${room.no}. Old final: ${finalOldReading}, New start: ${startingNewReading}. Reason: ${reason}`, { roomId, finalOldReading, startingNewReading, reason });
+  return { oldBill, newBaseline };
 }
 /* A reading taken at the moment the room's occupancy changes.
  *
@@ -1064,7 +2526,7 @@ function moveReading(roomId, curr, date = today()) {
   if (!last) return setOpeningReading(roomId, curr, date);   // nothing to bill yet, this is where it starts
   if (sameDay(last.date, date) && !last.opening) {           // already read today
     if (+curr < last.curr) throw new Error(t('Reading cannot be less than previous ({p})', { p: last.curr }));
-    return null;
+    if (+curr === last.curr) return null;                    // same reading today, nothing new to bill
   }
   return addReading({ roomId, curr: +curr, date });
 }
@@ -1080,8 +2542,780 @@ function moveReadingHint(roomId, date = today()) {
 }
 
 function billMeter(m) {
-  for (const s of m.shares) if (s.amount > 0) addInvoice({ id: `inv-el-${m.id}-${s.resId}`, resId: s.resId, roomId: m.roomId, type: 'electricity', period: m.period, title: `${t('Electricity')} ${fmtShort(m.date)} (${num(s.billable)} ${t('units')})`, amount: s.amount, date: m.date, due: addDays(m.date, 7) });
+  for (const s of m.shares) if (s.amount > 0) addInvoice({ id: `inv-el-${m.id}-${s.resId}`, meterId: m.id, resId: s.resId, roomId: m.roomId, type: 'electricity', period: m.period, title: `${t('Electricity')} ${fmtShort(m.date)} (${num(s.billable)} ${t('units')})`, amount: s.amount, date: m.date, due: addDays(m.date, 7) });
   Store.patch(m.id, { status: 'billed' });
+}
+
+function correctReading({ meterId, curr, prev, reason }) {
+  if (!canAction('correct')) throw new AppError('Unauthorized: only owner, manager or super admin can correct meter readings');
+  const m = Store.get(meterId);
+  if (!m || m.kind !== 'meter') throw new AppError('Meter reading not found');
+  if (!reason || !String(reason).trim()) throw new AppError('Reason for correction is required');
+  curr = +curr;
+  if (!isFinite(curr) || isNaN(curr) || curr < 0) throw new AppError('Enter a valid reading');
+  if (curr > 999999) throw new AppError(t('Reading ({curr}) exceeds 6-digit meter limit (999,999)', { curr: num(curr) }));
+  const p = prev != null && !isNaN(prev) ? +prev : m.prev;
+  if (curr < p) throw new AppError(t('Reading cannot be less than previous ({p})', { p }));
+  const origCurr = m.curr, origPrev = m.prev, origUnits = m.units;
+  const newUnits = round2(curr - p);
+  if (newUnits > 10000) throw new AppError(t('Units consumed ({units}) is abnormally large (over 10,000 units)', { units: num(newUnits) }));
+  const rate = m.rate || S().elec.rate;
+  const fromDate = m.prevDate || (m.span ? addDays(m.date, -m.span) : null);
+  const occ = meterOccupants(m.roomId, fromDate, m.date);
+  const partial = occ.some(o => o[1] < 1);
+  const shares = splitElectricity(m.roomId, newUnits, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(fromDate, m.date));
+
+  Store.patch(meterId, {
+    prev: p,
+    curr,
+    units: newUnits,
+    shares,
+    total: sum(shares, s => s.amount),
+    origCurr,
+    origPrev,
+    origUnits,
+    correctedAt: nowIso(),
+    correctedBy: Store.me && Store.me.full_name,
+    correctionReason: String(reason).trim()
+  });
+
+  for (const s of shares) {
+    const invId = `inv-el-${m.id}-${s.resId}`;
+    const inv = Store.get(invId);
+    if (inv) {
+      if (!inv.paid || inv.paid === 0) {
+        Store.patch(invId, {
+          amount: s.amount,
+          title: `${t('Electricity')} ${fmtShort(m.date)} (${num(s.billable)} ${t('units')}) [Corrected]`
+        });
+      } else {
+        const diff = round2(s.amount - inv.amount);
+        if (diff !== 0) {
+          if (s.amount < inv.paid) {
+            const excess = round2(inv.paid - s.amount);
+            const r = resById(s.resId);
+            if (r) Store.patch(r.id, { credit: round2((r.credit || 0) + excess) });
+            Store.patch(invId, {
+              amount: s.amount,
+              paid: s.amount,
+              note: `Corrected from ₹${inv.amount}: ${reason} (₹${excess} refunded to advance credit)`
+            });
+          } else {
+            Store.patch(invId, {
+              amount: s.amount,
+              note: `Corrected from ₹${inv.amount}: ${reason}`
+            });
+          }
+          alog('meter_invoice_adjustment', `Invoice ${invId} adjusted by ₹${diff}`, { invId, diff, reason });
+        }
+      }
+    } else if (s.amount > 0) {
+      addInvoice({
+        id: invId,
+        resId: s.resId,
+        roomId: m.roomId,
+        type: 'electricity',
+        period: m.period,
+        title: `${t('Electricity')} ${fmtShort(m.date)} (${num(s.billable)} ${t('units')})`,
+        amount: s.amount,
+        date: m.date,
+        due: addDays(m.date, 7)
+      });
+    }
+  }
+
+  alog('meter_correction', `Room ${roomName(m.roomId)} reading corrected from ${origCurr} to ${curr}: ${reason}`, {
+    meterId,
+    origCurr,
+    newCurr: curr,
+    reason: String(reason).trim()
+  });
+
+  return Store.get(meterId);
+}
+
+function deleteReading({ meterId, reason = '' }) {
+  const role = ctx().role;
+  const isElevated = canAction('delete') || ['owner', 'super', 'manager', 'warden'].includes(role);
+  if (!isElevated) throw new AppError('Unauthorized: insufficient permissions to delete meter readings');
+  const m = Store.get(meterId);
+  if (!m || m.kind !== 'meter') throw new AppError('Meter reading not found');
+  const cleanReason = String(reason || (m.units > 10000 || !roomById(m.roomId) ? 'Erroneous / Abnormal reading deleted' : '')).trim();
+  if (!cleanReason) throw new AppError('Reason for deletion is required');
+  const paidBills = [];
+  const invsToDelete = [];
+  for (const s of (m.shares || [])) {
+    const invId = `inv-el-${m.id}-${s.resId}`;
+    const inv = Store.get(invId);
+    if (inv) {
+      if (inv.paid > 0) paidBills.push(inv);
+      else invsToDelete.push(inv.id);
+    }
+  }
+  for (const inv of Store.all('inv')) {
+    if (inv.id && inv.id.startsWith(`inv-el-${m.id}`) && !invsToDelete.includes(inv.id)) {
+      if (inv.paid > 0) paidBills.push(inv);
+      else invsToDelete.push(inv.id);
+    }
+  }
+  if (paidBills.length > 0) {
+    throw new AppError(`Cannot delete reading: ${paidBills.length} resident bill(s) have already been paid. Reverse the payments first.`);
+  }
+  for (const id of invsToDelete) {
+    Store.remove(id);
+  }
+  Store.remove(m.id);
+  alog('meter_deletion', `Room ${roomName(m.roomId)} reading deleted: ${cleanReason}`, {
+    meterId,
+    curr: m.curr,
+    prev: m.prev,
+    units: m.units,
+    reason: cleanReason
+  });
+  return true;
+}
+
+/* ===================================================================== electricity meters & ocr */
+function registerMeter({ roomId, serialNo, qrCode, meterType = 'digital' }) {
+  if (!canAction('edit')) throw new AppError('Unauthorized: insufficient permissions to register meter');
+  const room = roomById(roomId);
+  if (!room) throw new AppError('Room not found');
+  serialNo = String(serialNo || '').trim();
+  qrCode = String(qrCode || '').trim();
+  if (!serialNo) throw new AppError('Meter serial number is required');
+  const existing = Store.all('emeter').find(m => (m.serialNo === serialNo || (qrCode && m.qrCode === qrCode)) && m.id !== `emeter-${roomId}`);
+  if (existing) throw new AppError(`Meter serial ${serialNo} is already registered to room ${roomName(existing.roomId)}`);
+
+  const m = Store.put('emeter', {
+    id: `emeter-${roomId}`,
+    roomId,
+    serialNo,
+    qrCode: qrCode || `MTR-${roomId}-${serialNo}`,
+    meterType,
+    registeredAt: nowIso(),
+    registeredBy: Store.me && Store.me.full_name
+  });
+  alog('meter_registered', `Meter ${serialNo} registered to room ${room.no}`, { roomId, serialNo });
+  return m;
+}
+
+function getMeterForRoom(roomId) {
+  return Store.get(`emeter-${roomId}`) || null;
+}
+
+function analyzeDigitSegments(pixelGrid, width, height) {
+  const sample = (xRatio, yRatio, r = 1) => {
+    const cx = Math.floor(xRatio * width), cy = Math.floor(yRatio * height);
+    let count = 0, total = 0;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const px = cx + dx, py = cy + dy;
+        if (px >= 0 && px < width && py >= 0 && py < height) {
+          total++;
+          if (pixelGrid[py * width + px] > 128) count++;
+        }
+      }
+    }
+    return total ? count / total > 0.45 : false;
+  };
+
+  const a = sample(0.5, 0.12);
+  const b = sample(0.85, 0.28);
+  const c = sample(0.85, 0.72);
+  const d = sample(0.5, 0.88);
+  const e = sample(0.15, 0.72);
+  const f = sample(0.15, 0.28);
+  const g = sample(0.5, 0.50);
+
+  const sig = `${+a}${+b}${+c}${+d}${+e}${+f}${+g}`;
+  const patterns = {
+    '1111110': '0', '0110000': '1', '1101101': '2', '1111001': '3', '0110011': '4',
+    '1011011': '5', '1011111': '6', '1110000': '7', '1111111': '8', '1111011': '9'
+  };
+
+  if (patterns[sig] !== undefined) return { digit: patterns[sig], confidence: 0.95 };
+
+  let bestDigit = null, minDiff = 8;
+  for (const [p, digit] of Object.entries(patterns)) {
+    let diff = 0;
+    for (let i = 0; i < 7; i++) if (p[i] !== sig[i]) diff++;
+    if (diff < minDiff) { minDiff = diff; bestDigit = digit; }
+  }
+  const confidence = minDiff === 1 ? 0.78 : minDiff === 2 ? 0.55 : 0.3;
+  return { digit: bestDigit, confidence };
+}
+
+function parseMeterOcrText(rawText) {
+  if (!rawText) return { value: null, confidence: 0 };
+  const str = String(rawText).trim();
+  if (!str) return { value: null, confidence: 0 };
+  // 1. Check for number directly associated with kWh, units, or reading
+  const kwhMatch = str.match(/(\d+(?:\.\d+)?)\s*(?:kwh|units)/i) ||
+    str.match(/(?:kwh|reading|units|read|curr|k\.w\.h)[:\s]+(\d+(?:\.\d+)?)/i);
+  if (kwhMatch) {
+    const val = parseFloat(kwhMatch[1]);
+    if (!isNaN(val) && isFinite(val)) return { value: val, confidence: 0.92 };
+  }
+  // 2. Standalone decimal numbers (typical of digital meters, e.g. 1428.5)
+  const decMatches = str.match(/\b\d+\.\d+\b/g);
+  if (decMatches && decMatches.length === 1) {
+    const val = parseFloat(decMatches[0]);
+    if (!isNaN(val) && isFinite(val)) return { value: val, confidence: 0.88 };
+  }
+  // 3. Fallback: integer or decimal token sequence
+  const numMatches = str.match(/\b\d+(?:\.\d+)?\b/g);
+  if (numMatches && numMatches.length > 0) {
+    // Pick the token most resembling a meter reading (3 to 7 digits)
+    const candidates = numMatches.filter(n => n.length >= 3 && n.length <= 8);
+    const chosen = candidates.length > 0 ? candidates[candidates.length - 1] : numMatches[numMatches.length - 1];
+    const val = parseFloat(chosen);
+    if (!isNaN(val) && isFinite(val)) return { value: val, confidence: 0.75 };
+  }
+  const cleaned = str.replace(/[^0-9.]/g, '');
+  const val = parseFloat(cleaned);
+  if (isNaN(val) || !isFinite(val)) return { value: null, confidence: 0 };
+  return { value: val, confidence: 0.6 };
+}
+
+function validateMeterReadingFraud({ roomId, curr, prev, photoHash, meterQr, isReplaced = false }) {
+  const last = lastMeter(roomId);
+  const p = prev != null ? +prev : (last ? last.curr : 0);
+  const c = +curr;
+  const flags = [];
+
+  if (!isReplaced && c < p) flags.push(`Reading (${c}) is lower than previous reading (${p})`);
+  const units = isReplaced ? c : (c - p);
+  if (units > 1500) flags.push(`Excessive consumption: ${units} units (exceeds 1500 unit threshold)`);
+
+  if (!isReplaced && last && last.span && last.span >= 7 && last.units > 0) {
+    const dailyAvg = last.units / last.span;
+    const currentDays = Math.max(1, diffDays(today(), last.date));
+    if (units / currentDays > dailyAvg * 3.5 && units > 100) {
+      flags.push(`Abnormal consumption surge: ${round2(units / currentDays)} units/day vs average ${round2(dailyAvg)} units/day`);
+    }
+  }
+
+  if (photoHash) {
+    const duplicate = Store.all('meter').find(m => m.photoHash === photoHash && m.roomId !== roomId);
+    if (duplicate) flags.push(`Duplicate meter display photo detected from room ${roomName(duplicate.roomId)}`);
+  }
+
+  const room = roomById(roomId);
+  const reg = getMeterForRoom(roomId);
+  const expectedQr = (reg && reg.qrCode) || (room ? `MTR-${room.no}` : null);
+  if (expectedQr && meterQr) {
+    const cleanScanned = String(meterQr).trim().toUpperCase();
+    const cleanExpected = expectedQr.toUpperCase();
+    if (cleanScanned !== cleanExpected) {
+      flags.push(`Meter QR mismatch: scanned ${meterQr}, expected ${expectedQr}`);
+    }
+  }
+
+  return {
+    valid: flags.length === 0,
+    flags,
+    units,
+    prev: p,
+    curr: c
+  };
+}
+
+/* ===================================================================== digital rental agreements */
+function createAgreement({ resId, templateId = null, startDate = today(), endDate, rent, deposit, noticeDays = 30, rules = [], clauses = [] }) {
+  const r = resById(resId);
+  if (!r) throw new AppError('Resident not found');
+  const h = Store.hostel() || {};
+  const o = (Store.org && Store.org()) || {};
+  const s = S(h.id, resId);
+  const room = roomById(r.roomId);
+  const end = endDate || addDays(startDate, 335);
+  const existing = Store.all('agr').filter(a => a.resId === resId);
+  const ver = existing.length + 1;
+  const id = `agr-${resId}-v${ver}`;
+
+  const templates = (s.agreements && s.agreements.templates) || DEFAULT_AGREEMENT_TEMPLATES;
+  const tpl = (templateId && templates.find(t => t.id === templateId)) || templates[0] || {};
+
+  const vars = {
+    resident_name: r.name,
+    room_no: room ? room.no : '',
+    bed_id: r.bed || '',
+    rent: round2(rent != null ? rent : r.rent || 0),
+    deposit: round2(deposit != null ? deposit : r.deposit || 0),
+    notice_days: +noticeDays || 30,
+    hostel_name: h.name || '',
+    owner_name: (h.settings && h.settings.ownerName) || o.owner_name || (Store.me && Store.me.full_name) || '',
+    start_date: startDate,
+    end_date: end
+  };
+
+  const interpolate = text => String(text || '').replace(/\{\{([a-z_]+)\}\}/g, (_, k) => (vars[k] != null ? vars[k] : `{{${k}}}`));
+
+  const standardClauses = [
+    'The tenant agrees to pay monthly rent in advance on or before the rent due date.',
+    'Security deposit is refundable upon checkout subject to deductions for unpaid dues or physical damage beyond normal wear and tear.',
+    'A mandatory notice period of ' + noticeDays + ' days must be served prior to vacating.',
+    'Subletting or accommodating unauthorized guests without management consent is strictly prohibited.',
+    'Hostel and house rules including silent hours and visitor policies shall be strictly adhered to.'
+  ];
+
+  const tplClauses = (tpl.clauses || []).map(interpolate);
+  const tplRules = (tpl.houseRules || []).map(interpolate);
+
+  const finalClauses = clauses.length ? clauses.map(interpolate) : (tplClauses.length ? tplClauses : standardClauses);
+  const finalRules = rules.length ? rules.map(interpolate) : (tplRules.length ? tplRules : (h.settings && h.settings.houseRules) || []);
+
+  const agr = {
+    id,
+    resId,
+    templateId: tpl.id || 'tpl-std',
+    templateName: tpl.name || 'Standard Agreement',
+    hostelId: h.id,
+    version: ver,
+    status: 'active',
+    startDate,
+    endDate: end,
+    noticeDays: +noticeDays || 30,
+    rent: round2(rent != null ? rent : r.rent || 0),
+    deposit: round2(deposit != null ? deposit : r.deposit || 0),
+    owner: {
+      name: vars.owner_name,
+      phone: h.phone || o.phone || '',
+      hostelName: h.name || '',
+      address: h.address || ''
+    },
+    resident: {
+      name: r.name,
+      phone: r.phone,
+      guardian: r.guardian || '',
+      guardianPhone: r.guardianPhone || '',
+      address: r.address || '',
+      roomId: r.roomId,
+      roomNo: room ? room.no : '',
+      bed: r.bed || ''
+    },
+    clauses: finalClauses,
+    rules: finalRules,
+    rawClauses: clauses.length ? clauses : (tpl.clauses || standardClauses),
+    rawRules: rules.length ? rules : (tpl.houseRules || []),
+    signedAt: nowIso(),
+    signedBy: Store.me && Store.me.full_name,
+    legalDisclaimer: 'This electronic document is a binding rental contract under the Information Technology Act, 2000. It does not replace state-specific mandatory stamp duty or registration requirements where applicable.'
+  };
+
+  Store.put('agr', agr);
+  alog('agreement_created', `Agreement v${ver} generated for ${r.name}`, { agrId: id, resId, version: ver, templateId: tpl.id });
+  notify({ to: 'res', resId, title: t('Rental agreement ready'), body: `${h.name} · ${fmtDate(startDate)} – ${fmtDate(end)}`, category: 'agreement' });
+  return agr;
+}
+
+function getActiveAgreement(resId) {
+  const all = Store.all('agr').filter(a => a.resId === resId && a.status === 'active');
+  return all.sort(by('version', -1))[0] || null;
+}
+
+function renewAgreement(agrId, { newEndDate, rent, deposit, noticeDays }) {
+  const old = Store.get(agrId);
+  if (!old || old.kind !== 'agr') throw new AppError('Agreement not found');
+  Store.patch(agrId, { status: 'renewed', renewedAt: nowIso() });
+  return createAgreement({
+    resId: old.resId,
+    templateId: old.templateId,
+    startDate: old.endDate || today(),
+    endDate: newEndDate,
+    rent: rent != null ? rent : old.rent,
+    deposit: deposit != null ? deposit : old.deposit,
+    noticeDays: noticeDays != null ? noticeDays : old.noticeDays,
+    clauses: old.rawClauses || old.clauses,
+    rules: old.rawRules || old.rules
+  });
+}
+
+function agreementDueRenewal(daysAhead = 30) {
+  const target = addDays(today(), daysAhead);
+  const due = [];
+  for (const r of activeRes()) {
+    const agr = getActiveAgreement(r.id);
+    if (agr && agr.endDate && agr.endDate <= target && agr.endDate >= today()) {
+      due.push({ resident: r, agreement: agr, daysRemaining: diffDays(agr.endDate, today()) });
+    }
+  }
+  return due;
+}
+
+/* ===================================================================== verified payment webhooks */
+function processVerifiedPaymentWebhook({ provider, event, payload, signature, secret, timestamp }) {
+  if (!payload) throw new AppError('Invalid webhook payload', { status: 400 });
+  if (secret) {
+    if (!signature) throw new AppError('Missing webhook signature', { status: 401 });
+    if (typeof crypto !== 'undefined' && crypto.createHmac) {
+      const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      let valid = false;
+      if (timestamp) {
+        const expectedWithTs = crypto.createHmac('sha256', secret).update(String(timestamp) + payloadStr).digest('hex');
+        if (expectedWithTs === signature) valid = true;
+      }
+      const expectedWithoutTs = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+      if (expectedWithoutTs === signature) valid = true;
+      if (!valid) throw new AppError('Invalid webhook signature', { status: 401 });
+    }
+  }
+
+  let orderId = '', paymentId = '', amount = 0, currency = 'INR', status = 'failed';
+  if (provider === 'razorpay') {
+    const p = (payload.payload && payload.payload.payment && payload.payload.payment.entity) || (payload.payment && payload.payment.entity) || payload.entity || payload;
+    if (!p || !p.id) throw new AppError('Malformed Razorpay payload', { status: 400 });
+    orderId = p.order_id || (p.notes && p.notes.invId) || '';
+    paymentId = p.id;
+    amount = round2((p.amount || 0) / 100);
+    currency = p.currency || 'INR';
+    status = (event === 'payment.captured' || p.status === 'captured') ? 'success' : p.status;
+  } else if (provider === 'cashfree') {
+    const d = payload.data || payload;
+    orderId = (d.order && d.order.order_id) || payload.orderId || '';
+    paymentId = (d.payment && d.payment.cf_payment_id) || payload.paymentId || '';
+    amount = round2((d.payment && d.payment.payment_amount) || payload.amount || 0);
+    const cfPayStatus = (d.payment && d.payment.payment_status) || payload.status;
+    status = (event === 'PAYMENT_SUCCESS_WEBHOOK' || cfPayStatus === 'SUCCESS') ? 'success' : 'failed';
+  } else {
+    orderId = payload.orderId || payload.order_id || '';
+    paymentId = payload.paymentId || payload.transactionId || payload.id;
+    amount = round2(payload.amount);
+    status = (payload.status === 'SUCCESS' || payload.status === 'captured') ? 'success' : 'failed';
+  }
+
+  if (status !== 'success') {
+    return { ok: false, status, message: 'Payment status not successful: ' + status };
+  }
+
+  if (!orderId && !paymentId) {
+    throw new AppError('Payment missing order ID and transaction ID', { status: 400 });
+  }
+
+  let targetInv = null;
+  if (orderId && Store.get(orderId)) targetInv = Store.get(orderId);
+  else if (payload.notes && payload.notes.invId && Store.get(payload.notes.invId)) targetInv = Store.get(payload.notes.invId);
+  else if (payload.notes && payload.notes.resId) {
+    targetInv = openInv(payload.notes.resId)[0] || null;
+  }
+
+  const resId = targetInv ? targetInv.resId : (payload.notes && payload.notes.resId);
+  if (!resId) throw new AppError('Could not associate payment with any resident', { status: 404 });
+
+  const existingPay = Store.all('pay').find(p => p.ref === paymentId || p.idempotencyKey === `gw-${paymentId}` || p.idempotencyKey === `cf-${paymentId}`);
+  if (existingPay) {
+    return { ok: true, replay: true, pay: existingPay, message: 'Payment already processed' };
+  }
+
+  const pay = recordPayment({
+    resId,
+    amount,
+    mode: 'upi',
+    ref: paymentId,
+    date: today(),
+    note: `Automated verified payment via ${provider} (${orderId})`,
+    invIds: targetInv ? [targetInv.id] : null,
+    idempotencyKey: `cf-${paymentId}`
+  });
+
+  alog('payment_webhook_confirmed', `₹${amount} verified via ${provider} for ${(resById(resId) || {}).name}`, {
+    provider, paymentId, orderId, amount, resId
+  });
+
+  return { ok: true, replay: false, pay };
+}
+
+/* ===================================================================== payment adapter & monthly billing batch */
+const PaymentGateway = {
+  PROVIDERS: ['direct_upi', 'cashfree', 'setu'],
+  createPaymentLink({ invoiceId, amount, resId, hostelId, provider = 'cashfree' }) {
+    const h = (Store.hostels || []).find(x => x.id === hostelId) || Store.hostel() || {};
+    const p = (h.settings && h.settings.pay) || S().pay || {};
+    if (provider === 'direct_upi') {
+      return upiPayUrl(resId, amount);
+    }
+    if (provider === 'cashfree') {
+      return `${appUrl()}/pay.html?inv_id=${encodeURIComponent(invoiceId)}&hostel_id=${encodeURIComponent(hostelId || h.id || '')}&res_id=${encodeURIComponent(resId || '')}&am=${encodeURIComponent(amount)}`;
+    }
+    return `${appUrl()}/pay/${invoiceId}?provider=${provider}&amt=${amount}`;
+  },
+  verifyWebhookSignature({ payload, signature, secret, timestamp = '', provider = 'cashfree' }) {
+    if (!secret || !signature) return false;
+    if (typeof crypto !== 'undefined' && crypto.createHmac) {
+      const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (timestamp) {
+        const expectedWithTs = crypto.createHmac('sha256', secret).update(String(timestamp) + payloadStr).digest('hex');
+        if (expectedWithTs === signature) return true;
+      }
+      const expected = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+      return expected === signature;
+    }
+    return false;
+  }
+};
+
+function composeMonthlyBillingMessage({ resident, name = '', hostelName = '', period = '', rent = 0, electricity = 0, mess = 0, charges = 0, previousDues = 0, totalDue = 0, payLink = '' } = {}) {
+  const firstName = (resident && resident.name ? resident.name.split(' ')[0] : (name || '').split(' ')[0]) || 'Resident';
+  const parts = [];
+  if (rent > 0) parts.push(`Rent: ₹${rent.toLocaleString('en-IN')}`);
+  if (electricity > 0) parts.push(`Electricity: ₹${electricity.toLocaleString('en-IN')}`);
+  if (mess > 0) parts.push(`Mess: ₹${mess.toLocaleString('en-IN')}`);
+  if (charges > 0) parts.push(`Other: ₹${charges.toLocaleString('en-IN')}`);
+  if (previousDues > 0) parts.push(`Previous Dues: ₹${previousDues.toLocaleString('en-IN')}`);
+  const breakdown = parts.length ? parts.join('. ') + '.' : '';
+
+  let msg = `Hello ${firstName}, your ${period} dues for ${hostelName} are ₹${totalDue.toLocaleString('en-IN')}. ${breakdown}`;
+  if (payLink) {
+    msg += ` Please complete payment using your Sarvlekh link: ${payLink}`;
+  }
+  return msg;
+}
+
+function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
+  const h = Store.hostel();
+  if (!h) throw new AppError('No active hostel selected');
+  const settings = S();
+  const monthStart = `${ym}-01`;
+  const monthEnd = `${ym}-${pad(daysIn(ym))}`;
+  const excludeSet = new Set(options.excludeResIds || []);
+
+  // Filter residents who were actively living during billing month ym
+  const resList = activeRes().filter(r => {
+    if (excludeSet.has(r.id)) return false;
+    if (r.checkIn > monthEnd) return false;
+    if (r.left && r.left < monthStart) return false;
+    return true;
+  });
+
+  const results = {
+    batchId: `batch-${h.id}-${ym}-${Date.now()}`,
+    hostelId: h.id,
+    period: ym,
+    timestamp: nowIso(),
+    totalResidents: resList.length,
+    invoicesCreated: 0,
+    invoicesSkipped: 0,
+    totalBilledAmount: 0,
+    residents: [],
+    messages: []
+  };
+
+  for (const r of resList) {
+    const resSummary = {
+      resId: r.id,
+      name: r.name,
+      phone: r.phone,
+      roomNo: (roomById(r.roomId) || {}).no || '',
+      bed: r.bed || '',
+      rentAmount: 0,
+      elecAmount: 0,
+      messAmount: 0,
+      chargesAmount: 0,
+      previousDues: 0,
+      totalDue: 0,
+      invoices: [],
+      messageText: '',
+      waLink: ''
+    };
+
+    // 1. Rent invoice
+    const rPolicy = r.billingPolicy || settings.rent;
+    const isJoiningDate = rPolicy.model === 'joining_date';
+    let rentCycleId, rentPeriod, invDate, dueDate;
+    if (isJoiningDate) {
+      const annivDay = +r.checkIn.slice(8, 10);
+      const clampedDay = Math.min(annivDay, daysIn(ym));
+      const targetDate = `${ym}-${pad(clampedDay)}`;
+      const cycle = residentCycleFor(r, targetDate);
+      if (r.checkIn > cycle.cycleStart) {
+        rentCycleId = null;
+      } else {
+        rentCycleId = `inv-rent-${r.id}-${cycle.cycleStart}`;
+        rentPeriod = cycle.periodLabel;
+        invDate = cycle.cycleStart;
+        dueDate = cycle.dueDate;
+      }
+    } else {
+      rentCycleId = `inv-rent-${r.id}-${ym}`;
+      rentPeriod = ym;
+      invDate = rentDue(ym);
+      dueDate = addDays(invDate, settings.rent.dueDays || settings.rent.graceDays || 5);
+    }
+
+    if (rentCycleId && r.rent > 0) {
+      if (!Store.get(rentCycleId)) {
+        if (!options.previewOnly) {
+          const inv = addInvoice({
+            id: rentCycleId,
+            resId: r.id,
+            roomId: r.roomId,
+            type: 'rent',
+            period: rentPeriod,
+            title: `${t('Rent')} ${fmtYM(ym)}`,
+            amount: r.rent,
+            date: invDate,
+            due: dueDate,
+            policySnapshot: { model: rPolicy.model, rate: r.rent }
+          });
+          resSummary.invoices.push(inv.id);
+        } else {
+          resSummary.invoices.push(rentCycleId);
+        }
+        results.invoicesCreated++;
+        results.totalBilledAmount += r.rent;
+        resSummary.rentAmount = r.rent;
+      } else {
+        results.invoicesSkipped++;
+        const existing = Store.get(rentCycleId);
+        resSummary.rentAmount = existing.amount || r.rent;
+      }
+    }
+
+    // 2. Electricity bill
+    const elecInvs = resInvoices(r.id).filter(i => i.type === 'electricity' && i.period === ym);
+    resSummary.elecAmount = sum(elecInvs, i => i.amount || 0);
+
+    // 3. Mess bill
+    if (settings.mess && (settings.mess.billing === 'compulsory' || (settings.mess.billing === 'optional' && r.food !== false))) {
+      const messFee = settings.mess.monthlyFee || 2500;
+      const messInvId = `inv-mess-${r.id}-${ym}`;
+      if (!Store.get(messInvId)) {
+        if (!options.previewOnly) {
+          const inv = addInvoice({
+            id: messInvId,
+            resId: r.id,
+            roomId: r.roomId,
+            type: 'mess',
+            period: ym,
+            title: `${t('Mess fee')} ${fmtYM(ym)}`,
+            amount: messFee,
+            date: rentDue(ym),
+            due: addDays(rentDue(ym), 5)
+          });
+          resSummary.invoices.push(inv.id);
+        } else {
+          resSummary.invoices.push(messInvId);
+        }
+        results.invoicesCreated++;
+        results.totalBilledAmount += messFee;
+        resSummary.messAmount = messFee;
+      } else {
+        const existing = Store.get(messInvId);
+        resSummary.messAmount = existing.amount || messFee;
+      }
+    }
+
+    // 4. Recurring additional charges
+    if (Array.isArray(settings.charges) && settings.charges.length) {
+      for (const chg of settings.charges) {
+        if (!chg.active || chg.frequency !== 'monthly') continue;
+        if (chg.effectiveDate && chg.effectiveDate > monthEnd) continue;
+        if (chg.scope === 'room' && chg.roomId && chg.roomId !== r.roomId) continue;
+        const chgInvId = `inv-chg-${chg.id}-${r.id}-${ym}`;
+        if (!Store.get(chgInvId)) {
+          if (!options.previewOnly) {
+            const inv = addInvoice({
+              id: chgInvId,
+              resId: r.id,
+              roomId: r.roomId,
+              type: 'charge',
+              period: ym,
+              title: `${chg.name} ${fmtYM(ym)}`,
+              amount: chg.amount,
+              date: rentDue(ym),
+              due: addDays(rentDue(ym), 5)
+            });
+            resSummary.invoices.push(inv.id);
+          } else {
+            resSummary.invoices.push(chgInvId);
+          }
+          results.invoicesCreated++;
+          results.totalBilledAmount += chg.amount;
+          resSummary.chargesAmount += chg.amount;
+        } else {
+          const existing = Store.get(chgInvId);
+          resSummary.chargesAmount += existing.amount || chg.amount;
+        }
+      }
+    }
+
+    // 5. Total outstanding dues
+    const currentDue = resDue(r.id);
+    const billedInCycle = resSummary.rentAmount + resSummary.elecAmount + resSummary.messAmount + resSummary.chargesAmount;
+    if (options.previewOnly) {
+      resSummary.previousDues = currentDue;
+      resSummary.totalDue = round2(currentDue + billedInCycle);
+    } else {
+      resSummary.totalDue = currentDue;
+      resSummary.previousDues = Math.max(0, round2(currentDue - billedInCycle));
+    }
+
+    // 6. WhatsApp message text & link
+    const msg = composeMonthlyBillingMessage({
+      resident: r,
+      hostelName: h.name,
+      period: fmtYM(ym),
+      rent: resSummary.rentAmount,
+      electricity: resSummary.elecAmount,
+      mess: resSummary.messAmount,
+      charges: resSummary.chargesAmount,
+      previousDues: resSummary.previousDues,
+      totalDue: resSummary.totalDue,
+      payLink: upiPayUrl(r.id, resSummary.totalDue)
+    });
+    resSummary.messageText = msg;
+    resSummary.waLink = `https://wa.me/91${phone10(r.phone)}?text=${encodeURIComponent(msg)}`;
+
+    results.residents.push(resSummary);
+    if (resSummary.totalDue > 0 && phone10(r.phone)) {
+      results.messages.push({
+        resId: r.id,
+        name: r.name,
+        phone: r.phone,
+        totalDue: resSummary.totalDue,
+        text: msg,
+        waLink: resSummary.waLink
+      });
+    }
+  }
+
+  alog('monthly_billing_batch', `Monthly billing run: ${results.invoicesCreated} created, ${results.invoicesSkipped} skipped, ${results.messages.length} reminders ready`, {
+    batchId: results.batchId,
+    ym,
+    invoicesCreated: results.invoicesCreated,
+    totalBilledAmount: results.totalBilledAmount
+  });
+
+  return results;
+}
+
+function canSkipMeal(mealK, date = today(), time = null) {
+  const m = mealByKey(mealK);
+  if (!m) return { allowed: false, reason: 'Invalid meal' };
+  const s = S().mess;
+  if (s && s.skip === false) return { allowed: false, reason: 'Meal skipping is disabled by policy' };
+  if (time) {
+    const prev = m.prev;
+    const cutDay = prev ? addDays(date, -1) : date;
+    const [ch, cm] = String(m.cutoff || '22:00').split(':').map(Number);
+    const dCut = parse(cutDay); dCut.setHours(ch, cm || 0, 0, 0);
+    const [th, tm] = String(time).split(':').map(Number);
+    const dNow = parse(today()); dNow.setHours(th, tm || 0, 0, 0);
+    if (dNow >= dCut) return { allowed: false, reason: `Cutoff passed (${m.cutoff})` };
+    return { allowed: true };
+  }
+  return { allowed: beforeCutoff(date, mealK, 'skip'), reason: beforeCutoff(date, mealK, 'skip') ? null : 'Cutoff time passed' };
+}
+
+function calcMessRebate(resId, fromDate, toDate) {
+  const messCfg = S().mess || {};
+  if (messCfg.billing === 'included') return { rebate: 0, days: 0, eligible: false };
+  const leaveDays = Math.max(0, diffDays(toDate, fromDate) + 1);
+  const minLeaveDays = messCfg.minLeaveDays != null ? messCfg.minLeaveDays : 2;
+  if (leaveDays < minLeaveDays) return { rebate: 0, days: leaveDays, eligible: false };
+  const rebatePerDay = messCfg.rebatePerDay || 80;
+  const rebate = round2(leaveDays * rebatePerDay);
+  return { rebate, days: leaveDays, eligible: true, ratePerDay: rebatePerDay };
 }
 
 /* ===================================================================== laundry */
@@ -1391,7 +3625,7 @@ const hkFeedbackFor = taskId => Store.all('hkf').filter(f => f.taskId === taskId
  * and the distance is kept on the record so the owner can see it. The owner's manual grid is
  * the same att-{staff}-{month} row, so salary maths does not change at all.
  */
-const STAFF_LOGIN_ROLES = ['cook', 'housekeeping', 'laundry', 'guard', 'staff', 'accountant'];
+const STAFF_LOGIN_ROLES = ['cook', 'housekeeping', 'laundry', 'guard', 'staff', 'accountant', 'warden'];
 const selfPunchOn = () => ['self', 'both'].includes(S().staffAtt.mode);
 const myStaffId = () => (STAFF_LOGIN_ROLES.includes(ctx().role) && ctx().refId && staffById(ctx().refId) ? ctx().refId : null);
 function punchedToday(staffId) {
@@ -1420,8 +3654,39 @@ function payrollFor(s, ym) {
   const dim = daysIn(ym), lastDay = ym === ymOf(today()) ? +today().slice(8) : dim;
   const A = Object.values(days).filter(v => v === 'A').length, H = Object.values(days).filter(v => v === 'H').length, P = Object.values(days).filter(v => v === 'P').length;
   const payable = Math.round(((+s.salary || 0) * (dim - A - H * 0.5)) / dim);
-  const paid = sum(Store.all('sal').filter(x => x.staffId === s.id && x.ym === ym), x => x.amount);
+  const paid = sum(Store.all('sal').filter(x => x.staffId === s.id && x.ym === ym && !x.isAdv && x.type !== 'advance'), x => (+x.amount || 0) + (+x.advDeducted || 0));
   return { P, A, H, unmarked: Math.max(0, lastDay - P - A - H), payable, paid, due: Math.max(0, payable - paid) };
+}
+
+function staffSalarySummary(s, currentYM = ymOf(today())) {
+  if (!s) return { baseSalary: 0, totalPaid: 0, totalSalaryPaid: 0, totalAdvanceGiven: 0, totalAdvanceDeducted: 0, activeAdvance: 0, currentMonthPayable: 0, currentMonthPaid: 0, currentMonthDue: 0, netPayable: 0, attendance: { P: 0, A: 0, H: 0, due: 0 }, history: [] };
+  const allTx = Store.all('sal').filter(x => x.staffId === s.id).sort(by('date', -1));
+  const salaryTxs = allTx.filter(x => !x.isAdv && x.type !== 'advance');
+  const totalSalaryPaid = round2(sum(salaryTxs, x => +x.amount || 0));
+  const advanceTxs = allTx.filter(x => x.isAdv || x.type === 'advance');
+  const totalAdvanceGiven = round2(sum(advanceTxs, x => +x.amount || 0));
+  const totalAdvanceDeducted = round2(sum(salaryTxs, x => +x.advDeducted || 0));
+  const activeAdvance = Math.max(0, round2(totalAdvanceGiven - totalAdvanceDeducted));
+  const totalPaid = round2(totalSalaryPaid + totalAdvanceGiven);
+  const p = payrollFor(s, currentYM);
+  const currentMonthPayable = p.payable;
+  const currentMonthPaid = p.paid;
+  const currentMonthDue = p.due;
+  const netPayable = Math.max(0, round2(currentMonthDue - activeAdvance));
+  return {
+    baseSalary: +s.salary || 0,
+    totalPaid,
+    totalSalaryPaid,
+    totalAdvanceGiven,
+    totalAdvanceDeducted,
+    activeAdvance,
+    currentMonthPayable,
+    currentMonthPaid,
+    currentMonthDue,
+    netPayable,
+    attendance: p,
+    history: allTx
+  };
 }
 
 /* ===================================================================== automation */
@@ -1444,19 +3709,60 @@ function runAutomationAll(force) {
   if (!force && LS.get(key)) return 0;
   const A = S().auto, d0 = today(), ym = ymOf(d0); let acts = 0;
   const admin = isAdmin();
-  if (admin && A.rent && d0 >= rentDue(ym)) {
+  if (admin && A.rent) {
     for (const r of activeRes()) {
-      if (r.checkIn > rentDue(ym) || !(r.rent > 0)) continue;
-      const id = `inv-rent-${r.id}-${ym}`; if (Store.get(id)) continue;
-      addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}`, amount: r.rent, date: rentDue(ym), due: addDays(rentDue(ym), S().rent.graceDays) }); acts++;
+      if (!(r.rent > 0)) continue;
+      const rPolicy = r.billingPolicy || S().rent;
+      if (rPolicy.model === 'joining_date') {
+        const cycle = residentCycleFor(r, d0);
+        if (d0 >= cycle.cycleStart) {
+          const id = `inv-rent-${r.id}-${cycle.cycleStart}`;
+          if (!Store.get(id)) {
+            addInvoice({
+              id,
+              resId: r.id,
+              roomId: r.roomId,
+              type: 'rent',
+              period: cycle.periodLabel,
+              title: `${t('Rent')} (${cycle.periodLabel})`,
+              amount: r.rent,
+              date: cycle.cycleStart,
+              due: cycle.dueDate,
+              policySnapshot: { model: 'joining_date', rate: r.rent }
+            });
+            acts++;
+          }
+        }
+      } else {
+        if (d0 >= rentDue(ym)) {
+          if (r.checkIn > rentDue(ym)) continue;
+          const id = `inv-rent-${r.id}-${ym}`; if (Store.get(id)) continue;
+          addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}`, amount: r.rent, date: rentDue(ym), due: addDays(rentDue(ym), S().rent.graceDays) }); acts++;
+        }
+      }
     }
     if (acts) alog('rent', t('{n} rent bills created', { n: acts }));
   }
-  if (admin && A.late && S().rent.lateOn && S().rent.lateFee > 0) {
+  if (admin && A.late && S().rent.lateOn) {
     let n = 0;
     for (const i of invoices()) if (i.type === 'rent' && invBal(i) > 0 && i.due < d0 && !Store.get(`inv-late-${i.id}`)) {
       const r = resById(i.resId); if (!r || r.status === 'left') continue;
-      addInvoice({ id: `inv-late-${i.id}`, resId: i.resId, roomId: i.roomId, type: 'late', period: i.period, title: `${t('Late fee')} · ${i.title}`, amount: S().rent.lateFee, date: d0, due: addDays(d0, 3) }); n++;
+      const late = calcLateFee({ invoice: i, todayDate: d0, lateSettings: S().lateFee });
+      if (late.amount > 0) {
+        addInvoice({
+          id: `inv-late-${i.id}`,
+          resId: i.resId,
+          roomId: i.roomId,
+          type: 'late',
+          period: i.period,
+          title: `${t('Late fee')} · ${i.title}`,
+          amount: late.amount,
+          date: d0,
+          due: addDays(d0, 3),
+          sourceInvId: i.id
+        });
+        n++;
+      }
     }
     if (n) { alog('late', t('{n} late fees added', { n })); acts += n; }
   }
@@ -1481,7 +3787,7 @@ function runAutomationAll(force) {
         const sent = due.filter((x, i) => res[i] && res[i].ok); markReminded(sent);
         if (sent.length) alog('mbill', t('{n} monthly bills sent on WhatsApp', { n: sent.length }));
         if (sent.length < due.length) notify({ id: `ntf-mbillfail-${ym}`, to: 'admin', title: t('Some monthly bills were not sent'), body: t('{n} could not be sent — open Approvals to send them yourself', { n: due.length - sent.length }), link: 'inbox' });
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }
   if (admin && A.checkout) for (const r of activeRes()) if (r.planOut === addDays(d0, 1)) notify({ id: `ntf-out-${r.id}`, to: 'admin', title: t('Checkout tomorrow'), body: r.name, link: 'residents' });
@@ -1535,7 +3841,18 @@ function inboxItems() {
   const out = [];
   if (can('payments')) for (const c of Store.all('claim').filter(c => c.status === 'pending')) { const r = resById(c.resId); out.push({ k: 'claim', id: c.id, icon: 'rupee', ic: 'ok', t: `${t('UPI payment')} · ${inr(c.amount)}`, d: `${r ? r.name : ''} · UTR ${c.utr || '—'}`, ts: c.ts }); }
   if (can('kitchen')) for (const p of Store.all('pr').filter(p => p.status === 'requested')) out.push({ k: 'pr', id: p.id, icon: 'cart', ic: 'warn', t: `${t('Purchase request')} ${p.no}`, d: `${p.by || ''} · ${p.items.length} ${t('items')}`, ts: p.ts });
-  if (can('electricity')) for (const m of meters().filter(m => m.status === 'review')) out.push({ k: 'meter', id: m.id, icon: 'bolt', ic: 'warn', t: `${t('Check meter reading')} · ${roomName(m.roomId)}`, d: `${m.units} ${t('units')}`, ts: m._u });
+  if (can('electricity')) for (const m of meters().filter(m => m.status === 'review')) {
+    const isRep = !!m.isReplacement;
+    out.push({
+      k: 'meter',
+      id: m.id,
+      icon: 'bolt',
+      ic: isRep ? 'teal' : 'warn',
+      t: isRep ? `${t('Meter replaced/reset claim')} · ${roomName(m.roomId)}` : `${t('Check meter reading')} · ${roomName(m.roomId)}`,
+      d: `${m.submittedBy ? t('By {n}', { n: m.submittedBy }) + ' · ' : ''}${isRep ? t('New meter reading {u}', { u: num(m.curr) }) + (m.replaceReason ? ' (' + m.replaceReason + ')' : '') : m.units + ' ' + t('units')}`,
+      ts: m._u
+    });
+  }
   if (can('payments')) for (const d of Store.all('dep').filter(d => d.status === 'pending')) { const r = resById(d.resId); out.push({ k: 'dep', id: d.id, icon: 'wallet', ic: 'info', t: `${t('Deposit refund')} · ${inr(d.refund)}`, d: r ? r.name : '', ts: d._u }); }
   if (can('complaints')) for (const c of Store.all('cmp').filter(c => c.status === 'open')) { const r = resById(c.resId); out.push({ k: 'cmp', id: c.id, icon: 'wrench', ic: 'bad', t: `${t(c.cat)} · ${roomName(c.roomId)}`, d: `${r ? r.name + ': ' : ''}${c.text}`, ts: c.ts }); }
   if (can('housekeeping') && isAdmin()) for (const x of hkTasks().filter(x => (x.status === 'missed' || x.status === 'not_cleaned') && !x.ack)) out.push({ k: 'hk', id: x.id, icon: 'broom', ic: 'warn', t: `${t(x.status === 'missed' ? 'Cleaning missed' : 'Room not cleaned')} · ${x.roomNo}`, d: `${fmtShort(x.date)} · ${x.staffName || t('Unassigned')}${x.reason ? ' · ' + x.reason : ''}`, ts: x._u });
@@ -1556,16 +3873,28 @@ function inboxItems() {
 function seedDemo(hostelId, opts = {}) {
   const R = (s => () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; })(hostelId.length * 7919 + hostelId.charCodeAt(hostelId.length - 1));
   const pick = a => a[Math.floor(R() * a.length)];
-  const big = opts.big != null ? !!opts.big : hostelId === 'h1', offlineDemo = hostelId === 'h1';
+  const isAravali = hostelId === 'h_aravali';
+  const big = isAravali ? true : (opts.big != null ? !!opts.big : hostelId === 'h1'), offlineDemo = hostelId === 'h1' || isAravali;
   const fakePhone = () => '5' + String(Math.floor(1e8 + R() * 9e8));
   SEEDING = true;
   const h = Store.hostel();
-  if (h && !Object.keys(h.settings || {}).length) Store.saveSettings({ pay: { upiId: 'sunrisepg@okicici', payee: h.name, phone: '9876500001' } });
+  if (h && !Object.keys(h.settings || {}).length) {
+    if (isAravali) {
+      Store.saveSettings({
+        rent: { model: 'calendar_monthly', day: 5, dueDays: 5, graceDays: 5, lateFee: 200, lateOn: true, prorate: true, prorateDivisor: 'actual_days', includeElec: true, includeMess: true, includeCharges: true },
+        pay: { upiId: 'aravali@upi', payee: 'Aravali Student Residency', phone: '9876543210' },
+        elec: { rate: 10, freeUnits: 0, freeMode: 'resident' }
+      });
+    } else {
+      Store.saveSettings({ pay: { upiId: 'sunrisepg@okicici', payee: h.name, phone: '9876500001' } });
+    }
+  }
   // rooms
-  const fl = big ? 3 : 2, per = big ? 4 : 3, roomIds = [];
+  const fl = isAravali ? 2 : (big ? 3 : 2), per = isAravali ? 3 : (big ? 4 : 3), roomIds = [];
   for (let f = 1; f <= fl; f++) for (let n = 1; n <= per; n++) {
-    const no = `${f}0${n}`, cap = n % 3 === 0 ? 3 : 2, rent = cap === 3 ? 6500 : 8000;
-    const r = Store.put('room', { id: `room-${no}`, no, floor: `${t('Floor')} ${f}`, rent, sharing: cap, ac: n === 1, beds: 'ABC'.slice(0, cap).split('').map(id => ({ id, status: 'vac' })) });
+    const no = `${f}0${n}`, cap = isAravali ? 2 : (n % 3 === 0 ? 3 : 2), rent = isAravali ? 8000 : (cap === 3 ? 6500 : 8000);
+    const beds = 'ABC'.slice(0, cap).split('').map(id => ({ id, status: isAravali && no === '203' && id === 'A' ? 'mnt' : 'vac' }));
+    const r = Store.put('room', { id: `room-${no}`, no, floor: `${t('Floor')} ${f}`, rent, sharing: cap, ac: n === 1, beds });
     roomIds.push(r.id);
   }
   // staff (ids match the demo logins)
@@ -1595,11 +3924,14 @@ function seedDemo(hostelId, opts = {}) {
   for (const rid of roomIds) {
     const room = roomById(rid);
     for (const b of room.beds) {
-      if (R() < (big ? 0.12 : 0.2) && k > 0) continue;
+      if ((isAravali || R() < (big ? 0.12 : 0.2)) && k > 0) continue;
       const months = 1 + Math.floor(R() * 7), ci = addDays(today(), -months * 30 - Math.floor(R() * 20));
-      const name = k === 0 && big ? 'Aman Gupta' : `${names[k % names.length]} ${pick(last)}`;
-      const r = checkIn({ id: `res-${k + 1}`, name, phone: k === 0 && big && offlineDemo ? '9812300001' : fakePhone(), guardianPhone: fakePhone(), roomId: rid, bed: b.id, rent: room.rent, deposit: room.rent, checkIn: ci, college: pick(['Allen Kota', 'Resonance', 'Motion IIT', 'Vibrant Academy', 'Office']) });
-      if (k === 0 && big && offlineDemo) Store.patch(r.id, { username: 'aman.gupta' });
+      const isAryan = k === 0 && isAravali;
+      const name = isAryan ? 'Aryan Sharma' : (k === 0 && big ? 'Aman Gupta' : `${names[k % names.length]} ${pick(last)}`);
+      const phone = isAryan ? '9811100001' : (k === 0 && big && offlineDemo ? '9812300001' : fakePhone());
+      const r = checkIn({ id: isAryan ? 'res-aravali-1' : `res-${k + 1}`, name, phone, guardianPhone: fakePhone(), roomId: rid, bed: b.id, rent: room.rent, deposit: room.rent, checkIn: ci, college: isAravali ? 'Jaipur Engineering College' : pick(['Allen Kota', 'Resonance', 'Motion IIT', 'Vibrant Academy', 'Office']) });
+      if (isAryan) Store.patch(r.id, { username: 'aryan.sharma' });
+      else if (k === 0 && big && offlineDemo) Store.patch(r.id, { username: 'aman.gupta' });
       // deposit + first month paid
       recordPayment({ resId: r.id, amount: resDue(r.id), mode: pick(['cash', 'upi', 'upi']), ref: '', date: ci });
       // later months
@@ -1613,9 +3945,11 @@ function seedDemo(hostelId, opts = {}) {
     }
   }
   // last month's meter readings (billed & paid) + this month for half the rooms
-  for (const rid of roomIds) {
+  for (const rid of (isAravali ? [] : roomIds)) {
     const base = 1000 + Math.floor(R() * 4000), lm = addDays(today(), -32);
-    Store.put('meter', { roomId: rid, date: addDays(lm, -30), prev: base - 140, curr: base, units: 140, rate: 9, shares: [], total: 0, period: ymOf(addDays(lm, -30)), status: 'billed' });
+    const roomRes = Store.all('res').filter(r => r.roomId === rid && r.status === 'active');
+    const occShares = roomRes.length ? splitElectricity(rid, 140, 9, roomRes.map(r => r.id)) : [];
+    Store.put('meter', { roomId: rid, date: addDays(lm, -30), prev: base - 140, curr: base, units: 140, rate: 9, shares: occShares, total: sum(occShares, s => s.amount), period: ymOf(addDays(lm, -30)), status: 'billed' });
     if (R() < 0.5) addReading({ roomId: rid, curr: base + 80 + Math.floor(R() * 120), date: addDays(today(), -2) });
   }
   // purchase history so the learning has two cycles to work with
@@ -1657,3 +3991,720 @@ function seedDemo(hostelId, opts = {}) {
   if (act[5]) Store.put('tiffin', { id: tiffinId(act[5].id, addDays(today(), 1), 'lunch'), resId: act[5].id, roomId: act[5].roomId, date: addDays(today(), 1), meal: 'lunch', note: '', status: 'requested', ts: nowIso() });
 }
 Store.onEmptyHostel = () => { if (!CLOUD) seedDemo(Store.ctx.hostelId); };
+
+/* ===================================================================== bulk room & bed setup */
+function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = null, defaultRent = 6000, defaultAc = false, block = '' } = {}) {
+  if (!Array.isArray(floors) || !floors.length) throw new Error('Define at least one floor');
+  const hasCustom = Array.isArray(customRooms) && customRooms.length > 0;
+  if (!hasCustom && (!Array.isArray(roomPatterns) || !roomPatterns.length)) throw new Error('Define at least one room pattern');
+
+  const existingRooms = rooms();
+  const existingNos = new Set(existingRooms.map(r => String(r.no).trim().toLowerCase()));
+  const batchNos = new Set();
+  const generatedRooms = [];
+
+  if (hasCustom) {
+    for (const cr of customRooms) {
+      const roomNo = String(cr.no || '').trim();
+      if (!roomNo) throw new Error('Room number is required');
+      const lower = roomNo.toLowerCase();
+      if (batchNos.has(lower)) throw new Error(`Duplicate room number in batch: ${roomNo}`);
+      if (existingNos.has(lower)) throw new Error(`Room number already exists: ${roomNo}`);
+      batchNos.add(lower);
+
+      const capacity = Math.max(1, Math.min(12, parseInt(cr.beds || cr.capacity || 2, 10)));
+      const rent = cr.rent != null && !isNaN(cr.rent) ? round2(+cr.rent) : round2(+defaultRent);
+      const ac = cr.ac !== undefined ? !!cr.ac : !!defaultAc;
+      const roomBlock = cr.block || block || '';
+      const floorLabel = cr.floor || floors[0];
+
+      const bedIds = 'ABCDEFGHIJKL'.slice(0, capacity).split('');
+      const beds = bedIds.map(id => ({ id, status: 'vac' }));
+      const roomId = `room-${slug(roomNo)}-${uid()}`;
+
+      generatedRooms.push({
+        id: roomId,
+        no: roomNo,
+        floor: floorLabel,
+        block: roomBlock,
+        rent,
+        ac,
+        sharing: capacity,
+        beds
+      });
+    }
+  } else {
+    for (const pattern of roomPatterns) {
+      const floorIndex = pattern.floorIndex != null ? +pattern.floorIndex : 0;
+      const floorLabel = floors[floorIndex] || floors[0];
+      const startNo = parseInt(pattern.startNo, 10);
+      const endNo = parseInt(pattern.endNo, 10);
+      if (isNaN(startNo) || isNaN(endNo)) throw new Error('Start and end room numbers must be integers');
+      if (startNo > endNo) throw new Error(`Start room (${startNo}) cannot be greater than end room (${endNo})`);
+      if (endNo - startNo > 100) throw new Error('Cannot create more than 100 rooms in a single pattern');
+
+      const capacity = Math.max(1, Math.min(12, parseInt(pattern.beds || pattern.capacity || 2, 10)));
+      const rent = pattern.rent != null && !isNaN(pattern.rent) ? round2(+pattern.rent) : round2(+defaultRent);
+      const ac = pattern.ac !== undefined ? !!pattern.ac : !!defaultAc;
+      const roomBlock = pattern.block || block || '';
+      const prefix = pattern.prefix || '';
+      const suffix = pattern.suffix || '';
+
+      for (let no = startNo; no <= endNo; no++) {
+        const roomNo = `${prefix}${no}${suffix}`.trim();
+        const lower = roomNo.toLowerCase();
+        if (batchNos.has(lower)) throw new Error(`Duplicate room number in batch: ${roomNo}`);
+        if (existingNos.has(lower)) throw new Error(`Room number already exists: ${roomNo}`);
+        batchNos.add(lower);
+
+        const bedIds = 'ABCDEFGHIJKL'.slice(0, capacity).split('');
+        const beds = bedIds.map(id => ({ id, status: 'vac' }));
+        const roomId = `room-${slug(roomNo)}-${uid()}`;
+
+        generatedRooms.push({
+          id: roomId,
+          no: roomNo,
+          floor: floorLabel,
+          block: roomBlock,
+          rent,
+          ac,
+          sharing: capacity,
+          beds
+        });
+      }
+    }
+  }
+
+  // Atomically commit all generated rooms to store
+  for (const r of generatedRooms) {
+    Store.put('room', r);
+  }
+
+  alog('bulk_rooms', `Created ${generatedRooms.length} rooms (${generatedRooms.reduce((s, r) => s + r.beds.length, 0)} beds)`, {
+    roomsCount: generatedRooms.length,
+    floors: floors.length
+  });
+
+  return {
+    createdRooms: generatedRooms,
+    roomCount: generatedRooms.length,
+    bedCount: generatedRooms.reduce((s, r) => s + r.beds.length, 0)
+  };
+}
+
+/* ===================================================================== cook inventory dependencies */
+function getItemDependencies(itemId) {
+  const item = itemById(itemId);
+  if (!item) return { dishes: [], menus: [], tiffins: [] };
+  const dList = dishes().filter(d => {
+    const list = d.ings || d.ingredients || [];
+    return list.some(g => (g.itemId || g.id) === itemId);
+  });
+  const dishIds = new Set(dList.map(d => d.id));
+  const mList = Store.all('menu').filter(m => (m.dishIds || []).some(id => dishIds.has(id)));
+  const tList = Store.all('tiffin').filter(tf => tf.dishId && dishIds.has(tf.dishId));
+
+  return {
+    item,
+    dishes: dList,
+    menus: mList,
+    tiffins: tList,
+    inUseCount: dList.length + mList.length + tList.length
+  };
+}
+
+function deactivateItem(itemId, reason = '') {
+  const item = itemById(itemId);
+  if (!item) throw new Error('Item not found');
+  const deps = getItemDependencies(itemId);
+
+  Store.patch(itemId, { active: false, status: 'inactive', deactivatedAt: nowIso(), deactivateReason: reason });
+
+  // Mark all dependent dishes as unavailable
+  for (const d of deps.dishes) {
+    Store.patch(d.id, { available: false, unavailable: true, missingItem: item.name });
+  }
+
+  alog('inventory_deactivate', `Deactivated item ${item.name} (${deps.dishes.length} dishes affected)`, {
+    itemId,
+    dishesAffected: deps.dishes.map(d => d.name)
+  });
+
+  return {
+    item: itemById(itemId),
+    dishesAffected: deps.dishes,
+    disabledDishes: deps.dishes,
+    message: `${item.name} is deactivated. ${deps.dishes.length} dependent dish(es) marked unavailable.`
+  };
+}
+
+function reactivateItem(itemId) {
+  const item = itemById(itemId);
+  if (!item) throw new Error('Item not found');
+  Store.patch(itemId, { active: true, status: 'active', deactivatedAt: null, deactivateReason: null });
+
+  // Check all dishes that use this item; if all ingredients are now active, mark available
+  const affectedDishes = dishes().filter(d => {
+    const list = d.ings || d.ingredients || [];
+    return list.some(g => (g.itemId || g.id) === itemId);
+  });
+  for (const d of affectedDishes) {
+    const list = d.ings || d.ingredients || [];
+    const allActive = list.every(g => {
+      const ingItem = itemById(g.itemId || g.id);
+      return !ingItem || (ingItem.status !== 'inactive' && ingItem.active !== false);
+    });
+    if (allActive) {
+      Store.patch(d.id, { available: true, unavailable: false, missingItem: null });
+    }
+  }
+
+  alog('inventory_reactivate', `Reactivated item ${item.name}`, { itemId });
+  const fresh = itemById(itemId);
+  return { item: fresh, active: true, ...fresh };
+}
+
+function replaceIngredientInDishes(oldItemId, newItemId) {
+  const oldItem = itemById(oldItemId);
+  const newItem = itemById(newItemId);
+  if (!oldItem || !newItem) throw new Error('Both old and new items must exist');
+
+  const affected = dishes().filter(d => {
+    const list = d.ings || d.ingredients || [];
+    return list.some(g => (g.itemId || g.id) === oldItemId);
+  });
+  for (const d of affected) {
+    const curIngs = d.ings || d.ingredients || [];
+    const updatedIngs = curIngs.map(g => ((g.itemId || g.id) === oldItemId ? { ...g, itemId: newItemId, id: newItemId } : g));
+    const allActive = updatedIngs.every(g => {
+      const it = itemById(g.itemId || g.id);
+      return !it || (it.status !== 'inactive' && it.active !== false);
+    });
+    const patch = { unavailable: !allActive, available: allActive, missingItem: allActive ? null : d.missingItem };
+    if (d.ings) patch.ings = updatedIngs;
+    if (d.ingredients) patch.ingredients = updatedIngs;
+    Store.patch(d.id, patch);
+  }
+
+  alog('inventory_replace', `Replaced ${oldItem.name} with ${newItem.name} across ${affected.length} dishes`, {
+    oldItemId, newItemId, count: affected.length
+  });
+
+  return { updatedDishes: affected.length, updatedCount: affected.length };
+}
+
+/* ===================================================================== bank statement reconciliation */
+function parseBankStatement(text, format = 'csv') {
+  if (!text || typeof text !== 'string') throw new Error('Statement content cannot be empty');
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length < 2) throw new Error('Statement must contain at least a header and one transaction row');
+
+  const headerLine = lines[0];
+  const delim = headerLine.includes('\t') ? '\t' : (headerLine.includes(';') ? ';' : ',');
+  const headers = headerLine.split(delim).map(h => h.replace(/^["']|["']$/g, '').trim().toLowerCase());
+
+  const colDate = headers.findIndex(h => /date|txn_date|transaction_date|value_date/.test(h));
+  const colAmount = headers.findIndex(h => /amount|txn_amount|net_amount/.test(h));
+  const colCrDr = headers.findIndex(h => /cr_dr|type|credit_debit|dr_cr|direction/.test(h));
+  const colRef = headers.findIndex(h => /ref|utr|rrn|chq|cheque|reference|transaction_id/.test(h));
+  const colNarration = headers.findIndex(h => /narration|description|particulars|remarks/.test(h));
+  const colCr = headers.findIndex(h => /^credit|^cr$|deposit/.test(h));
+  const colDr = headers.findIndex(h => /^debit|^dr$|withdrawal/.test(h));
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const rawCols = lines[i].split(delim).map(c => c.replace(/^["']|["']$/g, '').trim());
+    if (rawCols.length < 2) continue;
+
+    let date = colDate >= 0 ? rawCols[colDate] : '';
+    if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(date)) {
+      const parts = date.split(/[-/]/);
+      date = `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+
+    let amount = 0;
+    let direction = 'CR';
+
+    if (colCr >= 0 && rawCols[colCr] && parseFloat(rawCols[colCr].replace(/,/g, '')) > 0) {
+      amount = parseFloat(rawCols[colCr].replace(/,/g, ''));
+      direction = 'CR';
+    } else if (colDr >= 0 && rawCols[colDr] && parseFloat(rawCols[colDr].replace(/,/g, '')) > 0) {
+      amount = parseFloat(rawCols[colDr].replace(/,/g, ''));
+      direction = 'DR';
+    } else if (colAmount >= 0) {
+      amount = Math.abs(parseFloat(rawCols[colAmount].replace(/,/g, '')) || 0);
+      if (colCrDr >= 0) {
+        direction = /cr|credit/i.test(rawCols[colCrDr]) ? 'CR' : 'DR';
+      }
+    }
+
+    let narration = colNarration >= 0 ? rawCols[colNarration] : '';
+    let rawRef = colRef >= 0 ? rawCols[colRef] : '';
+    let ref = classifyPaymentRef(rawRef || narration);
+
+    if (amount > 0) {
+      rows.push({
+        lineNo: i + 1,
+        date: date || today(),
+        amount: round2(amount),
+        direction,
+        ref: ref.normalized || rawRef,
+        utr: ref.normalized || rawRef,
+        refType: ref.type,
+        narration,
+        raw: lines[i]
+      });
+    }
+  }
+
+  return rows;
+}
+
+function reconcileBankStatement(statementRows, opts = {}) {
+  const credits = statementRows.filter(r => r.direction === 'CR' && r.amount > 0);
+  const pendingClaims = Store.all('claim').filter(c => c.status === 'pending');
+  const existingPays = Store.all('pay').filter(p => !p._del && !p.reversed);
+  const matchedClaimIds = new Set();
+  const seenRefs = new Set();
+
+  const exactMatches = [];
+  const probableMatches = [];
+  const amountMismatches = [];
+  const multipleCandidates = [];
+  const unmatchedCredits = [];
+  const duplicateTransactions = [];
+  const alreadyReconciled = [];
+
+  for (const row of credits) {
+    const normRef = row.ref ? String(row.ref).trim() : '';
+
+    if (normRef && seenRefs.has(normRef)) {
+      duplicateTransactions.push({ row, reason: 'Duplicate transaction in statement' });
+      continue;
+    }
+    if (normRef) seenRefs.add(normRef);
+
+    if (normRef && existingPays.some(p => p.ref === normRef || p.idempotencyKey === `bank-tx-${normRef}`)) {
+      alreadyReconciled.push({ row, reason: 'Already reconciled in ledger' });
+      continue;
+    }
+
+    const matchingClaims = pendingClaims.filter(c => {
+      if (matchedClaimIds.has(c.id)) return false;
+      const cRef = (c.utr || '').trim();
+      return normRef && cRef && (cRef === normRef || normRef.includes(cRef) || cRef.includes(normRef));
+    });
+
+    if (matchingClaims.length === 1) {
+      const claim = matchingClaims[0];
+      if (Math.abs(claim.amount - row.amount) < 0.01) {
+        exactMatches.push({ row, claim, resId: claim.resId, status: 'matched', matchType: 'claim_exact' });
+        matchedClaimIds.add(claim.id);
+      } else {
+        amountMismatches.push({ row, claim, resId: claim.resId, status: 'amount_mismatch', diff: round2(row.amount - claim.amount) });
+      }
+    } else if (matchingClaims.length > 1) {
+      multipleCandidates.push({ row, candidates: matchingClaims, status: 'multiple_candidates' });
+    } else {
+      // Narration check: phone and name signals
+      const phoneMatch = activeRes().find(r => {
+        const ph = cleanPhone(r.phone);
+        return ph && row.narration.includes(ph.slice(-10));
+      });
+      const nameMatch = activeRes().find(r => {
+        const namePart = r.name.toLowerCase().split(' ')[0];
+        return namePart.length >= 3 && row.narration.toLowerCase().includes(namePart);
+      });
+
+      const matchedRes = phoneMatch || nameMatch;
+      if (matchedRes) {
+        const hasDue = Math.abs(resDue(matchedRes.id) - row.amount) < 0.01 || invoices().some(i => i.resId === matchedRes.id && Math.abs(invBal(i) - row.amount) < 0.01);
+        if (hasDue && phoneMatch) {
+          // Strong match: phone + exact due
+          exactMatches.push({ row, res: matchedRes, resId: matchedRes.id, status: 'matched', matchType: 'phone_due' });
+        } else {
+          probableMatches.push({ row, res: matchedRes, resId: matchedRes.id, status: 'probable', matchType: 'narration', hasDue });
+        }
+      } else {
+        unmatchedCredits.push({ row, status: 'unmatched' });
+      }
+    }
+  }
+
+  const confirmed = [];
+  const toConfirm = opts.autoConfirm !== false ? exactMatches : [];
+  if (opts.confirmProbable) toConfirm.push(...probableMatches);
+
+  for (const match of toConfirm) {
+    const { row, claim, resId, res } = match;
+    const targetResId = resId || (claim && claim.resId) || (res && res.id);
+    if (!targetResId) continue;
+    const pay = recordPayment({
+      resId: targetResId,
+      amount: row.amount,
+      mode: 'upi',
+      ref: row.ref || (claim && claim.utr),
+      date: row.date,
+      claimId: claim ? claim.id : null,
+      idempotencyKey: `bank-tx-${row.ref || (claim && claim.id) || uid()}`,
+      note: `Auto-reconciled via Bank Statement (${row.narration.slice(0, 60)})`
+    });
+    if (claim) {
+      Store.patch(claim.id, {
+        status: 'approved',
+        reconciledAt: nowIso(),
+        bankTxDate: row.date,
+        reconciledBy: (Store.me && Store.me.full_name) || 'Automatic Reconciliation'
+      });
+    }
+    confirmed.push({ claimId: claim ? claim.id : null, resId: targetResId, payId: pay.id, amount: row.amount, ref: row.ref });
+  }
+
+  // Persist Statement and Transactions to Store for Owner Review Queue
+  const stmtId = `stmt-${today()}-${uid()}`;
+  Store.put('stmt', {
+    id: stmtId,
+    date: today(),
+    totalRows: statementRows.length,
+    creditsCount: credits.length,
+    autoConfirmedCount: confirmed.length,
+    probableCount: probableMatches.length,
+    unmatchedCount: unmatchedCredits.length,
+    duplicateCount: duplicateTransactions.length + alreadyReconciled.length,
+    ts: nowIso()
+  });
+
+  for (const row of credits) {
+    const isExact = exactMatches.some(m => m.row === row);
+    const prob = probableMatches.find(m => m.row === row);
+    const isDup = duplicateTransactions.some(d => d.row === row);
+    const isReconciled = alreadyReconciled.some(d => d.row === row);
+    const isMismatch = amountMismatches.find(m => m.row === row);
+    const isMulti = multipleCandidates.find(m => m.row === row);
+    const txStatus = isExact ? (confirmed.some(c => c.ref === row.ref) ? 'matched' : 'exact') : (prob ? 'probable' : (isMismatch ? 'amount_mismatch' : (isMulti ? 'multiple_candidates' : (isDup ? 'duplicate' : (isReconciled ? 'already_reconciled' : 'unmatched')))));
+
+    Store.put('stmt_tx', {
+      id: `stx-${row.ref || uid()}`,
+      stmtId,
+      date: row.date,
+      amount: row.amount,
+      direction: row.direction,
+      ref: row.ref,
+      narration: row.narration,
+      status: txStatus,
+      resId: (prob && prob.resId) || (isExact && exactMatches.find(m => m.row === row)?.resId) || null,
+      claimId: (prob && prob.claim?.id) || (isExact && exactMatches.find(m => m.row === row)?.claim?.id) || null,
+      ts: nowIso()
+    });
+  }
+
+  alog('bank_reconcile', `Bank statement reconciled: ${confirmed.length} auto-confirmed, ${probableMatches.length} review, ${unmatchedCredits.length} unmatched`, {
+    totalCredits: credits.length,
+    autoConfirmed: confirmed.length,
+    review: probableMatches.length,
+    mismatches: amountMismatches.length
+  });
+
+  const allMatched = exactMatches.concat(probableMatches);
+  return {
+    totalCredits: credits.length,
+    exactMatches,
+    autoConfirmedCount: confirmed.length,
+    confirmed,
+    probableMatches,
+    amountMismatches,
+    multipleCandidates,
+    unmatchedCredits,
+    duplicateTransactions,
+    alreadyReconciled,
+    matched: allMatched,
+    summary: {
+      totalCredits: credits.length,
+      autoMatched: confirmed.length,
+      exactMatch: exactMatches.length,
+      probableMatch: probableMatches.length,
+      probable: probableMatches.length,
+      unmatched: unmatchedCredits.length,
+      duplicate: duplicateTransactions.length + alreadyReconciled.length,
+      amountMismatch: amountMismatches.length
+    }
+  };
+}
+
+/* ===================================================================== automated monthly WhatsApp billing */
+function isBillingComplete(resId, ym) {
+  const r = resById(resId);
+  if (!r || r.status !== 'active') return { complete: false, reason: 'Resident is not active' };
+  if (!(r.rent > 0)) return { complete: false, reason: 'Rent not configured' };
+
+  if (S().elec && S().elec.rate > 0 && orgEnabled('electricity')) {
+    const mtrs = meters().filter(m => m.roomId === r.roomId && ymOf(m.date) === ym && m.status !== 'review');
+    const periods = Store.all('mtr_period').filter(p => p.resId === resId && ymOf(p.endDate) === ym);
+    if (!mtrs.length && !periods.length) {
+      return { complete: false, reason: 'Electricity reading for cycle is not finalized' };
+    }
+  }
+
+  const inv = invoices().find(i => i.resId === resId && ymOf(i.date) === ym && i.status !== 'void');
+  if (!inv) return { complete: false, reason: 'Monthly invoice has not been generated' };
+
+  return { complete: true, invoice: inv };
+}
+
+function sendMonthlyBillingWhatsApp(resId, ym, opts = {}) {
+  const r = resById(resId);
+  if (!r) throw new Error('Resident not found');
+  const h = Store.hostel() || {};
+  const statusCheck = isBillingComplete(resId, ym);
+  if (!statusCheck.complete && !opts.force) {
+    throw new Error(statusCheck.reason || 'Billing is incomplete for this cycle');
+  }
+
+  const inv = statusCheck.invoice || invoices().find(i => i.resId === resId && ymOf(i.date) === ym);
+  const idmpKey = `wa-bill-${h.id || 'h'}-${resId}-${ym}-${inv ? inv.id : 'inv'}`;
+
+  const existingCamp = Store.all('wa_campaign').find(c => c.idempotencyKey === idmpKey);
+  if (existingCamp && !opts.force && !opts.forceResend) {
+    throw new Error('Billing WhatsApp already sent for this cycle');
+  }
+
+  const cleanP = cleanPhone(r.phone);
+  if (!cleanP) throw new Error('Invalid resident mobile number');
+  const waPhone = cleanP.startsWith('91') && cleanP.length === 12 ? cleanP : ('91' + cleanP);
+
+  const payLink = `${appUrl()}/pay.html?inv=${inv ? inv.id : ''}`;
+  const totalDue = inv ? invBal(inv) : r.rent;
+  const rentAmt = inv ? (inv.type === 'rent' ? inv.amount : (inv.breakdown && inv.breakdown.rent) || r.rent) : r.rent;
+  const elecAmt = inv && inv.breakdown ? (inv.breakdown.electricity || 0) : (inv && inv.type === 'electricity' ? inv.amount : 0);
+  const messAmt = inv && inv.breakdown ? (inv.breakdown.mess || 0) : (inv && inv.type === 'mess' ? inv.amount : 0);
+  const otherAmt = inv && inv.breakdown ? (inv.breakdown.other || 0) : 0;
+  const discAmt = inv ? (inv.discount || 0) : 0;
+
+  const msgText = `Hello ${r.name},\n` +
+    `HostelOS Monthly Bill for ${ym} at ${h.name || 'Hostel'}.\n\n` +
+    `📋 *Billing Breakdown:*\n` +
+    `• Rent: ₹${rentAmt}\n` +
+    (elecAmt > 0 ? `• Electricity: ₹${elecAmt}\n` : '') +
+    (messAmt > 0 ? `• Mess: ₹${messAmt}\n` : '') +
+    (otherAmt > 0 ? `• Other charges: ₹${otherAmt}\n` : '') +
+    (discAmt > 0 ? `• Discount: -₹${discAmt}\n` : '') +
+    `--------------------------\n` +
+    `*Total Payable:* ₹${totalDue}\n` +
+    `*Due Date:* ${inv && inv.dueDate ? fmtDate(inv.dueDate) : 'Immediately'}\n` +
+    `*Invoice ID:* ${inv ? inv.id : 'N/A'}\n\n` +
+    `View details & pay online:\n${payLink}`;
+
+  const camp = Store.put('wa_campaign', {
+    id: `wac-${uid()}`,
+    hostelId: h.id,
+    resId,
+    ym,
+    invoiceId: inv ? inv.id : null,
+    idempotencyKey: idmpKey,
+    phone: waPhone,
+    amount: totalDue,
+    status: 'queued',
+    sentAt: nowIso(),
+    ts: nowIso()
+  });
+
+  return {
+    success: true,
+    status: 'queued',
+    campaignId: camp.id,
+    campaign: camp,
+    recipient: waPhone,
+    phone: waPhone,
+    message: msgText,
+    text: msgText,
+    payload: { messaging_product: 'whatsapp', to: waPhone, text: { body: msgText } }
+  };
+}
+
+/* ===================================================================== automatic agreement email delivery */
+const isValidEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || '').trim());
+
+function sendAgreementEmail(agrId, opts = {}) {
+  const agr = Store.get(agrId);
+  if (!agr) throw new Error('Agreement not found');
+  const r = resById(agr.resId);
+  const email = (r && r.email) || agr.tenantEmail || agr.email;
+  if (!email || !isValidEmail(email)) {
+    Store.patch(agrId, { emailStatus: 'failed', emailError: 'Invalid or missing resident email', delivery: { status: 'failed', error: 'Invalid recipient email' } });
+    throw new Error('Resident does not have a valid recipient email address');
+  }
+
+  if ((agr.emailStatus === 'delivered' || agr.emailStatus === 'sent') && !opts.forceResend) {
+    return { ok: true, delivered: true, sent: true, alreadyDelivered: true, status: 'already_delivered', agreement: Store.get(agrId) };
+  }
+
+  const initialStatus = opts.confirmed ? 'delivered' : 'sent';
+  Store.patch(agrId, {
+    emailStatus: initialStatus,
+    emailRecipient: email,
+    lastEmailAttempt: nowIso(),
+    delivery: { channel: 'email', status: initialStatus, to: email, sentAt: nowIso(), deliveredAt: opts.confirmed ? nowIso() : null }
+  });
+
+  return { ok: true, delivered: true, sent: true, status: initialStatus, recipient: email, agreement: Store.get(agrId) };
+}
+
+/* ===================================================================== e-mitra & police verification */
+function maskAadhaar(str) {
+  const s = String(str || '').replace(/\D/g, '');
+  if (s.length !== 12) return 'XXXX-XXXX-XXXX';
+  return `XXXX-XXXX-${s.slice(8)}`;
+}
+
+function emitraPendingQueue() {
+  const allRes = typeof activeRes === 'function' ? activeRes() : Store.all('res');
+  return allRes.filter(r => {
+    if (r.status !== 'active' && r.status !== 'notice') return false;
+    const pv = r.pv || {};
+    if (pv.status === 'not_required' || pv.status === 'exempt' || pv.status === 'verified') return false;
+    return !pv.status || pv.status === 'none' || pv.status === 'pending_docs' || pv.status === 'ready' || pv.status === 'submitted';
+  });
+}
+
+function submitPoliceVerification(resId, { refNo, date = today(), certificatePath = null, notes = '', status = 'submitted' }) {
+  const r = resById(resId);
+  if (!r) throw new Error('Resident not found');
+  if (!refNo || !String(refNo).trim()) throw new Error('Verification reference / acknowledgement number is required');
+
+  const pvRecord = {
+    refNo: String(refNo).trim(),
+    date,
+    certificatePath,
+    notes: String(notes || '').trim(),
+    status: status === 'verified' ? 'verified' : (status === 'rejected' ? 'rejected' : 'submitted'),
+    submittedAt: nowIso(),
+    verifiedBy: (Store.me && Store.me.full_name) || ctx().role || 'emitra'
+  };
+
+  Store.patch(resId, { pv: pvRecord });
+  alog('police_verification', `Police verification for ${r.name}: ${pvRecord.status} (Ref: ${pvRecord.refNo})`, {
+    resId, refNo: pvRecord.refNo, status: pvRecord.status
+  });
+
+  // Check if all onboarding requirements are met to auto-generate and email agreement
+  try {
+    checkAndAutoSendAgreement(resId);
+  } catch (err) {
+    console.warn('Auto agreement trigger warning:', err.message);
+  }
+
+  return { ...pvRecord, pv: pvRecord };
+}
+
+/* ===================================================================== automatic agreement check & email */
+function checkAndAutoSendAgreement(resId) {
+  const r = resById(resId);
+  if (!r) return null;
+  const hasRoom = !!(r.roomId && r.bed);
+  const hasDocs = (r.docs && r.docs.length > 0) || !!r.idNo;
+  const hasPv = r.pv && r.pv.status && r.pv.status !== 'none' && r.pv.status !== 'not_started';
+
+  if (!hasRoom || !hasDocs || !hasPv) return null;
+
+  let agr = typeof getActiveAgreement === 'function' ? getActiveAgreement(r.id) : null;
+  if (!agr) {
+    agr = createAgreement({
+      resId: r.id,
+      rent: r.rent,
+      deposit: r.deposit,
+      startDate: r.checkIn || today(),
+      noticeDays: 30
+    });
+  }
+
+  if (agr && r.email && isValidEmail(r.email) && agr.emailStatus !== 'delivered' && agr.emailStatus !== 'sent') {
+    try {
+      sendAgreementEmail(agr.id, { confirmed: true });
+      notify({
+        to: 'res',
+        resId: r.id,
+        title: t('Rental agreement ready & emailed ✓'),
+        body: t('Your rental agreement for Room {r}-{b} has been generated and emailed to {e}.', { r: roomName(r.roomId), b: r.bed, e: r.email }),
+        category: 'agreement'
+      });
+      alog('agreement_auto_sent', `Rental agreement automatically generated and emailed to ${r.name} (${r.email})`, { resId: r.id, agrId: agr.id });
+    } catch (err) {
+      console.warn('Auto agreement email delivery:', err.message);
+    }
+  }
+
+  return agr;
+}
+
+/* ===================================================================== resident panel notice board */
+function residentNoticeBoard(resId) {
+  const r = resById(resId);
+  const now = today();
+  const curYM = ymOf(now);
+
+  const prev1YM = addMonths(curYM + '-01', -1).slice(0, 7);
+  const prev2YM = addMonths(curYM + '-01', -2).slice(0, 7);
+  const allowedYMs = [curYM, prev1YM, prev2YM];
+
+  const allInvs = typeof resInvoices === 'function' ? resInvoices(resId) : [];
+  const feeNotices = [];
+
+  for (const ym of allowedYMs) {
+    const invsInYM = allInvs.filter(i => (i.due && i.due.slice(0, 7) === ym) || (i.day && i.day.slice(0, 7) === ym) || (i.date && ymOf(i.date) === ym));
+    if (!invsInYM.length) continue;
+    const totalDue = sum(invsInYM, invBal);
+    const totalAmount = sum(invsInYM, i => i.amount || 0);
+    const isCurrent = ym === curYM;
+    const isOverdue = invsInYM.some(i => invStat(i) === 'overdue');
+    const isPaid = totalDue <= 0;
+
+    feeNotices.push({
+      id: `fee-notice-${ym}`,
+      ym,
+      isCurrent,
+      title: isCurrent ? t('Current Month Fees · {m}', { m: fmtYM(ym) }) : t('Previous Fee Notice · {m}', { m: fmtYM(ym) }),
+      amount: totalAmount,
+      balance: totalDue,
+      status: isPaid ? 'paid' : (isOverdue ? 'overdue' : 'due'),
+      date: invsInYM[0].due || `${ym}-05`,
+      invoices: invsInYM,
+      body: invsInYM.map(i => `${i.title}: ${inr(i.amount)}${invBal(i) ? ` (${t('Due')}: ${inr(invBal(i))})` : ` (${t('Paid')})`}`).join(' · ')
+    });
+  }
+
+  // Include any fee reminder notifications from the last 90 days if not duplicate
+  const feeNotifs = Store.all('ntf').filter(n => n.to === 'res' && n.resId === resId && (n.category === 'fee' || n.category === 'bills'));
+  for (const n of feeNotifs) {
+    const nYm = ymOf(n.date || now);
+    if (allowedYMs.includes(nYm) && !feeNotices.some(fn => fn.id === n.id)) {
+      feeNotices.push({
+        id: n.id,
+        ym: nYm,
+        isCurrent: nYm === curYM,
+        title: n.title,
+        amount: 0,
+        balance: 0,
+        status: 'info',
+        date: n.date,
+        body: n.body
+      });
+    }
+  }
+
+  // Current month strictly on top, then previous months in descending order
+  feeNotices.sort((a, b) => {
+    if (a.isCurrent && !b.isCurrent) return -1;
+    if (!a.isCurrent && b.isCurrent) return 1;
+    return b.ym.localeCompare(a.ym);
+  });
+
+  // General notices: automatically disappear after 30 days
+  const daysBetween = (a, b) => (!a || !b ? 0 : Math.round(Math.abs((parse(b) - parse(a)) / 86400000)));
+  const generalNotices = Store.all('notice').filter(n => {
+    if (!n.date) return false;
+    return daysBetween(n.date, now) <= 30;
+  }).sort((a, b) => (b.pinned - a.pinned) || (b.date > a.date ? 1 : -1));
+
+  return { feeNotices, generalNotices };
+}
+

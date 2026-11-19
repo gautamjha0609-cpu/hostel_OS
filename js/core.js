@@ -214,12 +214,22 @@ function fieldHtml(f) {
   // is a card number, so every one of them opts out — autocomplete alone is not enough,
   // Chrome, Edge, LastPass and 1Password each need their own hint.
   const noFill = 'autocomplete="off" autocorrect="off" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore';
-  const defMax = f.type === 'tel' ? 15 : f.type === 'email' ? 120 : (f.type === 'text' || !f.type) ? 120 : null;
-  const mx = f.maxlength != null ? f.maxlength : defMax;
+  const isFile = f.type === 'file';
+  const isPhone = !isFile && (f.type === 'tel' || /phone|mobile/i.test(f.name));
+  const isAadhaar = !isFile && (f.name === 'idNo' || f.name === 'aadhaar' || ((f.type === 'text' || !f.type) && /aadhaar/i.test(f.label || '') && !/card|photo|doc|file|upload|paper/i.test(f.label || '')));
+  const isPersonName = !isFile && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
+
+  const defMax = isPhone ? 10 : isAadhaar ? 12 : f.type === 'email' ? 120 : (f.type === 'text' || !f.type) ? 120 : null;
+  const mx = isPhone ? 10 : isAadhaar ? 12 : (f.maxlength != null ? f.maxlength : defMax);
+  const itype = isPhone ? 'tel' : (f.type || 'text');
+  const dType = isPhone ? 'data-type="phone"' : isAadhaar ? 'data-type="aadhaar"' : isPersonName ? 'data-type="name"' : f.type === 'number' ? 'data-type="number"' : '';
+  const imode = isPhone ? 'inputmode="numeric"' : isAadhaar ? 'inputmode="numeric"' : f.type === 'number' ? `inputmode="${f.step && f.step < 1 ? 'decimal' : 'numeric'}"` : f.inputmode ? `inputmode="${f.inputmode}"` : '';
+  const pat = isPhone ? 'pattern="[5-9][0-9]{9}"' : isAadhaar ? 'pattern="[0-9]{12}"' : (f.pattern ? `pattern="${f.pattern.source || f.pattern}"` : '');
+  const ph = f.placeholder || (isPhone ? '10-digit mobile' : isAadhaar ? '12-digit Aadhaar' : '');
+
   const extra = [f.min != null && `min="${f.min}"`, f.max != null && `max="${f.max}"`, f.step && `step="${f.step}"`, mx && `maxlength="${mx}"`,
-    f.type === 'tel' && 'inputmode="tel"', f.type === 'number' && `inputmode="${f.step && f.step < 1 ? 'decimal' : 'numeric'}"`, f.inputmode && `inputmode="${f.inputmode}"`, f.readonly && 'readonly',
-    f.type === 'number' && noFill].filter(Boolean).join(' ');
-  return wrap(`<input id="${id}" name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}" placeholder="${esc(t(f.placeholder || ''))}" ${extra} autocomplete="${f.autocomplete || 'one-off'}" data-lpignore="true" data-1p-ignore>`);
+    imode, pat, dType, f.readonly && 'readonly', f.type === 'number' && noFill].filter(Boolean).join(' ');
+  return wrap(`<input id="${id}" name="${f.name}" type="${itype}" value="${esc(v)}" placeholder="${esc(t(ph))}" ${extra} autocomplete="${f.autocomplete || 'one-off'}" data-lpignore="true" data-1p-ignore>`);
 }
 function formValues(form, fields) {
   const o = {};
@@ -241,12 +251,48 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
   const body = `<form id="mform" novalidate autocomplete="off">${note ? `<div class="note">${note}</div>` : ''}<div class="fgrid">${fields.map(fieldHtml).join('')}</div>${extra}<div class="prev" id="mprev"></div><div class="ferr" id="mferr" role="alert"></div></form>`;
   openModal({ title, body, wide, foot: `${danger ? `<button class="btn bad" type="button" data-act="mdanger">${esc(t(danger.label))}</button><span class="sp"></span>` : ''}<button class="btn" type="button" data-act="close">${esc(t('Cancel'))}</button><button class="btn primary" type="button" data-act="msubmit">${esc(t(submit))}</button>` });
   const form = $('#mform');
+  const sanitizeField = el => {
+    if (!el || !el.name || el.type === 'file') return;
+    const isPhone = el.dataset.type === 'phone' || el.type === 'tel' || /phone|mobile/i.test(el.name);
+    const isAadhaar = el.dataset.type === 'aadhaar' || el.name === 'idNo' || el.name === 'aadhaar';
+    const isName = el.dataset.type === 'name' || ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(el.name);
+
+    if (isPhone) {
+      let val = el.value.replace(/\D/g, '');
+      if (val.length > 10 && val.startsWith('91')) val = val.slice(2);
+      else if (val.length > 10 && val.startsWith('0')) val = val.slice(1);
+      if (val.length > 10) val = val.slice(0, 10);
+      if (el.value !== val) el.value = val;
+    } else if (isAadhaar) {
+      let val = el.value.replace(/\D/g, '');
+      if (val.length > 12) val = val.slice(0, 12);
+      if (el.value !== val) el.value = val;
+    } else if (isName) {
+      let val = el.value;
+      try {
+        val = val.replace(/[^\p{L}\p{M}\s.\-']/gu, '');
+      } catch (_) {
+        val = val.replace(/[^a-zA-Z\s.\-']/g, '');
+      }
+      if (val.length > 80) val = val.slice(0, 80);
+      if (el.value !== val) el.value = val;
+    }
+  };
   const upd = e => {
+    if (e && e.target) sanitizeField(e.target);
     const vals = formValues(form, fields);
     if (onChange) try { onChange(vals, form, e && e.target && e.target.name); } catch (err) { console.error(err); }
     if (preview) { try { $('#mprev').innerHTML = preview(formValues(form, fields)) || ''; } catch (err) { $('#mprev').innerHTML = ''; } }
   };
-  form.addEventListener('input', upd); form.addEventListener('change', upd); upd();
+  form.addEventListener('input', e => { sanitizeField(e.target); upd(e); });
+  form.addEventListener('paste', e => { setTimeout(() => { sanitizeField(e.target); upd(e); }, 0); });
+  form.addEventListener('keydown', e => {
+    const el = e.target;
+    if (el && el.type === 'number' && (el.min >= 0 || el.dataset.type === 'number')) {
+      if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault();
+    }
+  });
+  form.addEventListener('change', upd); upd();
   Picker.enhance(form);
   if (danger) modalDanger = () => danger.run();
   let busy = false;
@@ -257,20 +303,38 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
       if (!f.name || f.type === 'html' || f.type === 'section') continue;
       const w = $(`[data-fw="${f.name}"]`, form); if (w && w.hidden) continue;
       const v = vals[f.name], L = t(f.label || f.name);
+      const isFile = f.type === 'file';
+      const isPhone = !isFile && (f.type === 'tel' || /phone|mobile/i.test(f.name));
+      const isAadhaar = !isFile && (f.name === 'idNo' || f.name === 'aadhaar' || ((f.type === 'text' || !f.type) && /aadhaar/i.test(f.label || '') && !/card|photo|doc|file|upload|paper/i.test(f.label || '')));
+      const isPersonName = !isFile && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
+
       if (f.required && (v === '' || v == null || (typeof v === 'number' && isNaN(v)) || (Array.isArray(v) && !v.length))) { err.textContent = t('{f} is required.', { f: L }); form.elements[f.name]?.focus?.(); return; }
       if (f.type === 'number') {
-        if (typeof v === 'number' && (!isFinite(v) || isNaN(v))) { err.textContent = t('{f} must be a valid number.', { f: L }); return; }
-        if (!isNaN(v) && f.min != null && v < f.min) { err.textContent = t('{f} must be at least {n}.', { f: L, n: f.min }); return; }
-        if (!isNaN(v) && f.max != null && v > f.max) { err.textContent = t('{f} must be at most {n}.', { f: L, n: f.max }); return; }
+        const raw = form.elements[f.name]?.value?.trim?.() ?? '';
+        if (raw !== '') {
+          if (isNaN(v) || !isFinite(v)) { err.textContent = t('{f} must be a valid number.', { f: L }); form.elements[f.name]?.focus?.(); return; }
+          if (f.min != null && v < f.min) { err.textContent = t('{f} must be at least {n}.', { f: L, n: f.min }); form.elements[f.name]?.focus?.(); return; }
+          if (f.max != null && v > f.max) { err.textContent = t('{f} must be at most {n}.', { f: L, n: f.max }); form.elements[f.name]?.focus?.(); return; }
+        }
       }
-      if (f.type === 'tel' && v) {
+      if (isPhone && v) {
         const clean = cleanPhone(String(v));
-        if (!clean) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); return; }
+        if (!clean || clean.length !== 10) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); form.elements[f.name]?.focus?.(); return; }
+      }
+      if (isAadhaar && v) {
+        const d = String(v).replace(/\D/g, '');
+        if (d.length !== 12) { err.textContent = t('{f} must be exactly 12 numeric digits.', { f: L }); form.elements[f.name]?.focus?.(); return; }
+      }
+      if (isPersonName && v) {
+        const str = String(v).trim();
+        let validName = false;
+        try { validName = /^[\p{L}\p{M}\s.\-']{2,80}$/u.test(str); } catch (_) { validName = /^[a-zA-Z\s.\-']{2,80}$/.test(str); }
+        if (!validName) { err.textContent = t('{f} should only contain letters, spaces, dots or hyphens.', { f: L }); form.elements[f.name]?.focus?.(); return; }
       }
       if (f.type === 'email' && v) {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim())) { err.textContent = t('{f} must be a valid email address.', { f: L }); return; }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim())) { err.textContent = t('{f} must be a valid email address.', { f: L }); form.elements[f.name]?.focus?.(); return; }
       }
-      if (f.pattern && v && !f.pattern.test(v)) { err.textContent = t('{f} looks invalid.', { f: L }); return; }
+      if (f.pattern && v && !f.pattern.test(v)) { err.textContent = t('{f} looks invalid.', { f: L }); form.elements[f.name]?.focus?.(); return; }
       if (typeof v === 'string' && f.maxlength && v.length > f.maxlength) { err.textContent = t('{f} cannot exceed {n} characters.', { f: L, n: f.maxlength }); return; }
     }
     busy = true; const sb = $('[data-act="msubmit"]'); if (sb) sb.disabled = true;
@@ -531,7 +595,8 @@ const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 const empty = (title, sub = '', action = '') => `<div class="empty"><b>${esc(t(title))}</b>${esc(t(sub))}${action ? `<div style="margin-top:14px">${action}</div>` : ''}</div>`;
 // iOS list row. o: {icon, ic (color class), t, d, end, act, attrs, chev}
 function li(o) {
-  const tag = o.act ? 'button' : 'div';
+  const hasInteractiveEnd = typeof o.end === 'string' && (o.end.includes('<button') || o.end.includes('<a '));
+  const tag = o.tag || (o.act && !hasInteractiveEnd ? 'button' : 'div');
   return `<${tag} class="li ${o.icon ? '' : 'noic'} ${o.cls || ''}" ${o.act ? `data-act="${o.act}"` : ''} ${o.attrs || ''}>
     ${o.icon ? `<span class="ic ${o.ic || ''}">${ico(o.icon)}</span>` : o.lead || ''}
     <span class="body"><span class="t ell">${o.raw ? o.t : esc(o.t)}</span>${o.d ? `<span class="d">${o.rawd ? o.d : esc(o.d)}</span>` : ''}</span>

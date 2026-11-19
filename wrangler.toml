@@ -1,0 +1,17 @@
+name = "hostelos-staging"
+main = "workers/cf-worker.js"
+compatibility_date = "2026-11-17"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "."
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "single-page-application"
+
+[triggers]
+crons = ["30 21 * * *"]
+
+[vars]
+ENVIRONMENT = "staging"
+APP_NAME = "HostelOS"

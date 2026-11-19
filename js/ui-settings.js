@@ -2,31 +2,115 @@
 /* Owner settings — one clear screen per topic, iOS Settings style. Everything here drives the rest of the app. */
 
 const SETTINGS_SECTIONS = [
-  ['Hostel', [['pay', 'Profile & UPI payments', 'rupee', 'ok'], ['rent', 'Rent, due date & late fee', 'cal', 'warn']]],
-  ['Billing', [['elec', 'Electricity rate & free units', 'bolt', 'warn', 'electricity'], ['laundry', 'Laundry free clothes & rate', 'shirt', 'info', 'laundry']]],
-  ['Mess & kitchen', [['meals', 'Meal timings & cut-offs', 'clock', 'teal', 'mess'], ['dishes', 'Dishes, recipes & menu', 'utensils', 'warn', 'mess'], ['items', 'Stock items & units', 'box', 'mute', 'kitchen'], ['kitchen', 'Kitchen permissions', 'cart', 'info', 'kitchen']]],
-  ['Money', [['expcats', 'Expense categories', 'tag', 'pink', 'expenses']]],
-  ['Residents', [['attend', 'Attendance & roll call', 'check', 'teal', 'attendance']]],
-  ['Team & access', [['users', 'Users, logins & access', 'key', 'bad'], ['depts', 'Staff departments', 'badge', 'info', 'staff'], ['staffatt', 'Staff attendance & punch-in', 'clock', 'teal', 'staff'], ['hkstaff', 'Housekeeping staff', 'broom', 'ok', 'housekeeping'], ['hk', 'Housekeeping rules', 'settings', 'mute', 'housekeeping']]],
-  ['Self check-in', [['qr', 'QR codes for residents & visitors', 'qr', 'teal']]],
-  ['Public page', [['site', 'Hostel page for enquiries', 'globe', 'info', 'landing']]],
-  ['Communication & documents', [['wa', 'WhatsApp messages', 'wa', 'ok'], ['docs', 'Documents', 'file', 'warn'], ['police', 'Police verification', 'shield', 'bad', 'residents']]],
-  ['Data', [['data', 'Backup & export', 'download', 'mute']]],
+  ['Property & General Rules', [
+    ['property', 'Property, UPI payments & site', 'home', 'ok'],
+    ['expcats', 'Expense categories', 'tag', 'pink', 'expenses'],
+    ['attend', 'Attendance & roll call', 'check', 'teal', 'attendance'],
+    ['site', 'Public landing page', 'globe', 'info', 'landing']
+  ]],
+  ['Rent & Billing', [
+    ['rent', 'Rent cycle & billing models', 'cal', 'warn']
+  ]],
+  ['Deposits & Late Fees', [
+    ['deposits_late', 'Security deposits & late fee rules', 'wallet', 'info']
+  ]],
+  ['Electricity & Utilities', [
+    ['elec_utils', 'Meters, slab rates & utility sharing', 'bolt', 'warn', 'electricity']
+  ]],
+  ['Mess & Food', [
+    ['mess_food', 'Meal rules, cutoffs & mess billing', 'clock', 'teal', 'mess'],
+    ['dishes', 'Dishes, recipes & menu', 'utensils', 'warn', 'mess'],
+    ['items', 'Stock items & inventory', 'box', 'mute', 'kitchen']
+  ]],
+  ['Check-in & Checkout', [
+    ['checkin_out', 'Admission rules & checkout notice', 'userplus', 'info'],
+    ['qr', 'QR self-registration for residents', 'qr', 'teal']
+  ]],
+  ['Staff & Permissions', [
+    ['staff_perms', 'Staff roles, access & punch-in', 'key', 'bad'],
+    ['users', 'User logins & accounts', 'users', 'pink'],
+    ['depts', 'Staff departments', 'badge', 'info', 'staff'],
+    ['hk', 'Housekeeping rules', 'broom', 'ok', 'housekeeping']
+  ]],
+  ['Agreements & Communication', [
+    ['agreements_comm', 'Rental contracts & WhatsApp modes', 'file', 'ok'],
+    ['police', 'Police verification portal', 'shield', 'bad', 'residents'],
+    ['docs', 'Resident & staff documents', 'file', 'warn']
+  ]],
+  ['Other Charges & Services', [
+    ['charges_services', 'Recurring charges & amenities', 'layers', 'pink'],
+    ['laundry', 'Laundry plan & quota', 'shirt', 'info', 'laundry'],
+    ['data', 'Backup & export', 'download', 'mute']
+  ]]
 ];
+
+function activeRulesSummaryCard() {
+  const s = S(), h = Store.hostel();
+  const eff = effectiveSettings(h ? h.id : null);
+  const tplName = (s.businessTemplate && (BUSINESS_TEMPLATES[s.businessTemplate] || {}).label) || 'Custom / Standard PG';
+  const rentDesc = s.rent.model === 'joining_date' ? t('Tenant Anniversary Cycle') : t('Calendar Monthly (Day {d})', { d: s.rent.day });
+  const elecDesc = s.elec.pricing === 'slab' ? t('Slab-based tiered pricing') : t('Fixed ₹{r}/unit', { r: s.elec.rate });
+  const messDesc = { included: t('Included in rent'), compulsory: t('Compulsory (₹{f}/mo)', { f: s.mess.monthlyFee }), optional: t('Optional (₹{f}/mo)', { f: s.mess.monthlyFee }), per_meal: t('Per-meal billing') }[s.mess.billing || 'included'];
+  const depDesc = s.deposit.mode === 'rent_multiple' ? t('{m}x Monthly rent', { m: s.deposit.rentMultiplier || 1 }) : s.deposit.mode === 'fixed' ? inr(s.deposit.fixedAmount || 0) : t('Custom / Per bed');
+  const lateDesc = s.lateFee.on ? (s.lateFee.mode === 'daily' ? t('₹{a}/day (cap ₹{c})', { a: s.lateFee.dailyAmount || 50, c: s.lateFee.maxCap || 1000 }) : inr(s.lateFee.amount || 200)) : t('Disabled');
+
+  return `<div class="card" style="margin-bottom:14px;background:var(--card-subtle,#f8fafc);border-left:4px solid var(--primary,#2563eb)">
+    <div class="row" style="margin-bottom:8px">
+      <span style="font-weight:700;font-size:14px;color:var(--text,#1e293b)">${esc(t('Active Business Rules'))}</span>
+      <span class="sp"></span>
+      <span class="badge ok">${esc(tplName)}</span>
+      <span class="badge mute">v${eff.version}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12px">
+      <div><span class="mute">${esc(t('Rent Cycle'))}:</span><br><b>${esc(rentDesc)}</b></div>
+      <div><span class="mute">${esc(t('Electricity'))}:</span><br><b>${esc(elecDesc)}</b></div>
+      <div><span class="mute">${esc(t('Mess Model'))}:</span><br><b>${esc(messDesc)}</b></div>
+      <div><span class="mute">${esc(t('Deposit Policy'))}:</span><br><b>${esc(depDesc)}</b></div>
+      <div><span class="mute">${esc(t('Late Fee'))}:</span><br><b>${esc(lateDesc)}</b></div>
+      <div><span class="mute">${esc(t('Notice Period'))}:</span><br><b>${s.checkout.noticeDaysRequired || 30} ${esc(t('days'))}</b></div>
+    </div>
+  </div>`;
+}
+
+function quickTemplatesBar() {
+  const s = S();
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="group-t" style="padding:0 0 8px 0;margin:0">${esc(t('Quick Setup Templates'))}</div>
+    <div class="hint" style="margin-bottom:10px">${esc(t('Select a property template to populate recommended defaults. You can fine-tune every rule below.'))}</div>
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      ${Object.values(BUSINESS_TEMPLATES).map(tpl => `
+        <button class="btn sm ${s.businessTemplate === tpl.key ? 'primary' : 'ghost'}" data-act="applytemplate" data-tpl="${tpl.key}">
+          ${esc(t(tpl.label))}
+        </button>
+      `).join('')}
+    </div>
+  </div>`;
+}
+
 PAGES.settings = {
   title: 'Settings', mod: 'settings',
   render(sec) {
     if (sec && SETTINGS_PAGES[sec]) return `<div class="narrow" style="max-width:720px"><div class="row" style="margin:6px 0 4px">${btn('Settings', 'go', 'data-to="settings"', 'ghost sm', 'back')}</div>${SETTINGS_PAGES[sec]()}</div>`;
     return `<div class="narrow" style="max-width:720px">${head('Settings', esc(hostelName()))}
+      ${activeRulesSummaryCard()}
+      ${quickTemplatesBar()}
       ${SETTINGS_SECTIONS.map(([title, rows]) => { const vis = rows.filter(r => !r[4] || can(r[4])); return vis.length ? group(title, vis.map(([k, l, icn, col]) => li({ icon: icn, ic: col, t: t(l), d: settingSummary(k), act: 'go', attrs: `data-to="settings/${k}"` })).join('')) : ''; }).join('')}</div>`;
   },
 };
 function settingSummary(k) {
   const s = S();
   return {
+    property: s.pay.upiId ? `UPI: ${s.pay.upiId}` : t('Add your UPI ID to send pay links'),
     pay: s.pay.upiId ? `UPI: ${s.pay.upiId}` : t('Add your UPI ID to send pay links'),
-    rent: t('Due on day {d} · late fee {f} after {g} days', { d: s.rent.day, f: s.rent.lateOn ? inr(s.rent.lateFee) : t('off'), g: s.rent.graceDays }),
+    rent: s.rent.model === 'joining_date' ? t('Joining-date cycle · Due in {d} days', { d: s.rent.dueDays || 5 }) : t('Due on day {d} · late fee {f} after {g} days', { d: s.rent.day, f: s.lateFee.on ? (s.lateFee.mode === 'daily' ? inr(s.lateFee.dailyAmount) + '/d' : inr(s.lateFee.amount)) : t('off'), g: s.rent.graceDays }),
+    deposits_late: t('Deposit: {m} · Late fee: {l}', { m: s.deposit.mode, l: s.lateFee.on ? (s.lateFee.mode === 'daily' ? inr(s.lateFee.dailyAmount) + '/d' : inr(s.lateFee.amount)) : t('off') }),
+    elec_utils: s.elec.pricing === 'slab' ? t('Tiered slab rates · {s}', { s: t(s.elec.sharing) }) : t('₹{r}/unit · {f} free units per {m}', { r: s.elec.rate, f: s.elec.freeUnits, m: t(s.elec.freeMode === 'room' ? 'room' : 'resident') }),
     elec: t('₹{r}/unit · {f} free units per {m}', { r: s.elec.rate, f: s.elec.freeUnits, m: t(s.elec.freeMode === 'room' ? 'room' : 'resident') }),
+    mess_food: { included: t('Included in rent'), compulsory: t('Compulsory (₹{f}/mo)', { f: s.mess.monthlyFee }), optional: t('Optional (₹{f}/mo)', { f: s.mess.monthlyFee }), per_meal: t('Per-meal billing') }[s.mess.billing || 'included'],
+    checkin_out: t('Notice: {n} days · {a} admission', { n: s.checkout.noticeDaysRequired || 30, a: s.checkin.requireApproval !== 'none' ? s.checkin.requireApproval : t('Direct') }),
+    staff_perms: t('Role matrix & staff attendance'),
+    agreements_comm: t('Templates & WhatsApp: {m}', { m: s.wa.mode === 'official_api' ? t('Official Cloud API') : t('Click-to-Chat') }),
+    charges_services: (s.charges || []).length ? t('{n} additional charges active', { n: s.charges.length }) : t('Add Wi-Fi, Parking, AC etc.'),
     laundry: t('{f} free/month · then ₹{r} per piece', { f: s.laundry.freePcs, r: s.laundry.rate }),
     meals: s.meals.map(m => `${t(m.l)} ${fmtTime(m.time)}`).join(' · '),
     dishes: t('{n} dishes', { n: dishes().length }), items: t('{n} items', { n: items().length }),
@@ -93,24 +177,331 @@ A.lsadd = async el => {
 };
 A.lsdel = async el => { const list = [...(getPath(el.dataset.path) || [])]; list.splice(+el.dataset.i, 1); await saveList(el.dataset.path, list); render(); };
 
+function saveElecUtilsSettings(v, e) {
+  let slabs = e.slabs;
+  if (v.pricing === 'slab') {
+    const u1 = +v.slab1_upTo || 100, r1 = +v.slab1_rate || 8;
+    const u2 = +v.slab2_upTo || 250, r2 = +v.slab2_rate || 10;
+    const r3 = +v.slab3_rate || 12;
+    slabs = [
+      { upTo: Math.max(1, u1), rate: Math.max(0, r1) },
+      { upTo: Math.max(u1 + 1, u2), rate: Math.max(0, r2) },
+      { upTo: 999999, rate: Math.max(0, r3) }
+    ];
+  }
+  return { elec: { ...S().elec, ...v, slabs, scanRole: v.scanRole || 'both' } };
+}
+
 const SETTINGS_PAGES = {
-  pay: () => { const h = Store.hostel(), p = S().pay; return `${head('Profile & UPI payments', t('Used on bills, receipts and the UPI pay link.'))}${settingsForm('pay', [
-    { name: 'name', label: 'Hostel / PG name', value: h.name, required: true }, { name: 'phone', label: 'Owner mobile (shown to residents)', type: 'tel', value: p.phone },
-    { name: 'address', label: 'Address', value: h.address, full: true },
-    { name: 'upiId', label: 'UPI ID (VPA)', value: p.upiId, placeholder: 'name@okhdfcbank', hint: t('Residents pay straight to this UPI ID from any app (PhonePe, GPay, Paytm, BHIM).') }, { name: 'payee', label: 'Name on UPI', value: p.payee || h.name },
-    { name: 'bank', label: 'Bank details (optional, shown on bill)', value: p.bank, full: true },
-  ], v => { if (v.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(v.upiId)) return 'UPI ID looks invalid (example: name@okicici)'; if (v.name !== h.name || v.address !== h.address) { h.name = v.name; h.address = v.address; Backend.saveHostel(h.id, { name: v.name, address: v.address }).catch(e => toast(e.message, 'bad')); } return { pay: { upiId: v.upiId, payee: v.payee, phone: phone10(v.phone), bank: v.bank } }; },
-  p.upiId ? `<a class="btn" href="${esc(payLink(1, 'Test'))}" target="_blank" rel="noopener">${ico('qr', 'sm')} ${esc(t('Test pay link'))}</a>` : '')}`; },
-  rent: () => { const r = S().rent; return `${head('Rent, due date & late fee')}${settingsForm('rent', [
-    { name: 'day', label: 'Rent bill day of month', type: 'number', min: 1, max: 28, value: r.day, required: true }, { name: 'graceDays', label: 'Grace days before overdue', type: 'number', min: 0, max: 25, value: r.graceDays },
-    { name: 'lateOn', label: 'Add late fee automatically', type: 'checkbox', value: r.lateOn }, { name: 'lateFee', label: 'Late fee (₹, once per bill)', type: 'number', min: 0, value: r.lateFee },
-    { name: 'prorate', label: 'Charge first month by days stayed (pro-rata)', type: 'checkbox', value: r.prorate, full: true },
-  ], v => ({ rent: v }))}`; },
-  elec: () => { const e = S().elec; return `${head('Electricity rate & free units', t('Bills are split equally among residents of a room.'))}${settingsForm('elec', [
-    { name: 'rate', label: 'Rate per unit (₹)', type: 'number', min: 0, step: 0.01, value: e.rate, required: true }, { name: 'readingDay', label: 'Reading reminder day', type: 'number', min: 1, max: 28, value: e.readingDay },
-    { name: 'freeUnits', label: 'Free units (not charged)', type: 'number', min: 0, value: e.freeUnits }, { name: 'freeMode', label: 'Free units are per', type: 'select', options: [{ v: 'resident', l: t('Per bed / resident, per month') }, { v: 'room', l: t('Per room, per month (shared)') }], value: e.freeMode },
-  ], v => ({ elec: v }))}${about('Example: room uses 150 units, 2 residents, 30 free per resident → each pays (75 − 30) × rate. At every check-in and check-out the meter is read, so someone who stayed only part of the month pays for the units used in their days, and gets free units only for those days.')}
-    ${group('', li({ icon: 'bolt', ic: 'warn', t: t('Opening meter readings'), d: t('Starting on Sarvlekh? Enter today\'s meter number for every room once.'), act: 'go', attrs: 'data-to="settings/elecopen"' }))}`; },
+  property: () => {
+    const h = Store.hostel(), p = S().pay;
+    return `${head('Property & UPI Payments', t('Profile details used on bills, receipts, legal notices, and UPI payment links.'))}${settingsForm('property', [
+      { name: 'name', label: 'Hostel / PG name', value: h.name, required: true },
+      { name: 'phone', label: 'Owner mobile (shown to residents)', type: 'tel', value: p.phone },
+      { name: 'address', label: 'Property address', value: h.address, full: true },
+      { name: 'upiId', label: 'UPI ID (VPA)', value: p.upiId, placeholder: 'name@okhdfcbank', hint: t('Residents pay straight to this UPI ID from any app (PhonePe, GPay, Paytm, BHIM).') },
+      { name: 'payee', label: 'Name on UPI account', value: p.payee || h.name },
+      { name: 'bank', label: 'Bank details (optional, shown on bill)', value: p.bank, full: true },
+    ], v => {
+      if (v.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(v.upiId)) return 'UPI ID looks invalid (example: name@okicici)';
+      if (v.name !== h.name || v.address !== h.address) {
+        h.name = v.name; h.address = v.address;
+        Backend.saveHostel(h.id, { name: v.name, address: v.address }).catch(e => toast(e.message, 'bad'));
+      }
+      return { pay: { upiId: v.upiId, payee: v.payee, phone: phone10(v.phone), bank: v.bank } };
+    }, p.upiId ? `<a class="btn" href="${esc(payLink(1, 'Test'))}" target="_blank" rel="noopener">${ico('qr', 'sm')} ${esc(t('Test pay link'))}</a>` : '')}
+    <div class="card" style="margin-top:16px">
+      <h3>${ico('rupee', 'sm')} ${esc(t('Cashfree Multi-Owner Settlement (Easy Split)'))}</h3>
+      <p class="muted sm" style="margin:4px 0 12px">${esc(t('Direct bank settlement: Rent collected via Cashfree UPI is automatically split and settled into your verified bank account.'))}</p>
+      <div class="row" style="gap:8px">
+        <button class="btn primary sm" data-act="onboardcf">${ico('check', 'sm')} ${esc(t('Configure Verified Bank Account'))}</button>
+      </div>
+    </div>`;
+  },
+  pay: () => SETTINGS_PAGES.property(),
+  rent: () => {
+    const r = S().rent;
+    const prevNov = calcCheckInRent({ checkInDate: '2026-11-15', monthlyRent: 8000, policy: r.prorate, divisor: r.prorateDivisor });
+    return `${head('Rent & Billing Configuration', t('Choose billing cycles, due dates, and mid-month check-in rules.'))}
+      <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(t('Mid-Month Check-in Calculation Preview'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b)">
+          ${esc(t('Example'))}: ${esc(t('Monthly rent ₹8,000, Joining 15 November'))} (${prevNov.totalDays} ${esc(t('calendar days'))})<br>
+          <b>${esc(t('First Bill'))}: ${inr(prevNov.amount)}</b> · ${prevNov.occupiedDays} ${esc(t('days'))} (${inr(prevNov.dailyRate)}/${esc(t('day'))})
+        </div>
+      </div>
+      ${settingsForm('rent', [
+        { type: 'section', label: 'Billing Model' },
+        { name: 'model', label: 'Billing cycle model', type: 'select', full: true, value: r.model || 'calendar_monthly',
+          options: [
+            { v: 'calendar_monthly', l: t('Calendar monthly (Fixed date every month for all residents)') },
+            { v: 'joining_date', l: t('Joining-date anniversary (Each tenant has their own monthly anniversary)') }
+          ],
+          info: t('Calendar monthly generates bills on a fixed date (e.g. 1st). Anniversary billing generates bills on each tenant\'s joining date (e.g. 15th to 14th).')
+        },
+        { name: 'day', label: 'Rent bill day of month (calendar cycle)', type: 'number', min: 1, max: 28, value: r.day, required: true },
+        { name: 'dueDays', label: 'Days allowed for payment before due', type: 'number', min: 1, max: 15, value: r.dueDays || 5 },
+        { name: 'graceDays', label: 'Grace days before late fee applies', type: 'number', min: 0, max: 25, value: r.graceDays },
+        { type: 'section', label: 'Mid-Month Check-In Policy' },
+        { name: 'prorate', label: 'First month policy', type: 'select', full: true, value: r.prorate === false ? 'full' : (typeof r.prorate === 'string' ? r.prorate : 'prorate'),
+          options: [
+            { v: 'prorate', l: t('Pro-rata rent for remaining calendar days') },
+            { v: 'full', l: t('Charge full monthly rent') },
+            { v: 'next_cycle', l: t('Start billing from next cycle (₹0 first period)') }
+          ]
+        },
+        { name: 'prorateDivisor', label: 'Pro-rata calculation divisor', type: 'select', full: true, value: r.prorateDivisor || 'actual_days',
+          options: [
+            { v: 'actual_days', l: t('Actual calendar days in that month (28, 29, 30 or 31)') },
+            { v: 'fixed_30', l: t('Standard fixed 30-day divisor') }
+          ]
+        },
+        { type: 'section', label: 'Automated Charges Inclusion' },
+        { name: 'includeElec', label: 'Include electricity bill in monthly batch', type: 'checkbox', value: r.includeElec !== false },
+        { name: 'includeMess', label: 'Include mess fee in monthly batch', type: 'checkbox', value: r.includeMess !== false },
+        { name: 'includeCharges', label: 'Include recurring additional charges', type: 'checkbox', value: r.includeCharges !== false, full: true }
+      ], v => ({ rent: { ...S().rent, ...v, prorate: v.prorate === 'full' ? false : v.prorate } }))}`;
+  },
+  deposits_late: () => {
+    const s = S(), dep = s.deposit || {}, late = s.lateFee || {};
+    return `${head('Security Deposits & Late Fees', t('Configure refundable deposits, deduction rules, and automated overdue late fees.'))}
+      <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(t('Late Fee Calculation Preview'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b)">
+          ${esc(t('Example'))}: ${esc(t('Rent ₹8,000, 10 days overdue with 5 days grace period.'))}<br>
+          <b>Fixed:</b> ₹200 · <b>Daily (₹50/d):</b> ₹250 · <b>Percentage (2%):</b> ₹160 (Capped at ₹1,000)
+        </div>
+      </div>
+      ${settingsForm('deposits_late', [
+        { type: 'section', label: 'Security Deposit Rules' },
+        { name: 'dep_mode', label: 'Deposit calculation mode', type: 'select', full: true, value: dep.mode || 'rent_multiple',
+          options: [
+            { v: 'rent_multiple', l: t('Multiple of monthly rent (e.g. 1 month or 2 months)') },
+            { v: 'fixed', l: t('Fixed rupee amount for all residents') },
+            { v: 'custom', l: t('Per-tenant custom amount entered at check-in') },
+            { v: 'per_bed', l: t('Room / bed specific deposit') }
+          ]
+        },
+        { name: 'rentMultiplier', label: 'Rent multiplier (if multiple of rent)', type: 'number', min: 1, max: 12, value: dep.rentMultiplier || 1 },
+        { name: 'fixedAmount', label: 'Fixed deposit amount (₹)', type: 'number', min: 0, value: dep.fixedAmount || 0 },
+        { name: 'nonRefundable', label: 'Non-refundable admission / maintenance fee (₹)', type: 'number', min: 0, value: dep.nonRefundable || 0, full: true, hint: t('Deducted automatically from deposit on checkout as a non-refundable charge.') },
+        { type: 'section', label: 'Late Fee & Penalty Rules' },
+        { name: 'late_on', label: 'Enable automatic late fees on overdue bills', type: 'checkbox', value: late.on !== false, full: true },
+        { name: 'late_mode', label: 'Late fee calculation mode', type: 'select', full: true, value: late.mode || 'fixed',
+          options: [
+            { v: 'fixed', l: t('One-time fixed penalty per overdue bill') },
+            { v: 'daily', l: t('Daily recurring late fee for each day past grace period') },
+            { v: 'percentage', l: t('Percentage of unpaid rent balance') }
+          ]
+        },
+        { name: 'late_amount', label: 'Fixed late charge / Base penalty (₹)', type: 'number', min: 0, value: late.amount || 200 },
+        { name: 'dailyAmount', label: 'Daily late charge (₹/day, if daily mode)', type: 'number', min: 0, value: late.dailyAmount || 50 },
+        { name: 'percentage', label: 'Late fee percentage (%, if percentage mode)', type: 'number', min: 0, max: 20, step: 0.1, value: late.percentage || 2 },
+        { name: 'graceDays', label: 'Grace period before late fee triggers (days)', type: 'number', min: 0, max: 30, value: late.graceDays != null ? late.graceDays : 5 },
+        { name: 'maxCap', label: 'Maximum penalty cap (₹)', type: 'number', min: 0, value: late.maxCap || 1000, hint: t('A late fee will never exceed this maximum amount.') }
+      ], v => ({
+        deposit: { ...S().deposit, mode: v.dep_mode, rentMultiplier: +v.rentMultiplier || 1, fixedAmount: +v.fixedAmount || 0, nonRefundable: +v.nonRefundable || 0 },
+        lateFee: { ...S().lateFee, on: v.late_on, mode: v.late_mode, amount: +v.late_amount || 0, dailyAmount: +v.dailyAmount || 0, percentage: +v.percentage || 0, graceDays: +v.graceDays || 0, maxCap: +v.maxCap || 1000 },
+        rent: { ...S().rent, lateOn: v.late_on, lateFee: +v.late_amount || 200 }
+      }))}`;
+  },
+  elec_utils: () => {
+    const e = S().elec;
+    return `${head('Electricity & Utility Configuration', t('Configure meter sharing arrangements, flat or tiered slab pricing, and free units allowances.'))}
+      <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(t('Electricity Split Preview'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b)">
+          ${esc(t('Example'))}: ${esc(t('Room uses 150 units between 2 residents, 30 free units/resident.'))}<br>
+          <b>${esc(t('Calculation'))}:</b> (75 − 30) = 45 billable units @ ₹${e.rate}/unit = <b>${inr(45 * e.rate)} ${esc(t('each'))}</b>
+        </div>
+      </div>
+      ${settingsForm('elec_utils', [
+        { type: 'section', label: 'Meter Sharing Arrangement' },
+        { name: 'sharing', label: 'Meter arrangement', type: 'select', full: true, value: e.sharing || 'shared_room',
+          options: [
+            { v: 'shared_room', l: t('Shared room meter (One meter serves room, split among residents)') },
+            { v: 'individual', l: t('Individual bed / resident meter (Resident billed independently)') },
+            { v: 'property_level', l: t('Property common meter (Building meter allocated proportionally)') }
+          ]
+        },
+        { name: 'allocation', label: 'Sharing allocation method', type: 'select', full: true, value: e.allocation || 'occupancy_days',
+          options: [
+            { v: 'occupancy_days', l: t('Pro-rata based on actual occupancy days in period') },
+            { v: 'equal', l: t('Equal sharing among active occupants') }
+          ]
+        },
+        { type: 'section', label: 'Pricing Model' },
+        { name: 'pricing', label: 'Pricing model', type: 'select', full: true, value: e.pricing || 'fixed',
+          options: [
+            { v: 'fixed', l: t('Fixed rate per unit (e.g. ₹9/unit)') },
+            { v: 'slab', l: t('Tiered slab pricing (e.g. 0-100 units @ ₹8, 101-250 @ ₹10, >250 @ ₹12)') }
+          ]
+        },
+        { name: 'rate', label: 'Base rate per unit (₹)', type: 'number', min: 0, step: 0.01, value: e.rate, required: true },
+        { name: 'fixedCharge', label: 'Fixed monthly meter charge (₹)', type: 'number', min: 0, value: e.fixedCharge || 0 },
+        { type: 'section', label: 'Tiered Slabs (for Slab Pricing)' },
+        { name: 'slab1_upTo', label: 'Slab 1 upper limit (units)', type: 'number', min: 1, value: (e.slabs && e.slabs[0] && e.slabs[0].upTo) || 100 },
+        { name: 'slab1_rate', label: 'Slab 1 rate (₹/unit)', type: 'number', min: 0, step: 0.01, value: (e.slabs && e.slabs[0] && e.slabs[0].rate) || 8 },
+        { name: 'slab2_upTo', label: 'Slab 2 upper limit (units)', type: 'number', min: 2, value: (e.slabs && e.slabs[1] && e.slabs[1].upTo) || 250 },
+        { name: 'slab2_rate', label: 'Slab 2 rate (₹/unit)', type: 'number', min: 0, step: 0.01, value: (e.slabs && e.slabs[1] && e.slabs[1].rate) || 10 },
+        { name: 'slab3_rate', label: 'Above Slab 2 rate (₹/unit)', type: 'number', min: 0, step: 0.01, value: (e.slabs && e.slabs[2] && e.slabs[2].rate) || 12 },
+        { type: 'section', label: 'Free Units & Reminders' },
+        { name: 'freeUnits', label: 'Free units quota per month', type: 'number', min: 0, value: e.freeUnits },
+        { name: 'freeMode', label: 'Free units applied to', type: 'select', full: true, value: e.freeMode,
+          options: [{ v: 'resident', l: t('Per resident / bed (each resident gets free units)') }, { v: 'room', l: t('Per room (free pool shared equally)') }]
+        },
+        { name: 'readingDay', label: 'Reading reminder day of month', type: 'number', min: 1, max: 28, value: e.readingDay },
+        { type: 'section', label: 'Meter Scanning & Submissions' },
+        { name: 'scanRole', label: 'Who can scan / record meter readings', type: 'select', full: true, value: e.scanRole || 'both',
+          options: [
+            { v: 'both', l: t('Both residents & staff/warden') },
+            { v: 'staff_only', l: t('Staff & Warden only (Residents cannot submit)') },
+            { v: 'resident_only', l: t('Residents only (Staff approves in Inbox)') }
+          ],
+          hint: t('Controls whether residents can submit their room meter readings from their phone.')
+        }
+      ], v => saveElecUtilsSettings(v, e))}
+      ${group('', li({ icon: 'bolt', ic: 'warn', t: t('Opening meter readings'), d: t('Enter initial meter numbers for rooms starting on Sarvlekh.'), act: 'go', attrs: 'data-to="settings/elecopen"' }))}`;
+  },
+  elec: () => SETTINGS_PAGES.elec_utils(),
+  mess_food: () => {
+    const ms = meals(), me = S().mess || {};
+    return `${head('Mess & Food Configuration', t('Configure meal subscription models, daily cut-offs, attendance rules, and leave rebates.'))}
+      <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(t('Mess Policy Preview'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b)">
+          <b>Compulsory:</b> Fixed ₹${me.monthlyFee || 2500}/month billed automatically.<br>
+          <b>Leave Rebate:</b> Resident on approved leave for 4 days receives ${inr((me.rebatePerDay || 80) * 4)} credit.
+        </div>
+      </div>
+      ${settingsForm('mess_food', [
+        { type: 'section', label: 'Mess Billing Policy' },
+        { name: 'billing', label: 'Billing model', type: 'select', full: true, value: me.billing || 'included',
+          options: [
+            { v: 'included', l: t('Included in base room rent (no separate mess bill)') },
+            { v: 'compulsory', l: t('Compulsory meal subscription (billed automatically every month)') },
+            { v: 'optional', l: t('Optional subscription (residents can opt-in or opt-out)') },
+            { v: 'per_meal', l: t('Per-meal attendance billing (billed based on meals eaten)') }
+          ]
+        },
+        { name: 'monthlyFee', label: 'Monthly mess subscription fee (₹)', type: 'number', min: 0, value: me.monthlyFee || 2500 },
+        { name: 'rebatePerDay', label: 'Rebate per day for approved leave (₹/day)', type: 'number', min: 0, value: me.rebatePerDay || 80 },
+        { name: 'minLeaveDays', label: 'Minimum leave days required for rebate', type: 'number', min: 1, max: 15, value: me.minLeaveDays != null ? me.minLeaveDays : 2 },
+        { type: 'section', label: 'Daily Cut-offs & Options' },
+        { name: 'skip', label: 'Residents can skip meals', type: 'checkbox', value: me.skip !== false },
+        { name: 'tiffin', label: 'Residents can order packed tiffin', type: 'checkbox', value: me.tiffin !== false },
+        { name: 'trackStock', label: 'Dishes & recipes inventory tracking', type: 'checkbox', value: me.trackStock !== false, hint: t('Off = hides Dishes & recipes tab and recipe ingredient tracking.') },
+        { name: 'learn', label: 'Auto-learn food consumption from purchases', type: 'checkbox', value: me.learn !== false, full: true }
+      ], v => ({ mess: { ...S().mess, ...v } }))}
+      ${group('Dishes & Daily Timings', [
+        li({ icon: 'clock', ic: 'teal', t: t('Meal timings & skip cut-offs'), d: ms.map(m => `${t(m.l)} ${fmtTime(m.time)}`).join(' · '), act: 'go', attrs: 'data-to="settings/meals"' }),
+        li({ icon: 'utensils', ic: 'warn', t: (can('kitchen') && me.trackStock !== false) ? t('Dishes & weekly menu') : t('Weekly menu'), d: (can('kitchen') && me.trackStock !== false) ? t('{n} dishes registered', { n: dishes().length }) : t('Set dishes for each day of the week'), act: 'go', attrs: 'data-to="settings/dishes"' }),
+        ...((can('kitchen') && me.trackStock !== false) ? [li({ icon: 'box', ic: 'mute', t: t('Stock items & inventory'), d: t('{n} stock items', { n: items().length }), act: 'go', attrs: 'data-to="settings/items"' })] : [])
+      ].join(''))}`;
+  },
+  checkin_out: () => {
+    const s = S(), cin = s.checkin || {}, cout = s.checkout || {};
+    return `${head('Check-in & Checkout Workflows', t('Configure admission authorization, required KYC papers, and checkout notice settlements.'))}
+      <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(t('Notice Shortfall Preview'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b)">
+          ${esc(t('Required notice: {n} days.', { n: cout.noticeDaysRequired || 30 }))} ${esc(t('If resident gives 10 days notice, remaining 20 days rent is charged as shortfall deduction from deposit.'))}
+        </div>
+      </div>
+      ${settingsForm('checkin_out', [
+        { type: 'section', label: 'Check-in Admission Rules' },
+        { name: 'requireApproval', label: 'Admission approval required', type: 'select', full: true, value: cin.requireApproval || 'none',
+          options: [
+            { v: 'none', l: t('Direct check-in (Warden or manager can admit tenant directly)') },
+            { v: 'manager', l: t('Manager approval required before bed occupancy') },
+            { v: 'owner', l: t('Owner approval required before bed occupancy') }
+          ]
+        },
+        { name: 'requireDocs', label: 'Require mandatory documents before admission', type: 'checkbox', value: cin.requireDocs || false },
+        { name: 'minDepositRequired', label: 'Require security deposit before activating bed', type: 'checkbox', value: cin.minDepositRequired || false },
+        { name: 'requireAgreement', label: 'Require digital agreement completion', type: 'checkbox', value: cin.requireAgreement || false, full: true },
+        { type: 'section', label: 'Checkout & Notice Settlement' },
+        { name: 'noticeDaysRequired', label: 'Mandatory notice period (days)', type: 'number', min: 0, max: 90, value: cout.noticeDaysRequired || 30, required: true },
+        { name: 'shortfallPenalty', label: 'Deduct notice shortfall fee from deposit', type: 'checkbox', value: cout.shortfallPenalty !== false, full: true, hint: t('Charges pro-rata rent for unserved notice days.') },
+        { name: 'roomInspection', label: 'Require room inspection before refund', type: 'checkbox', value: cout.roomInspection !== false, full: true }
+      ], v => ({
+        checkin: { ...S().checkin, requireApproval: v.requireApproval, requireDocs: v.requireDocs, minDepositRequired: v.minDepositRequired, requireAgreement: v.requireAgreement },
+        checkout: { ...S().checkout, noticeDaysRequired: +v.noticeDaysRequired || 30, shortfallPenalty: v.shortfallPenalty, roomInspection: v.roomInspection }
+      }))}`;
+  },
+  staff_perms: () => {
+    return `${head('Staff & Permissions Matrix', t('Assign operational privileges across Owner, Manager, Warden, and Staff roles.'))}
+      <div class="card" style="margin-bottom:14px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:8px">${esc(t('Role Presets & Capabilities'))}</div>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:12px">
+          <div><b style="color:var(--primary,#2563eb)">👑 ${esc(t('Owner'))}:</b> ${esc(t('Full control over financial settlements, invoice deletions, reversals, staff creation, and business rules.'))}</div>
+          <div><b style="color:var(--ok,#16a34a)">👔 ${esc(t('Manager'))}:</b> ${esc(t('Tenant admissions, meter reading corrections, deposit refunds, purchases, and day-to-day operations.'))}</div>
+          <div><b style="color:var(--warn,#d97706)">🛡️ ${esc(t('Warden'))}:</b> ${esc(t('Bed allocations, meter readings capture, visitor log, night roll call, and complaints handling.'))}</div>
+          <div><b style="color:var(--mute,#64748b)">🍳 ${esc(t('Kitchen / Staff'))}:</b> ${esc(t('Meal headcount, kitchen purchases, housekeeping tasks, gate register, without financial access.'))}</div>
+        </div>
+      </div>
+      ${group('Staff Access & Attendance', [
+        li({ icon: 'users', ic: 'pink', t: t('Manage user accounts & logins'), d: t('Create passwords and permissions for team'), act: 'go', attrs: 'data-to="settings/users"' }),
+        li({ icon: 'clock', ic: 'teal', t: t('Staff attendance & punch-in geofencing'), d: settingSummary('staffatt'), act: 'go', attrs: 'data-to="settings/staffatt"' }),
+        li({ icon: 'badge', ic: 'info', t: t('Departments'), d: S().departments.join(', '), act: 'go', attrs: 'data-to="settings/depts"' })
+      ].join(''))}`;
+  },
+  agreements_comm: () => {
+    const s = S(), agr = s.agreements || {};
+    const tpls = agr.templates || DEFAULT_AGREEMENT_TEMPLATES;
+    return `${head('Agreements & Communication', t('Manage digital rental agreement formats and resident WhatsApp messaging delivery modes.'))}
+      <div class="card" style="margin-bottom:14px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:6px">${esc(t('WhatsApp Messaging Modes'))}</div>
+        <div style="font-size:12px;color:var(--text-mute,#64748b);line-height:1.5">
+          <b>Mode 1 (Free Click-to-Chat):</b> Uses native <code>wa.me</code> links with prefilled text. Safe, free, zero API fees. Opens WhatsApp for each resident in sequential assistant.<br><br>
+          <b>Mode 2 (Official Meta Cloud API):</b> Direct server delivery using Meta Graph API templates. Requires Meta WhatsApp Business account.
+        </div>
+      </div>
+      ${settingsForm('agreements_comm', [
+        { type: 'section', label: 'Default Agreement Template' },
+        { name: 'defaultTemplateId', label: 'Default rental agreement format', type: 'select', full: true, value: agr.defaultTemplateId || 'tpl-std',
+          options: tpls.map(t => ({ v: t.id, l: t.name }))
+        },
+        { type: 'section', label: 'WhatsApp Mode' },
+        { name: 'wa_mode', label: 'WhatsApp delivery mode', type: 'select', full: true, value: s.wa.mode || 'click_to_chat',
+          options: [
+            { v: 'click_to_chat', l: t('Mode 1: Free Click-to-Chat (wa.me sequential assistant)') },
+            { v: 'official_api', l: t('Mode 2: Official Meta Cloud WhatsApp API') }
+          ]
+        }
+      ], v => ({
+        agreements: { ...S().agreements, defaultTemplateId: v.defaultTemplateId },
+        wa: { ...S().wa, mode: v.wa_mode }
+      }))}
+      ${group('Communication Channels', [
+        li({ icon: 'wa', ic: 'ok', t: t('WhatsApp gateway details'), d: s.wa.gw && s.wa.gw.on ? t('Gateway connected') : t('Self-hosted or Meta Cloud configuration'), act: 'go', attrs: 'data-to="settings/wa"' }),
+        li({ icon: 'shield', ic: 'bad', t: t('Police verification portal'), d: settingSummary('police'), act: 'go', attrs: 'data-to="settings/police"' }),
+        li({ icon: 'file', ic: 'warn', t: t('Required KYC document checklist'), d: s.docs.required.join(', '), act: 'go', attrs: 'data-to="settings/docs"' })
+      ].join(''))}`;
+  },
+  charges_services: () => {
+    const list = S().charges || [];
+    return `${head('Additional Charges & Services', t('Define reusable recurring or one-time utility and amenity fees (Wi-Fi, AC, Parking, Maintenance).'))}
+      <div class="row" style="margin-bottom:12px">
+        <span class="group-t" style="padding:0;margin:0">${esc(t('Configured Charges'))}</span>
+        <span class="sp"></span>
+        ${btn('Add Charge', 'addcharge', '', 'primary sm', 'plus')}
+      </div>
+      ${list.length ? group('', list.map(c => `
+        <div class="li">
+          <span class="ic ${c.active ? 'ok' : 'mute'}">${ico('layers')}</span>
+          <span class="body">
+            <span class="t">${esc(c.name)} · ${inr(c.amount)}</span>
+            <span class="d">${esc(t(c.frequency === 'monthly' ? 'Monthly recurring' : 'One-time'))} · ${esc(t(c.scope === 'all' ? 'All residents' : c.scope === 'room' ? 'Per room' : 'Opt-in'))}</span>
+          </span>
+          <button class="btn sm ${c.active ? 'ghost' : 'subtle'}" data-act="togglecharge" data-id="${esc(c.id)}">${esc(t(c.active ? 'Active' : 'Disabled'))}</button>
+          <button class="btn sm ghost" data-act="delcharge" data-id="${esc(c.id)}" aria-label="${esc(t('Delete'))}">${ico('trash', 'sm')}</button>
+        </div>
+      `).join('')) : empty('No additional charges', 'Add custom charges like Wi-Fi, Parking, or AC Maintenance.')}
+      ${group('Bundled Services', [
+        li({ icon: 'shirt', ic: 'info', t: t('Laundry service & free clothes quota'), d: settingSummary('laundry'), act: 'go', attrs: 'data-to="settings/laundry"' })
+      ].join(''))}`;
+  },
   staffatt: () => {
     const a = S().staffAtt;
     return `${head('Staff attendance & punch-in')}${settingsForm('staffatt', [
@@ -158,7 +549,14 @@ const SETTINGS_PAGES = {
       { name: 'learn', label: 'Learn real usage from purchases (recommended)', type: 'checkbox', value: me.learn, full: true },
     ], v => ({ meals: byTime(ms.map((m, i) => ({ ...m, l: v[`l${i}`] || m.l, time: v[`time${i}`], cutoff: v[`cut${i}`], prev: v[`prev${i}`], tCutoff: v[`tcut${i}`], tPrev: v[`tprev${i}`] }))), mess: { skip: v.skip, tiffin: v.tiffin, learn: v.learn } }),
     `${btn('Add meal (e.g. Snacks)', 'addmeal', '', 'sm')}`)}`; },
-  dishes: () => `${head('Dishes, recipes & menu')}${group('', [li({ icon: 'utensils', ic: 'warn', t: t('Dishes & recipes'), d: t('{n} dishes', { n: dishes().length }), act: 'messtab', attrs: 'data-tab="dishes"' }), li({ icon: 'cal', ic: 'info', t: t('Weekly menu'), act: 'messtab', attrs: 'data-tab="menu"' }), li({ icon: 'plus', ic: 'ok', t: t('Add dish'), act: 'adddish' })].join(''), t('When you create a dish you also enter its ingredients — they become stock items automatically.'))}`,
+  dishes: () => {
+    const rows = [
+      ...(can('kitchen') ? [li({ icon: 'utensils', ic: 'warn', t: t('Dishes & recipes'), d: t('{n} dishes', { n: dishes().length }), act: 'messtab', attrs: 'data-tab="dishes"' })] : []),
+      li({ icon: 'cal', ic: 'info', t: t('Weekly menu'), act: 'messtab', attrs: 'data-tab="menu"' }),
+      ...(can('kitchen') ? [li({ icon: 'plus', ic: 'ok', t: t('Add dish'), act: 'adddish' })] : [])
+    ];
+    return `${head(can('kitchen') ? 'Dishes, recipes & menu' : 'Weekly menu')}${group('', rows.join(''), can('kitchen') ? t('When you create a dish you also enter its ingredients — they become stock items automatically.') : '')}`;
+  },
   items: () => `${head('Stock items & units')}${group('Items', items().map(i => li({ icon: 'box', ic: 'mute', t: i.name, d: `${num(stockOf(i))} ${i.unit} · ${t('alert below')} ${i.min}`, act: 'edititem', attrs: `data-id="${i.id}"` })).join(''), `<a href="#" data-act="additem">+ ${esc(t('Add item'))}</a>`)}<div class="group-t">${esc(t('Units'))}</div>${listEditor('units', 'New unit (e.g. box)', ['kg', 'L', 'pcs'])}`,
   kitchen: () => { const k = S().kitchen; return `${head('Kitchen permissions')}${settingsForm('kitchen', [{ name: 'cookCanReceive', label: 'Cook can enter received goods', type: 'checkbox', value: k.cookCanReceive, full: true, hint: t('Off = only you (owner/manager) can receive purchases and enter prices.') }], v => ({ kitchen: v }))}${about('Cooks can always raise purchase requests. Only you approve quantities.')}`; },
   expcats: () => `${head('Expense categories', t('Used when adding expenses.'))}${listEditor('expenseCats', 'New category', ['Groceries', 'Salary', 'Other'])}`,
@@ -199,17 +597,20 @@ const SETTINGS_PAGES = {
         { name: 'on', label: 'Send each resident one monthly bill (rent + electricity)', type: 'checkbox', value: (w.monthly || {}).on !== false, full: true },
         { name: 'fallbackDay', label: 'Send anyway from this day of the month', type: 'number', min: 1, max: 28, value: (w.monthly || {}).fallbackDay || 10, info: t('If a room’s meter has not been read by this day, the bill goes with rent only so the rent is not held up.') },
       ], v => ({ wa: { monthly: { on: v.on, fallbackDay: Math.min(28, Math.max(1, Math.round(+v.fallbackDay || 10))) } } }))}
-      <div class="group-t">${esc(t('Connect your WhatsApp'))}${tip(esc(t('Scan one QR with your own phone (WhatsApp → Linked devices) and the monthly bill goes out from your own number, by itself. This is not the official WhatsApp API, so WhatsApp may block a number that sends a lot: messages are sent slowly, once a month, and only to your own residents.')))}</div>
-      ${!CLOUD ? '' : `<div class="card"><div class="row sb nw"><span class="body"><b>${esc(t(w.gw.on && w.gw.kind === 'evolution' ? 'WhatsApp is connected' : 'Not connected'))}</b><span class="d" style="display:block">${esc(t('Messages go from your own number.'))}</span></span>${btn(w.gw.on && w.gw.kind === 'evolution' ? 'Show QR again' : 'Connect WhatsApp', 'wagwconnect', '', 'primary', 'wa')}</div></div>`}
-      <div class="group-t">${esc(t('Send automatically (optional)'))}${tip(esc(t('Connect Official Meta WhatsApp Cloud API or an automated gateway to send monthly bills and receipts automatically.')))}</div>
-      ${!CLOUD ? `<div class="card">${empty('Not available in demo mode')}</div>` : `<form class="card" id="wagw" novalidate autocomplete="off"><div class="fgrid">
-        ${fieldHtml({ name: 'kind', label: 'Gateway / Provider', type: 'select', value: w.gw.kind || 'meta', options: [{ v: 'meta', l: 'Meta Official WhatsApp Cloud API' }, { v: 'evolution', l: 'Evolution API' }, { v: 'waha', l: 'WAHA' }] })}
-        ${fieldHtml({ name: 'session', label: 'Phone Number ID / Instance', value: '', placeholder: w.gw.kind === 'meta' ? 'e.g. 104829182749102' : (w.gw.kind === 'evolution' ? 'hostel' : 'default'), info: t('For Meta: Phone Number ID from Meta Developer Portal') })}
-        ${fieldHtml({ name: 'url', label: 'API Base URL', full: true, placeholder: w.gw.kind === 'meta' ? 'https://graph.facebook.com/v19.0' : 'https://wa.yourdomain.com', value: w.gw.kind === 'meta' ? 'https://graph.facebook.com/v19.0' : '', info: t('Default for Meta is https://graph.facebook.com/v19.0') })}
-        ${fieldHtml({ name: 'key', label: 'API Access Token / Key', type: 'password', placeholder: w.gw.on ? t('Saved — leave empty to keep') : t('Bearer token or API key') })}
-        ${fieldHtml({ name: 'test', label: 'Send a test message to', type: 'tel', placeholder: t('Your mobile number') })}
-      </div><div class="ferr" id="wagw_err"></div>
-      <div class="row" style="margin-top:14px">${w.gw.on ? `${badge('Connected', 'ok')}${btn('Turn off', 'wagwoff', '', 'sm bad')}` : badge('Off')}<span class="sp"></span>${btn('Save & test', 'wagwsave', '', 'primary')}</div></form>`}
+      <div class="group-t">${esc(t('WhatsApp Messaging Mode'))}${tip(esc(t('WhatsApp Cloud Automation is controlled by Super Admin to manage Meta message costs. When ON, 1 consolidated monthly bill (Rent + Electricity + Dynamic UPI QR) is dispatched automatically.')))}</div>
+      <div class="card">
+        <div class="row sb nw">
+          <span class="body">
+            <b>${esc(orgEnabled('automation') ? t('WhatsApp Cloud Automation: Active') : t('1-Tap Manual WhatsApp Mode'))}</b>
+            <span class="d" style="display:block">
+              ${esc(orgEnabled('automation')
+                ? t('Managed by Platform · 1 consolidated monthly bill (Rent + Electricity + Extras + UPI QR) is sent automatically each billing cycle.')
+                : t('Zero platform cost · Tap "Open WhatsApp" to send pre-filled bills and receipts via WhatsApp Web/App.'))}
+            </span>
+          </span>
+          ${badge(orgEnabled('automation') ? 'Cloud Auto' : '1-Tap Free', orgEnabled('automation') ? 'ok' : 'info')}
+        </div>
+      </div>
       ${group(t('Templates ({l})', { l: L === 'hi' ? 'हिन्दी' : 'English' }), Object.entries(WA_KEYS).map(([k, l]) => li({ icon: 'chat', ic: (w.tpl[L] || {})[k] ? 'warn' : 'ok', t: t(l), d: (w.tpl[L] || {})[k] ? t('Customised') : t('Default'), act: 'edittpl', attrs: `data-k="${k}" data-l="${L}"` })).join(''), t('Placeholders like {name}, {total}, {paylink} are filled in automatically.'))}`;
   },
   police: () => {
@@ -355,7 +756,11 @@ const SETTINGS_PAGES = {
   data: () => `${head('Backup & export')}${group('', [li({ icon: 'download', ic: 'ok', t: t('Download full backup (JSON)'), d: t('{n} records', { n: Store.docs.size }), act: 'backup' }), li({ icon: 'download', ic: 'info', t: t('Residents (CSV)'), act: 'exportres' }), li({ icon: 'download', ic: 'warn', t: t('Payments (CSV)'), act: 'exportpay' }), li({ icon: 'download', ic: 'pink', t: t('Expenses (CSV)'), act: 'exportexp' }), li({ icon: 'sync', ic: 'mute', t: t('Sync now'), act: 'syncnow' })].join(''))}${!CLOUD ? group('Demo', li({ icon: 'trash', ic: 'bad', t: t('Reset demo data'), act: 'resetdemo' })) : ''}${CLOUD && isDemoHostel() && isSuper() ? group('Demo hostel', [li({ icon: 'layers', ic: 'ok', t: t('Fill with demo data'), d: t('Rooms, residents, bills, payments, kitchen, laundry, staff and more — all made up. Phone numbers are fake, so nothing can reach a real person.'), act: 'demofill' }), li({ icon: 'trash', ic: 'bad', t: t('Wipe all demo data'), d: t('Deletes every record in this demo hostel so you can fill it again.'), act: 'demowipe' })].join(''), t('Only the platform admin sees this, and only on a hostel marked as the demo.')) : ''}`,
   users: () => usersPage(),
 };
-A.messtab = el => { ui.tab.mess = el.dataset.tab; go('mess'); };
+A.messtab = el => {
+  const tab = el.dataset.tab;
+  ui.tab.mess = (tab === 'dishes' && !can('kitchen')) ? 'today' : tab;
+  go('mess');
+};
 // The key is minted the first time the QR is shown, so a hostel that never uses this has no
 // public door open at all. Regenerating it makes every copy already handed out stop working.
 A.joinqr = async (el, e, fresh) => {
@@ -499,13 +904,34 @@ A.edittpl = el => {
     onSubmit: async v => { const wa = clone(S().wa); wa.tpl = wa.tpl || {}; wa.tpl[L] = { ...(wa.tpl[L] || {}), [k]: v.text }; await Store.saveSettings({ wa }, ['wa']); toast('Template saved'); } });
   const ta = $('#f_text'); if (ta) ta.style.minHeight = '220px';
 };
-// The tab must be opened synchronously or the pop-up blocker eats it, then pointed at the
-// ten-minute signed link once Storage hands one back.
 A.opendoc = async el => {
-  if (!el.dataset.path) { toast('That document is not on file yet', 'bad'); return; }
-  const w = window.open('', '_blank');
-  try { const url = await Files.url(el.dataset.path); if (w) w.location = url; else location.href = url; }
-  catch (e) { if (w) w.close(); toast(e.message || 'Could not open that document', 'bad'); }
+  const resId = el.dataset.res || (el.closest('[data-res]') && el.closest('[data-res]').dataset.res) || (ui.page === 'residents' && ui.arg) || null;
+  const type = el.dataset.type || '';
+  const path = el.dataset.path || '';
+  if (resId && typeof openResidentDocViewer === 'function') {
+    return openResidentDocViewer(resId, type, path);
+  }
+  if (!path) { toast('That document is not on file yet', 'bad'); return; }
+  openModal({
+    title: type || 'Document Viewer',
+    wide: true,
+    body: `<div style="text-align:center;padding:32px 16px"><div class="spin"></div><p class="muted sm" style="margin-top:10px">${esc(t('Loading document…'))}</p></div>`
+  });
+  try {
+    const url = await Files.url(path);
+    const isPdf = path.toLowerCase().endsWith('.pdf') || (url && url.includes('.pdf'));
+    openModal({
+      title: type || 'Document Viewer',
+      wide: true,
+      body: isPdf
+        ? `<div style="width:100%;height:62vh;border-radius:12px;overflow:hidden;border:1px solid var(--line)"><iframe src="${esc(url)}" style="width:100%;height:100%;border:none"></iframe></div>`
+        : `<div style="text-align:center;background:var(--subtle,#f8fafc);border-radius:12px;padding:16px;max-height:62vh;overflow:auto"><img src="${esc(url)}" style="max-width:100%;max-height:58vh;object-fit:contain;border-radius:8px;box-shadow:var(--shadow)"></div>`,
+      foot: `<a href="${esc(url)}" target="_blank" rel="noopener" class="btn sm">${ico('download', 'sm')} ${esc(t('Download / Full View'))}</a><span class="sp"></span><button type="button" class="btn primary sm" data-act="close">${esc(t('Close'))}</button>`
+    });
+  } catch (err) {
+    closeModal();
+    toast(err.message || 'Could not load document', 'bad');
+  }
 };
 A.backup = () => download(`hostelos-${slug(hostelName())}-${today()}.json`, JSON.stringify({ hostel: Store.hostel(), exported: nowIso(), docs: [...Store.docs.values()].filter(d => !d._del) }, null, 1), 'application/json');
 /* The one button in the app that can destroy everything at once: in demo mode the browser IS
@@ -527,7 +953,7 @@ A.resetdemo = () => formModal({
 });
 
 /* ===================================================================== users & access (owner) */
-const ROLE_CHOICES = ['manager', 'accountant', 'cook', 'housekeeping', 'laundry', 'guard', 'staff', 'resident'];
+// ROLE_CHOICES is defined in js/domain.js
 async function loadOrgUsers() {
   const h = Store.hostel();
   const members = (await Backend.list('members', CLOUD ? `&org_id=eq.${h.org_id}` : '')).filter(m => m.org_id === h.org_id && (!m.hostel_id || m.hostel_id === h.id));
@@ -685,7 +1111,7 @@ const blockField = value => (blocksOn() ? [{ name: 'block', label: 'Block', type
   info: t('Tied to one block, this person sees only that wing — its rooms, residents, bills and daily work. Leave it on all blocks for anyone who runs the whole hostel.') }] : []);
 A.adduser = () => formModal({
   title: 'Add user', submit: 'Create login',
-  fields: [{ name: 'full_name', label: 'Full name', required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile', type: 'tel', required: true, maxlength: 15 }, { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r !== 'resident').map(r => ({ v: r, l: t(ROLES[r].l) })) },
+  fields: [{ name: 'full_name', label: 'Full name', required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile', type: 'tel', required: true, maxlength: 15 }, { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r !== 'resident' && isRoleAllowed(r)).map(r => ({ v: r, l: t(ROLES[r].l) })) },
     ...blockField(''),
     { name: 'perms', label: 'Extra modules (optional)', type: 'multi', options: MODULES.filter(m => !['home', 'settings'].includes(m.k) && orgEnabled(m.k)).map(m => ({ v: m.k, l: t(m.l) })), full: true },
     { name: 'existing', label: 'This person already has a login (add role only)', type: 'checkbox' }, { name: 'username', label: 'Their user ID', hidden: true }],
@@ -693,7 +1119,15 @@ A.adduser = () => formModal({
   onSubmit: async v => {
     const h = Store.hostel();
     if (v.existing) { if (!v.username) return 'Enter their user ID'; await Backend.admin('add_member', { username: v.username, org_id: h.org_id, hostel_id: h.id, role: v.role, perms: v.perms, block: v.block }); toast('Access added'); }
-    else { const u = await Backend.admin('create_user', { full_name: v.full_name, phone: v.phone, org_id: h.org_id, hostel_id: h.id, role: v.role, perms: v.perms, block: v.block }); closeModal(); ui.users = null; render(); waOpen(v.phone, tpl('staffWelcome', { name: v.full_name.split(' ')[0], role: t(ROLES[v.role].l), hostel: hostelName(), link: appUrl(), username: u.username, password: u.password }), 'Send login'); return false; }
+    else {
+      const hSlug = slug((h && h.name) || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+      const ph = phone10(v.phone);
+      const wantUser = ph && ph.length === 10 ? (v.role === 'owner' ? ph : `${ph}.${hSlug}`) : undefined;
+      const u = await Backend.admin('create_user', { full_name: v.full_name, phone: v.phone, username: wantUser, org_id: h.org_id, hostel_id: h.id, role: v.role, perms: v.perms, block: v.block });
+      closeModal(); ui.users = null; render();
+      waOpen(v.phone, tpl('staffWelcome', { name: v.full_name.split(' ')[0], role: t(ROLES[v.role].l), hostel: hostelName(), link: appUrl(), username: u.username, password: u.password }), 'Send login');
+      return false;
+    }
     ui.users = null;
   },
 });
@@ -703,7 +1137,7 @@ A.useredit = el => {
   formModal({
     title: `${p.full_name} · @${p.username}`, submit: 'Save access',
     note: t('Default for {r}: {m}', { r: t(ROLES[m.role].l), m: defaults.map(k => t((MOD[k] || { l: k }).l)).join(', ') || '—' }),
-    fields: [{ name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.map(r => ({ v: r, l: t(ROLES[r].l) })), value: m.role },
+    fields: [{ name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r === m.role || isRoleAllowed(r)).map(r => ({ v: r, l: t(ROLES[r].l) })), value: m.role },
       ...blockField(m.block || ''),
       { name: 'perms', label: 'Also allow', type: 'multi', options: MODULES.filter(x => !defaults.includes(x.k) && !['home', 'settings'].includes(x.k) && orgEnabled(x.k)).map(x => ({ v: x.k, l: t(x.l) })), value: m.perms || [], full: true },
       { name: 'deny', label: 'Hide these defaults', type: 'multi', options: defaults.map(k => ({ v: k, l: t((MOD[k] || { l: k }).l) })), value: m.deny || [], full: true }],
@@ -749,3 +1183,98 @@ A.userpw = el => {
   }, 'Reset password', 'bad');
 };
 A.useractive = async el => { const on = el.dataset.on === '1'; await Backend.admin('set_active', { user_id: el.dataset.uid, active: on }); await Backend.update('members', el.dataset.mid, { active: on }); closeModal(); ui.users = null; render(); toast(on ? 'Enabled' : 'Disabled'); };
+
+/* ===================================================================== template & charges actions */
+A.applytemplate = el => {
+  const k = el.dataset.tpl;
+  const tpl = BUSINESS_TEMPLATES[k];
+  if (!tpl) return;
+  confirmBox(t('Apply "{n}" template?\n\n{d}\n\nThis configures your hostel rules with sensible defaults. Past invoices and payments are not modified.', { n: t(tpl.label), d: t(tpl.description) }), async () => {
+    const patch = applyBusinessTemplate(k);
+    await Store.saveSettings(patch, ['agreements']);
+    toast(t('Applied {n} template', { n: t(tpl.label) }));
+    render();
+  }, t('Apply Template'), 'primary');
+};
+
+A.addcharge = () => {
+  formModal({
+    title: 'Add recurring / additional charge',
+    submit: 'Add charge',
+    fields: [
+      { name: 'name', label: 'Charge name', placeholder: 'e.g. High-speed Wi-Fi, AC Charge, Parking', required: true },
+      { name: 'amount', label: 'Amount (₹)', type: 'number', min: 0, required: true },
+      { name: 'frequency', label: 'Billing frequency', type: 'select', options: [{ v: 'monthly', l: 'Monthly recurring' }, { v: 'onetime', l: 'One-time charge' }] },
+      { name: 'scope', label: 'Applies to', type: 'select', options: [{ v: 'all', l: 'All residents' }, { v: 'room', l: 'Per room' }, { v: 'opt_in', l: 'Opt-in / subscribed only' }] },
+    ],
+    onSubmit: async v => {
+      const list = [...(S().charges || [])];
+      list.push({ id: 'chg-' + Date.now(), name: v.name, amount: +v.amount, frequency: v.frequency, scope: v.scope, active: true });
+      await Store.replaceSettingsKey('charges', list);
+      toast('Charge added');
+      render();
+    }
+  });
+};
+
+A.togglecharge = async el => {
+  const id = el.dataset.id;
+  const list = (S().charges || []).map(c => (c.id === id ? { ...c, active: !c.active } : c));
+  await Store.replaceSettingsKey('charges', list);
+  toast('Updated');
+  render();
+};
+
+A.delcharge = async el => {
+  const id = el.dataset.id;
+  confirmBox('Remove this charge?', async () => {
+    const list = (S().charges || []).filter(c => c.id !== id);
+    await Store.replaceSettingsKey('charges', list);
+    toast('Charge removed');
+    render();
+  }, 'Remove', 'bad');
+};
+
+A.onboardcf = async () => {
+  const h = Store.hostel();
+  if (!h || !h.org_id) return toast('No active hostel selected', 'bad');
+
+  let currentVendor = null;
+  try {
+    const r = await Backend.admin('get_owner_vendor', { org_id: h.org_id });
+    if (r && r.configured && r.vendor) currentVendor = r.vendor;
+  } catch (_) {}
+
+  formModal({
+    title: t('Cashfree Easy Split Settlement Account'),
+    submit: t('Save & Verify with Cashfree'),
+    note: t('Enter your verified commercial/business bank account. Rent collected via Cashfree UPI is automatically split and settled into this account.'),
+    fields: [
+      { name: 'name', label: t('Account Holder / Business Name'), value: currentVendor?.account_holder_name || h.name, required: true },
+      { name: 'acc', label: t('Bank Account Number'), value: '', placeholder: currentVendor?.bank_account_masked || 'e.g. 50100123456789', required: !currentVendor },
+      { name: 'ifsc', label: t('Bank IFSC Code'), value: currentVendor?.bank_ifsc || '', placeholder: 'e.g. HDFC0001234', required: true },
+      { name: 'upi', label: t('UPI ID for Settlements (optional)'), value: currentVendor?.upi_vpa || '' }
+    ],
+    onSubmit: async v => {
+      const ifsc = String(v.ifsc || '').trim().toUpperCase();
+      if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) return 'Enter valid 11-character Indian IFSC code (e.g. HDFC0001234)';
+      const acc = String(v.acc || '').trim();
+      if (acc && !/^\d{8,20}$/.test(acc)) return 'Bank account number must be 8 to 20 digits';
+      if (!acc && !currentVendor) return 'Bank account number is required';
+
+      try {
+        await Backend.admin('onboard_owner_vendor', {
+          org_id: h.org_id,
+          account_holder_name: v.name,
+          bank_account_number: acc,
+          bank_ifsc: ifsc,
+          upi_vpa: v.upi || null
+        });
+        toast(t('Bank account verified & saved with Cashfree Easy Split!'), 'ok');
+        render();
+      } catch (err) {
+        return err.message;
+      }
+    }
+  });
+};

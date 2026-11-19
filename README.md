@@ -83,7 +83,7 @@ record kinds:
 
 ### Module dependencies
 Some modules cannot stand alone — the kitchen works out what to cook from the mess menu, and
-cleaning tasks are assigned to housekeeping staff. `MOD_DEPS` in `js/domain.js` records this, and
+inquiries arrive through the public landing page. `MOD_DEPS` in `js/domain.js` records this, and
 every switch goes through `applyModSwitch()`: turning one **on** brings what it needs with it,
 turning one **off** takes whatever needs it. The console says what else it moved. This is why a
 switch can no longer leave a screen that silently shows zeros.

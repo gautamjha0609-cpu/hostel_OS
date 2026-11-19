@@ -71,12 +71,34 @@ function vercelify(req, res, query) {
 const send = (res, code, headers, body) => { res.writeHead(code, { ...SECURITY, 'Cache-Control': 'no-store', ...headers }); res.end(body); };
 
 function serveApi(req, res, p, search) {
-  if (!apiReady) {
-    return send(res, 503, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'The local server has no SUPABASE_SERVICE_ROLE_KEY. Put it in .env.local (next to package.json) and restart `npm run dev`.' }));
-  }
   const [name, sub] = p.slice('/api/'.length).split('/');   // /api/public/site is a rewrite to /api/public?sub=site
   const file = path.join(APP, 'api', name + '.js');
   if (!/^[a-z]+$/.test(name) || !fs.existsSync(file)) return send(res, 404, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'No such endpoint: ' + name }));
+
+  if (name === 'admin' && !apiReady) {
+    // Gracefully absorb background dev-time admin calls without noisy 503s
+    if (req.method === 'POST') {
+      let b = '';
+      req.on('data', chunk => { b += chunk; });
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(b || '{}');
+          if (body.action === 'save_push_sub' || body.action === 'remove_push_sub') {
+            return send(res, 200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, dev: true }));
+          }
+          if (body.action === 'backup_list' || body.action === 'drive_status') {
+            return send(res, 200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, dev: true, list: [], status: null }));
+          }
+          if (body.action === 'get_owner_vendor') {
+            return send(res, 200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, dev: true, configured: false }));
+          }
+        } catch (_) {}
+        return send(res, 503, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'The local server has no SUPABASE_SERVICE_ROLE_KEY. Put it in .env.local (next to package.json) and restart `npm run dev`.' }));
+      });
+      return;
+    }
+    return send(res, 503, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'The local server has no SUPABASE_SERVICE_ROLE_KEY. Put it in .env.local (next to package.json) and restart `npm run dev`.' }));
+  }
   const query = Object.fromEntries(new URLSearchParams(search || ''));
   if (sub) query.sub = sub;
   let handler;

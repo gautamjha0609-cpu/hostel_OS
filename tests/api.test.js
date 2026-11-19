@@ -67,6 +67,30 @@ test('owner can create a cook login in their own org', async () => {
   assert.equal(r.out.password, '9876543210');
 });
 
+test('owner can create a warden login in their own org', async () => {
+  fakeSupabase(db);
+  const r = await call('owner', { action: 'create_user', org_id: ORG1, hostel_id: H1, role: 'warden', full_name: 'Sunita Warden', phone: '9876543212' });
+  assert.equal(r.status, 200);
+  assert.equal(r.out.username, 'sunita.warden');
+  assert.equal(r.out.password, '9876543212');
+});
+
+test('owner can create an emitra operator login in their own org', async () => {
+  fakeSupabase(db);
+  const r = await call('owner', { action: 'create_user', org_id: ORG1, hostel_id: H1, role: 'emitra', full_name: 'Pooja Emitra', phone: '9876543299' });
+  assert.equal(r.status, 200);
+  assert.equal(r.out.username, 'pooja.emitra');
+  assert.equal(r.out.password, '9876543299');
+});
+
+test('owner can create a resident login with phone.hostel username', async () => {
+  fakeSupabase({ ...db, hostels: [{ id: H1, org_id: ORG1, name: 'Sunrise Boys PG', blocks: [] }] });
+  const r = await call('owner', { action: 'create_user', org_id: ORG1, hostel_id: H1, role: 'resident', full_name: 'Aryan Sharma', phone: '9876543210' });
+  assert.equal(r.status, 200);
+  assert.equal(r.out.username, '9876543210.sunrise.boys.pg');
+  assert.equal(r.out.password, '9876543210');
+});
+
 test('owner cannot create users in another org, or create owners', async () => {
   fakeSupabase(db);
   assert.equal((await call('owner', { action: 'create_user', org_id: ORG2, role: 'cook', full_name: 'X', phone: '9876543210' })).status, 403);

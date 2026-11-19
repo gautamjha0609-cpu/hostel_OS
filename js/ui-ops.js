@@ -6,7 +6,12 @@ let geoPick = null;   // coordinates captured for the visitor form that is curre
 PAGES.mess = {
   title: 'Mess & Menu', mod: 'mess',
   render() {
-    const tab = curTab('mess', 'today');
+    const showDishes = can('kitchen') && (S().mess || {}).trackStock !== false;
+    let tab = curTab('mess', 'today');
+    if (!showDishes && tab === 'dishes') {
+      tab = 'today';
+      ui.tab.mess = 'today';
+    }
     const date = ui.flt.messd || today();
     let body = '';
     if (tab === 'today') {
@@ -17,23 +22,29 @@ PAGES.mess = {
           return `<div class="card"><h3>${esc(mealName(m.k))} <small>${fmtTime(m.time)}</small><span class="sp"></span>${badge(open ? t('Skips open till {t}', { t: fmtTime(m.cutoff) }) : 'Count final', open ? 'info' : 'ok')}</h3>
             <div class="grid g4 keep2">${kpi('Cook for', `${hc.eat}`, t('plates'), 'ok')}${kpi('Skipped', hc.skip, '', hc.skip ? 'warn' : '')}${kpi('On leave', hc.leave, '')}${kpi('Tiffin pack', hc.tiffin, hc.tiffins.map(x => roomName(x.roomId)).join(', '), hc.tiffin ? 'warn' : '')}</div>
             <div class="row" style="margin:12px 0 6px">${p.dishes.length ? p.dishes.map(d => badge(d.name, 'acc')).join('') : `<span class="hint">${esc(t('No menu set for this meal'))}</span>`}</div>
-            ${p.list.length ? `<details style="margin-top:6px"><summary class="sm b" style="cursor:pointer;color:var(--accent)">${esc(t('Ingredients to take out'))}</summary><dl class="kv" style="margin-top:8px">${p.list.map(x => `<dt>${esc(x.item.name)}${x.factor !== 1 ? ` <span class="hint">×${x.factor}</span>` : ''}</dt><dd>${num(x.qty)} ${esc(x.item.unit)}</dd>`).join('')}</dl></details>` : ''}
+            ${showDishes && p.list.length ? `<details style="margin-top:6px"><summary class="sm b" style="cursor:pointer;color:var(--accent)">${esc(t('Ingredients to take out'))}</summary><dl class="kv" style="margin-top:8px">${p.list.map(x => `<dt>${esc(x.item.name)}${x.factor !== 1 ? ` <span class="hint">×${x.factor}</span>` : ''}</dt><dd>${num(x.qty)} ${esc(x.item.unit)}</dd>`).join('')}</dl></details>` : ''}
             <div class="row" style="margin-top:10px">${btn(hc.served != null ? t('Served: {n}', { n: hc.served }) : 'Mark plates served', 'served', `data-date="${date}" data-meal="${m.k}"`, 'sm')}${btn('Guests', 'guests', `data-date="${date}" data-meal="${m.k}"`, 'sm')}${hc.tiffin ? btn('Tiffin list', 'tiflist', `data-date="${date}" data-meal="${m.k}"`, 'sm') : ''}</div></div>`;
         }).join('')}</div>`;
     } else if (tab === 'menu') {
       const w = menuDoc().week, ms = meals();
       body = `${about('Tap any cell to choose dishes. Residents see this menu in their app.')}<div class="scroll-x"><div class="mgrid" style="--cols:${ms.length};min-width:${120 + ms.length * 150}px"><div></div>${ms.map(m => `<div class="h">${esc(mealName(m.k))}</div>`).join('')}
         ${[1, 2, 3, 4, 5, 6, 0].map(d => `<div class="d ${d === new Date().getDay() ? 'today' : ''}">${DAYS()[d]}</div>${ms.map(m => `<button class="c ${d === new Date().getDay() ? 'today' : ''}" data-act="menucell" data-day="${d}" data-meal="${m.k}">${((w[d] || {})[m.k] || []).map(id => esc((Store.get(id) || {}).name || '')).filter(Boolean).join(', ') || `<span class="muted">+ ${esc(t('Add'))}</span>`}</button>`).join('')}`).join('')}</div></div>`;
-    } else if (tab === 'dishes') {
-      body = `<div class="tool">${searchBox('dish', 'Search dish')}<span class="sp"></span>${btn('Add dish', 'adddish', '', 'primary', 'plus')}</div>
-        ${group('', dishes().filter(d => needle('dish', d.name)).map(d => li({ icon: 'utensils', ic: 'warn', t: d.name, d: `${t(d.meal === 'any' ? 'Any meal' : mealName(d.meal))} · ${(d.ings || []).map(g => `${(itemById(g.itemId) || {}).name || '?'} ${num(g.qty)}${(itemById(g.itemId) || {}).unit || ''}`).join(', ')} · ${t('for {n} people', { n: d.serves })}`, act: 'editdish', attrs: `data-id="${d.id}"` })).join(''), t('Ingredient quantities are for the number of people you cook for. The system works out per-person needs and learns your real usage.'))}`;
+    } else if (tab === 'dishes' && showDishes) {
+      body = `<div class="tool">${searchBox('dish', 'Search dish')}<span class="sp"></span><div class="tool-actions">${btn('Replace ingredient', 'replaceing', '', '', 'repeat')}${btn('Add dish', 'adddish', '', 'primary', 'plus')}</div></div>
+        ${group('', dishes().filter(d => needle('dish', d.name)).map(d => li({ icon: 'utensils', ic: d.unavailable ? 'bad' : 'warn', t: d.name + (d.unavailable ? ` · ${t('Unavailable')}` : ''), d: `${t(d.meal === 'any' ? 'Any meal' : mealName(d.meal))} · ${(d.ings || []).map(g => `${(itemById(g.itemId) || {}).name || '?'} ${num(g.qty)}${(itemById(g.itemId) || {}).unit || ''}`).join(', ')} · ${t('for {n} people', { n: d.serves })}${d.unavailable ? ` · <span class="bad-t">${t('Needs ingredient')} ${esc(d.missingItem || '')}</span>` : ''}`, act: 'editdish', attrs: `data-id="${d.id}"`, end: d.unavailable ? btn('Substitute', 'replaceing', `data-id="${(d.ings && d.ings[0] && d.ings[0].itemId) || ''}"`, 'sm warn') : '' })).join(''), t('Ingredient quantities are for the number of people you cook for. The system works out per-person needs and learns your real usage.'))}`;
     } else {
       const d = ui.flt.messd2 || addDays(today(), 1);
       const sk = Store.all('skip').filter(s => s.date === d), tf = Store.all('tiffin').filter(s => s.date === d), lv = Store.all('leave').filter(l => l.from <= d && l.to >= d);
-      body = `<div class="tool"><input type="date" value="${d}" data-flt="messd2" style="max-width:200px"><span class="sp"></span>${btn('Add leave', 'messleave', '', '', 'plus')}</div>
+      body = `<div class="tool"><input type="date" value="${d}" data-flt="messd2" style="max-width:200px"><span class="sp"></span><div class="tool-actions">${btn('Add leave', 'messleave', '', '', 'plus')}</div></div>
         <div class="grid g3">${group(t('Skipped meals'), sk.map(s => li({ lead: avatar((resById(s.resId) || {}).name || '?'), t: (resById(s.resId) || {}).name || '—', d: `${mealName(s.meal)} · ${roomName((resById(s.resId) || {}).roomId)}` })).join(''))}${group(t('Tiffin requests'), tf.map(s => li({ icon: 'pack', ic: 'warn', t: (resById(s.resId) || {}).name || '—', d: `${mealName(s.meal)} · ${roomName(s.roomId)}${s.note ? ' · ' + s.note : ''}` })).join(''))}${group(t('On leave'), lv.map(l => li({ icon: 'cal', ic: 'info', t: (resById(l.resId) || {}).name || '—', d: `${fmtShort(l.from)} – ${fmtShort(l.to)}`, end: isAdmin() ? btn('', 'leavedel', `data-id="${l.id}"`, 'sm', 'trash') : '' })).join(''))}</div>`;
     }
-    return `${head('Mess & Menu', t('Headcount updates live from leaves, skips and tiffins.'), isAdmin() ? btn('Meal timings', 'go', 'data-to="settings/meals"', '', 'clock') : '')}${seg('mess', [['today', 'Cooking plan'], ['menu', 'Weekly menu'], ['dishes', 'Dishes & recipes'], ['requests', 'Skips & tiffins']], 'today')}${body}`;
+    const tabs = [
+      ['today', 'Cooking plan'],
+      ['menu', 'Weekly menu'],
+      ...(showDishes ? [['dishes', 'Dishes & recipes']] : []),
+      ['requests', 'Skips & tiffins']
+    ];
+    return `${head('Mess & Menu', t('Headcount updates live from leaves, skips and tiffins.'), isAdmin() ? btn('Meal timings', 'go', 'data-to="settings/meals"', '', 'clock') : '')}${seg('mess', tabs, 'today')}${body}`;
   },
 };
 A.served = el => formModal({ title: `${t('Plates served')} · ${mealName(el.dataset.meal)}`, note: t('Optional. Real counts make the stock learning more accurate.'), fields: [{ name: 'n', label: 'Plates served', type: 'number', min: 0, value: headcount(el.dataset.date, el.dataset.meal).eat, required: true }], onSubmit: v => { Store.put('served', { id: `served-${el.dataset.date}-${el.dataset.meal}`, date: el.dataset.date, meal: el.dataset.meal, count: v.n }); toast('Saved'); } });
@@ -42,16 +53,16 @@ A.tiflist = el => { const hc = headcount(el.dataset.date, el.dataset.meal); shee
 A.tifpacked = el => { Store.patch(el.dataset.id, { status: 'packed' }); const x = Store.get(el.dataset.id); notify({ to: 'res', resId: x.resId, title: t('Your tiffin is packed'), body: mealName(x.meal) }); A.tiflist({ dataset: { date: x.date, meal: x.meal } }); };
 A.menucell = el => {
   const d = +el.dataset.day, m = el.dataset.meal, doc = menuDoc(), cur = ((doc.week[d] || {})[m]) || [];
-  const opts = dishes().filter(x => x.meal === 'any' || x.meal === m || cur.includes(x.id)).map(x => ({ v: x.id, l: x.name }));
+  const opts = dishes().filter(x => (x.meal === 'any' || x.meal === m || cur.includes(x.id)) && !x.unavailable).map(x => ({ v: x.id, l: x.name }));
   formModal({ title: `${DAYS()[d]} · ${mealName(m)}`, fields: [{ name: 'dishes', label: 'Dishes', type: 'multi', options: opts, value: cur }, { name: 'all', label: 'Same for every day of the week', type: 'checkbox' }],
-    extra: `<p class="hint" style="margin-top:10px">${esc(t('Dish missing?'))} <a href="#" data-act="adddish">${esc(t('Add a new dish'))}</a></p>`,
+    extra: can('kitchen') ? `<p class="hint" style="margin-top:10px">${esc(t('Dish missing?'))} <a href="#" data-act="adddish">${esc(t('Add a new dish'))}</a></p>` : '',
     onSubmit: v => { const week = clone(doc.week || {}); for (const day of v.all ? [0, 1, 2, 3, 4, 5, 6] : [d]) { week[day] = week[day] || {}; week[day][m] = v.dishes; } Store.put('menu', { id: 'menu', week }); toast('Menu updated'); } });
 };
 // Dish with its recipe. Ingredients come from stock items; a new ingredient name creates the item.
 function dishForm(x) {
   const d = x || { ings: [], serves: 10, meal: 'any' };
   const rows = d.ings.length ? d.ings : [{}, {}, {}];
-  const itemOpts = items().map(i => `<option value="${esc(i.name)}">`).join('');
+  const itemOpts = items().filter(i => i.active !== false && i.status !== 'inactive').map(i => `<option value="${esc(i.name)}">`).join('');
   const rowHtml = (g, i) => `<div class="row nw ingrow" style="gap:6px;margin-bottom:6px"><input list="itemlist" name="ing_${i}" placeholder="${esc(t('Ingredient'))}" value="${esc(g.itemId ? (itemById(g.itemId) || {}).name || '' : '')}" style="flex:2"><input name="qty_${i}" type="number" step="0.01" min="0" inputmode="decimal" placeholder="${esc(t('Qty'))}" value="${g.qty ?? ''}" style="flex:1"><select name="unit_${i}" style="flex:1">${S().units.map(u => `<option ${((itemById(g.itemId) || {}).unit || 'kg') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>`;
   formModal({
     title: x ? 'Edit dish' : 'Add dish', wide: true,
@@ -63,13 +74,17 @@ function dishForm(x) {
     danger: x ? { label: 'Delete', run: () => confirmBox(t('Delete dish {n}?', { n: d.name }), () => { Store.remove(d.id); toast('Deleted'); }, 'Delete', 'bad') } : null,
     onSubmit: (v, form) => {
       const ings = [];
-      $$('.ingrow', form).forEach((row, i) => {
+      for (const row of $$('.ingrow', form)) {
+        const i = row.querySelector('input[name^="ing_"]').name.replace('ing_', '');
         const name = (form.elements['ing_' + i] || {}).value?.trim(), qty = parseFloat((form.elements['qty_' + i] || {}).value), unit = (form.elements['unit_' + i] || {}).value;
-        if (!name || !(qty > 0)) return;
+        if (!name || !(qty > 0)) continue;
         let it = items().find(z => z.name.toLowerCase() === name.toLowerCase());
-        if (!it) it = Store.put('item', { id: `item-${slug(name)}-${uid()}`, name, unit, stock: 0, min: 0, rate: 0, cat: 'Grocery' });
+        if (it && (it.active === false || it.status === 'inactive')) {
+          return t('Ingredient "{n}" is currently deactivated. Reactivate it or use another ingredient.', { n: it.name });
+        }
+        if (!it) it = Store.put('item', { id: `item-${slug(name)}-${uid()}`, name, unit, stock: 0, min: 0, rate: 0, cat: 'Grocery', active: true, status: 'active' });
         ings.push({ itemId: it.id, qty });
-      });
+      }
       if (!ings.length) return 'Add at least one ingredient with quantity';
       Store.put('dish', { ...d, id: d.id || `dish-${slug(v.name)}-${uid()}`, name: v.name, meal: v.meal, serves: v.serves, ings });
       toast('Dish saved');
@@ -77,8 +92,41 @@ function dishForm(x) {
   });
   $('#addIng').onclick = () => { const box = $('#ings'), i = $$('.ingrow', box).length; box.insertAdjacentHTML('beforeend', rowHtml({}, i)); };
 }
-A.adddish = () => dishForm();
-A.editdish = el => dishForm(Store.get(el.dataset.id));
+A.adddish = () => {
+  if (!can('kitchen')) return toast(t('Stock & purchase module is disabled'), 'warn');
+  dishForm();
+};
+A.replaceing = el => {
+  if (!can('kitchen')) return toast(t('Stock & purchase module is disabled'), 'warn');
+  const itemId = el && el.dataset && el.dataset.id;
+  const activeItems = items().filter(i => i.id !== itemId && i.active !== false && i.status !== 'inactive');
+  if (!activeItems.length) return toast(t('No other active items available to substitute with'), 'bad');
+
+  formModal({
+    title: t('Replace Ingredient in Dishes'),
+    submit: t('Replace in All Recipes'),
+    note: t('Substitute an ingredient across all recipes that currently use it, keeping meal plans valid.'),
+    fields: [
+      { name: 'old', label: t('Ingredient to replace'), type: 'select', options: items().map(i => ({ v: i.id, l: i.name + (i.active === false ? ' (Inactive)' : '') })), value: itemId || (items()[0] || {}).id, required: true },
+      { name: 'new', label: t('Substitute with active item'), type: 'select', options: activeItems.map(i => ({ v: i.id, l: i.name })), required: true }
+    ],
+    onSubmit: v => {
+      if (v.old === v.new) return t('Choose a different replacement ingredient');
+      try {
+        const res = replaceIngredientInDishes(v.old, v.new);
+        toast(t('Updated {n} dishes successfully ✓', { n: res.updatedCount }), 'ok');
+        closeModal();
+        render();
+      } catch (err) {
+        return err.message;
+      }
+    }
+  });
+};
+A.editdish = el => {
+  if (!can('kitchen')) return toast(t('Stock & purchase module is disabled'), 'warn');
+  dishForm(Store.get(el.dataset.id));
+};
 A.messleave = () => formModal({ title: 'Add leave', fields: [{ name: 'res', label: 'Resident', type: 'select', options: resOpts(), required: true, placeholder: 'Choose resident…' }, { name: 'from', label: 'From', type: 'date', value: addDays(today(), 1), required: true }, { name: 'to', label: 'To (including)', type: 'date', value: addDays(today(), 2), required: true }], onSubmit: v => { if (v.to < v.from) return 'End date is before start date'; Store.put('leave', { resId: v.res, roomId: resById(v.res).roomId, from: v.from, to: v.to, date: v.from }); toast('Leave saved'); } });
 A.leavedel = el => { Store.remove(el.dataset.id); render(); };
 
@@ -91,7 +139,7 @@ PAGES.kitchen = {
     let body = '';
     if (tab === 'stock') {
       const list = items().filter(i => needle('item', i.name));
-      body = `<div class="tool">${searchBox('item', 'Search item')}<span class="sp"></span>${isAdmin() ? btn('Add item', 'additem', '', '', 'plus') : ''}</div>
+      body = `<div class="tool">${searchBox('item', 'Search item')}<span class="sp"></span><div class="tool-actions">${isAdmin() ? btn('Add item', 'additem', '', '', 'plus') : ''}</div></div>
         ${table([
           { h: 'Item', f: i => `<b>${esc(i.name)}</b>` }, { h: 'In stock (est.)', f: i => `${num(stockOf(i))} ${esc(i.unit)}` },
           { h: 'Daily use', f: i => { const s = stockInfo(i); return s.need ? `${num(s.need)} ${esc(i.unit)}` : '—'; } },
@@ -147,9 +195,45 @@ A.prrecv = el => {
 };
 function itemForm(x) {
   const i = x || {};
-  formModal({ title: x ? 'Edit item' : 'Add item', fields: [{ name: 'name', label: 'Item name', value: i.name, required: true, maxlength: 60 }, { name: 'unit', label: 'Unit', type: 'select', options: S().units, value: i.unit || 'kg' }, { name: 'stock', label: 'Current stock', type: 'number', step: 0.1, min: 0, value: x ? stockOf(i) : (i.stock ?? 0) }, { name: 'min', label: 'Alert below', type: 'number', step: 0.1, min: 0, value: i.min ?? 0 }, { name: 'rate', label: 'Last price ₹ / unit', type: 'number', step: 0.01, min: 0, value: i.rate ?? '' }],
-    danger: x ? { label: 'Delete', run: () => { if (dishes().some(d => (d.ings || []).some(g => g.itemId === i.id))) { toast('Used in a dish — remove it from dishes first', 'bad'); return; } confirmBox(t('Delete {n}?', { n: i.name }), () => Store.remove(i.id), 'Delete', 'bad'); } } : null,
-    onSubmit: v => { if (items().some(z => z.name.toLowerCase() === v.name.toLowerCase() && z.id !== i.id)) return 'An item with this name exists'; const { stock, ...rest } = v; Store.put('item', { ...i, id: i.id || `item-${slug(v.name)}-${uid()}`, ...(x ? rest : v), rate: isNaN(v.rate) ? 0 : v.rate }); if (x) countTo(i.id, +stock || 0, 'adjust', t('Edited in the item form')); toast('Saved'); } });
+  const isInactive = i.status === 'inactive';
+  formModal({
+    title: x ? `${t('Edit item')} · ${i.name}${isInactive ? ' (' + t('Inactive') + ')' : ''}` : 'Add item',
+    fields: [
+      { name: 'name', label: 'Item name', value: i.name, required: true, maxlength: 60 },
+      { name: 'unit', label: 'Unit', type: 'select', options: S().units, value: i.unit || 'kg' },
+      { name: 'stock', label: 'Current stock', type: 'number', step: 0.1, min: 0, value: x ? stockOf(i) : (i.stock ?? 0) },
+      { name: 'min', label: 'Alert below', type: 'number', step: 0.1, min: 0, value: i.min ?? 0 },
+      { name: 'rate', label: 'Last price ₹ / unit', type: 'number', step: 0.01, min: 0, value: i.rate ?? '' }
+    ],
+    danger: x ? (isInactive ? {
+      label: 'Reactivate item',
+      run: () => {
+        reactivateItem(i.id);
+        toast(t('{n} reactivated ✓', { n: i.name }), 'ok');
+        closeModal();
+        render();
+      }
+    } : {
+      label: 'Deactivate item',
+      run: () => {
+        const deps = getItemDependencies(i.id);
+        const warnMsg = deps.inUseCount > 0
+          ? t('{n} is currently used by {d} dish(es) and {m} menu schedule(s). Deactivating it will mark those dishes unavailable for future meal planning.', { n: i.name, d: deps.dishes.length, m: deps.menus.length })
+          : t('Deactivate {n}?', { n: i.name });
+        confirmBox(warnMsg, () => {
+          deactivateItem(i.id);
+          toast(t('{n} deactivated', { n: i.name }), 'info');
+        }, 'Deactivate', 'bad');
+      }
+    }) : null,
+    onSubmit: v => {
+      if (items().some(z => z.name.toLowerCase() === v.name.toLowerCase() && z.id !== i.id)) return 'An item with this name exists';
+      const { stock, ...rest } = v;
+      Store.put('item', { ...i, id: i.id || `item-${slug(v.name)}-${uid()}`, ...(x ? rest : v), rate: isNaN(v.rate) ? 0 : v.rate, status: i.status || 'active' });
+      if (x) countTo(i.id, +stock || 0, 'adjust', t('Edited in the item form'));
+      toast('Saved');
+    }
+  });
 }
 A.additem = () => itemForm();
 A.edititem = el => itemForm(itemById(el.dataset.id));
@@ -177,7 +261,7 @@ function hkAdmin() {
       ], list, { key: 'hkt', emptyT: 'No cleaning tasks for this day', empty: 'Create a schedule to generate tasks automatically.' })}`;
   } else if (tab === 'sched') {
     const list = Store.all('hks');
-    body = `<div class="tool"><span class="sp"></span>${btn('New schedule', 'hksched', '', 'primary', 'plus')}</div>
+    body = `<div class="tool"><div class="tool-actions" style="width:100%">${btn('New schedule', 'hksched', '', 'primary', 'plus')}</div></div>
       ${list.length ? `<div class="stack">${list.map(s => `<div class="card"><div class="row sb"><b style="font-size:17px">${esc(s.name)}</b>${badge(s.active === false ? 'Paused' : 'Active', s.active === false ? '' : 'ok')}</div><div class="muted sm" style="margin:4px 0 10px">${esc(s.freq === 'daily' ? t('Every day') : s.freq === 'once' ? fmtDate(s.date) : (s.days || []).map(d => DAYS()[d]).join(', '))}${s.time ? ' · ' + fmtTime(s.time) : ''} · ${t('{n} rooms', { n: (s.rooms || []).length })}</div>
         <div class="row">${Object.entries(groupBy(s.rooms || [], rid => (s.assign || {})[rid] || '')).map(([sid, rs]) => badge(`${(staffById(sid) || {}).name || t('Unassigned')}: ${rs.map(roomName).join(', ')}`, sid ? 'acc' : 'warn')).join('')}</div>
         <div class="row" style="margin-top:12px">${btn('Edit', 'hksched', `data-id="${s.id}"`, 'sm', 'edit')}${btn(s.active === false ? 'Resume' : 'Pause', 'hkpause', `data-id="${s.id}"`, 'sm')}</div></div>`).join('')}</div>` : `<div class="card">${empty('No schedules yet', 'Create one: pick days, floors/rooms and who cleans them.', btn('New schedule', 'hksched', '', 'primary', 'plus'))}</div>`}`;
@@ -304,11 +388,11 @@ PAGES.gate = {
 A.gatevis = () => formModal({
   title: 'New visitor',
   fields: [
-    { name: 'name', label: 'Visitor name', required: true },
-    { name: 'phone', label: 'Mobile', type: 'tel' },
+    { name: 'name', label: 'Visitor name', required: true, maxlength: 80 },
+    { name: 'phone', label: 'Mobile', type: 'tel', maxlength: 10, placeholder: '10-digit mobile' },
     { name: 'res', label: 'Meeting resident', type: 'select', options: resOpts(), placeholder: 'Choose…' },
-    { name: 'purpose', label: 'Purpose', value: t('Meeting') },
-    { name: 'place', label: 'Coming from', full: true, placeholder: 'Locality, city, state' },
+    { name: 'purpose', label: 'Purpose', value: t('Meeting'), maxlength: 80 },
+    { name: 'place', label: 'Coming from', full: true, placeholder: 'Locality, city, state', maxlength: 160 },
     { type: 'html', html: `<div class="row" style="margin-top:-4px">${btn('Use my current location', 'geoplace', '', 'sm', 'globe')}<span class="hint" id="geomsg"></span></div>` },
   ],
   onSubmit: v => {
@@ -415,56 +499,267 @@ PAGES.staff = {
     let body;
     if (tab === 'team') {
       body = `<div class="tool">${chips('stf', [['active', 'Active'], ['inactive', 'Inactive'], ['all', 'All']], 'active')}</div>
-        ${group('', list.map(s => li({ lead: avatar(s.name), t: s.name, d: `${t(s.dept)} · ${s.phone || ''} · ${inr(s.salary)}/${t('month')}${s.username ? ' · @' + s.username : ''}`, end: s.status === 'active' ? '' : badge('Inactive'), act: 'staffview', attrs: `data-id="${s.id}"` })).join(''))}`;
+        ${group('', list.map(s => {
+          const sum = staffSalarySummary(s, ym);
+          let dLine = `${t(s.dept)} · ${s.phone || ''} · ${inr(s.salary)}/${t('month')}`;
+          if (sum.activeAdvance > 0) dLine += ` · <span style="color:#b45309;font-weight:600">${t('Adv')}: ${inr(sum.activeAdvance)}</span>`;
+          if (sum.currentMonthDue > 0) dLine += ` · <span style="color:var(--bad);font-weight:600">${t('Due')}: ${inr(sum.currentMonthDue)}</span>`;
+          return li({
+            lead: avatar(s.name),
+            t: s.name,
+            d: dLine,
+            end: s.status === 'active' ? '' : badge(t('Inactive'), 'warn'),
+            act: 'staffview',
+            attrs: `data-id="${s.id}"`
+          });
+        }).join(''))}`;
     } else if (tab === 'att') {
       const dim = daysIn(ym), lastD = ym === ymOf(today()) ? +today().slice(8) : dim;
       body = `<div class="tool"><input type="month" value="${ym}" data-flt="stm" style="max-width:190px"><span class="hint">${esc(t('Tap a day: P → A → H (half) → blank'))}</span></div>
         <div class="stack">${staffList().filter(s => s.status === 'active').map(s => { const rec = Store.get(`att-${s.id}-${ym}`) || { days: {} }, a = rec.days, pu = rec.punch || {}; return `<div class="card"><div class="row sb" style="margin-bottom:8px"><b>${esc(s.name)}</b><span class="row" style="gap:6px">${btn('All present', 'attall', `data-id="${s.id}" data-ym="${ym}"`, 'sm')}</span></div><div class="att">${[...Array(dim)].map((_, i) => { const d = i + 1, v = a[d] || '', p = pu[d]; return `<button class="${v}${p ? ' punched' : ''}" data-act="attmark" data-id="${s.id}" data-ym="${ym}" data-d="${d}" ${p ? `title="${esc(t('Punched in {t}', { t: fmtTs(p.at) }) + (p.dist != null ? ` · ${p.dist} m` : ''))}"` : ''} ${d > lastD ? 'disabled style="opacity:.35"' : ''}>${d}${v ? '<br>' + v : ''}</button>`; }).join('')}</div></div>`; }).join('') || empty('No active staff')}</div>`;
     } else {
       body = `<div class="tool"><input type="month" value="${ym}" data-flt="stm" style="max-width:190px"></div>` + table([
-        { h: 'Staff', f: s => `<b>${esc(s.name)}</b><div class="hint">${esc(t(s.dept))}</div>` }, { h: 'Salary', f: s => inr(s.salary) },
+        { h: 'Staff', f: s => `<a href="javascript:void(0)" data-act="staffview" data-id="${s.id}" style="color:inherit;text-decoration:none"><b>${esc(s.name)}</b><div class="hint">${esc(t(s.dept))}</div></a>` },
+        { h: 'Monthly', f: s => inr(s.salary) },
         { h: 'Attendance', f: s => { const p = payrollFor(s, ym); return `P ${p.P} · A ${p.A} · H ${p.H}`; } },
-        { h: 'Payable', f: s => `<b>${inr(payrollFor(s, ym).payable)}</b>` }, { h: 'Paid', f: s => inr(payrollFor(s, ym).paid) },
-        { h: '', acts: true, f: s => { const p = payrollFor(s, ym); return p.due > 0 ? btn(t('Pay {a}', { a: inr(p.due) }), 'paysal', `data-id="${s.id}" data-ym="${ym}"`, 'sm ok') : badge('Paid', 'ok'); } },
-      ], staffList().filter(s => s.status === 'active'), { key: 'sal' }) + `${about('Only marked absences reduce salary (half day = half). Salary payments are added to expenses.')}`;
+        { h: 'Payable', f: s => `<b>${inr(payrollFor(s, ym).payable)}</b>` },
+        { h: 'Paid', f: s => inr(payrollFor(s, ym).paid) },
+        { h: 'Advance', f: s => { const adv = staffSalarySummary(s, ym).activeAdvance; return adv > 0 ? `<span class="badge warn">${inr(adv)}</span>` : '—'; } },
+        { h: 'Net Due', f: s => { const net = staffSalarySummary(s, ym).netPayable; return net > 0 ? `<b style="color:var(--bad)">${inr(net)}</b>` : badge(t('Clear'), 'ok'); } },
+        { h: '', acts: true, f: s => {
+          const sum = staffSalarySummary(s, ym);
+          return `<div class="row nw" style="gap:4px">
+            ${sum.currentMonthDue > 0 ? btn(t('Pay {a}', { a: inr(sum.netPayable || sum.currentMonthDue) }), 'paysal', `data-id="${s.id}" data-ym="${ym}"`, 'sm ok') : badge(t('Paid'), 'ok')}
+            ${btn(t('Adv'), 'giveadv', `data-id="${s.id}"`, 'sm ghost')}
+          </div>`;
+        } },
+      ], staffList().filter(s => s.status === 'active'), { key: 'sal' }) + `${about(t('Only marked absences reduce salary (half day = half). Salary payments and advances are added to expenses.'))}`;
     }
     return `${head('Staff & Salary', t('{n} active', { n: staffList().filter(s => s.status === 'active').length }), btn('Add staff', 'addstaff', '', 'primary', 'plus'))}${seg('st', [['team', 'Team'], ['att', 'Attendance'], ['pay', 'Salary']], 'team')}${body}`;
   },
 };
-const STAFF_ROLE_BY_DEPT = { Kitchen: 'cook', Housekeeping: 'housekeeping', Laundry: 'laundry', Security: 'guard', Office: 'manager' };
 function staffForm(x) {
-  const s = { status: 'active', dept: S().departments[0], ...(x || {}) }, isNew = !s.id;
+  const deptAllowed = d => {
+    if (d === 'Kitchen') return can('kitchen') || can('mess');
+    if (d === 'Laundry') return can('laundry');
+    if (d === 'Housekeeping') return can('housekeeping');
+    if (d === 'Security') return can('gate');
+    if (d === 'Accounts' || d === 'Accounting') return can('payments');
+    if (d === 'E-Mitra' || d === 'Verification') return can('emitra');
+    return true;
+  };
+  const availableDepts = S().departments.filter(deptAllowed);
+  const initialDept = (x && x.dept && deptAllowed(x.dept)) ? x.dept : (availableDepts[0] || 'Office');
+  const s = { status: 'active', dept: initialDept, ...(x || {}) }, isNew = !s.id;
   const req = S().staffDocs.required;
   formModal({
     title: isNew ? 'Add staff' : 'Edit staff', wide: true,
     fields: [
-      { name: 'name', label: 'Full name', value: s.name, required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile', type: 'tel', value: s.phone, required: true, maxlength: 15 },
-      { name: 'dept', label: 'Department', type: 'select', options: S().departments.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="/settings/depts">${esc(t('Edit departments'))}</a>` },
-      { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, max: 10000000, value: s.salary }, { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today() },
-      { name: 'idNo', label: 'ID number', value: s.idNo, maxlength: 40 }, { name: 'address', label: 'Address', value: s.address, full: true, maxlength: 240 },
-      ...(!isNew ? [] : [{ name: 'login', label: 'Create app login (shows only their work)', type: 'checkbox', value: true, hint: t('User ID = name, password = mobile number.'), full: true }]),
-      { type: 'section', label: 'Documents' }, ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*,application/pdf' })),
+      { name: 'name', label: 'Full name', value: s.name, required: true, maxlength: 80, placeholder: 'e.g. Ramesh Kumar' },
+      { name: 'phone', label: 'Mobile', type: 'tel', value: s.phone, required: true, maxlength: 10, placeholder: '10-digit mobile' },
+      { name: 'dept', label: 'Department', type: 'select', options: availableDepts.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="/settings/depts">${esc(t('Edit departments'))}</a>` },
+      { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, max: 10000000, value: s.salary || '', required: true, placeholder: 'e.g. 15000', hint: t('Base monthly salary for this staff') },
+      { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today() },
+      ...(isNew ? [{ name: 'openingAdv', label: 'Opening advance (₹)', type: 'number', min: 0, placeholder: '0 if none', hint: t('Any advance already paid to this staff') }] : []),
+      { name: 'idNo', label: 'ID number (Aadhaar)', value: s.idNo, maxlength: 12, placeholder: '12-digit Aadhaar' },
+      { name: 'address', label: 'Address', value: s.address, full: true, maxlength: 240, placeholder: 'Home address' },
+      ...(!isNew ? [] : [{ name: 'login', label: 'Create app login (shows only their work)', type: 'checkbox', value: true, hint: t('User ID = mobile.hostel, password = mobile number.'), full: true }]),
+      { type: 'section', label: 'Documents' },
+      ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*,application/pdf' })),
       { type: 'html', html: docsNote() },
     ],
     onSubmit: async v => {
-      const rec = Store.put('staff', { ...s, id: s.id || uid('st-'), name: v.name, phone: phone10(v.phone), dept: v.dept, role: STAFF_ROLE_BY_DEPT[v.dept] || 'staff', salary: v.salary || 0, joinDate: v.joinDate, idNo: v.idNo, address: v.address, docs: s.docs || [] });
+      const salVal = Number(v.salary) || 0;
+      const rec = Store.put('staff', {
+        ...s,
+        id: s.id || uid('st-'),
+        name: v.name,
+        phone: phone10(v.phone),
+        dept: v.dept,
+        role: STAFF_ROLE_BY_DEPT[v.dept] || 'staff',
+        salary: salVal,
+        joinDate: v.joinDate,
+        idNo: v.idNo,
+        address: v.address,
+        docs: s.docs || []
+      });
+      if (isNew && Number(v.openingAdv) > 0) {
+        const advVal = Number(v.openingAdv);
+        const adv = Store.put('sal', {
+          staffId: rec.id,
+          staffName: rec.name,
+          ym: ymOf(today()),
+          amount: advVal,
+          isAdv: true,
+          type: 'advance',
+          mode: 'cash',
+          date: today(),
+          note: t('Opening advance')
+        });
+        Store.put('exp', {
+          id: `exp-${adv.id}`,
+          date: today(),
+          cat: S().expenseCats.includes('Salary') ? 'Salary' : 'Other',
+          amount: advVal,
+          mode: 'cash',
+          paid: true,
+          vendor: rec.name,
+          note: `${t('Opening advance')} · ${rec.name}`,
+          ref: adv.id
+        });
+      }
       const files = req.map((d, i) => ({ type: d, file: (v['doc' + i] || [])[0] })).filter(f => f.file);
       if (files.length) uploadDocs('staff', rec.id, files);
       if (v.login) {
         const h = Store.hostel();
-        try { const u = await Backend.admin('create_user', { full_name: rec.name, phone: rec.phone, org_id: h.org_id, hostel_id: h.id, role: rec.role, ref_id: rec.id }); Store.patch(rec.id, { userId: u.user_id, username: u.username }); closeModal(); render(); waOpen(rec.phone, tpl('staffWelcome', { name: rec.name.split(' ')[0], role: t(ROLES[rec.role].l), hostel: hostelName(), link: appUrl(), username: u.username, password: u.password }), 'Send login'); return false; }
-        catch (e) { toast(t('Login not created: {m}', { m: e.message }), 'bad'); }
+        const hSlug = slug((h && h.name) || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+        const ph = phone10(rec.phone);
+        const wantUser = ph && ph.length === 10 ? `${ph}.${hSlug}` : undefined;
+        try {
+          const u = await Backend.admin('create_user', { full_name: rec.name, phone: rec.phone, username: wantUser, org_id: h.org_id, hostel_id: h.id, role: rec.role, ref_id: rec.id });
+          Store.patch(rec.id, { userId: u.user_id, username: u.username });
+          closeModal();
+          render();
+          waOpen(rec.phone, tpl('staffWelcome', { name: rec.name.split(' ')[0], role: t(ROLES[rec.role].l), hostel: hostelName(), link: appUrl(), username: u.username, password: u.password }), 'Send login');
+          return false;
+        } catch (e) {
+          toast(t('Login not created: {m}', { m: e.message }), 'bad');
+        }
       }
-      toast('Staff saved');
+      toast(t('Staff saved'));
+      closeModal();
+      render();
     },
   });
 }
 A.addstaff = () => staffForm();
 A.staffview = el => {
-  const s = staffById(el.dataset.id), p = payrollFor(s, ymOf(today()));
-  sheet(s.name, `<dl class="kv"><dt>${esc(t('Department'))}</dt><dd>${esc(t(s.dept))}</dd><dt>${esc(t('Mobile'))}</dt><dd>${esc(s.phone)}</dd><dt>${esc(t('Salary'))}</dt><dd>${inr(s.salary)}</dd><dt>${esc(t('This month'))}</dt><dd>P ${p.P} · A ${p.A} · H ${p.H}</dd><dt>${esc(t('Login'))}</dt><dd>${s.username ? '@' + esc(s.username) : esc(t('None'))}</dd></dl>
-    ${group('Documents', (s.docs || []).map(d => li({ icon: 'file', ic: 'info', t: t(d.type), end: docOpen(d) })).join(''))}`,
-  { foot: `<button class="btn" data-act="staffedit" data-id="${s.id}">${ico('edit', 'sm')} ${esc(t('Edit'))}</button><button class="btn ${s.status === 'active' ? 'bad' : 'ok'}" data-act="staffstatus" data-id="${s.id}">${esc(t(s.status === 'active' ? 'Deactivate' : 'Activate'))}</button>${s.status !== 'active' ? `<button class="btn bad" data-act="staffremove" data-id="${s.id}">${esc(t('Remove'))}</button>` : ''}` });
+  const s = staffById(el.dataset.id);
+  if (!s) return;
+  const ym = ui.flt.stm || ymOf(today());
+  const sum = staffSalarySummary(s, ym);
+  const p = sum.attendance;
+  const history = sum.history;
+
+  const html = `
+    <div class="stack" style="gap:14px">
+      <!-- Quick Info Bar -->
+      <div class="row sb" style="align-items:center;padding:12px 14px;background:var(--card);border-radius:var(--r);border:1px solid var(--border)">
+        <div class="row" style="gap:12px;align-items:center">
+          ${avatar(s.name)}
+          <div>
+            <div style="font-size:18px;font-weight:700">${esc(s.name)}</div>
+            <div class="hint">${esc(t(s.dept))} · ${esc(s.phone || '—')}${s.username ? ' · @' + esc(s.username) : ''}</div>
+          </div>
+        </div>
+        <div>${s.status === 'active' ? badge(t('Active'), 'ok') : badge(t('Inactive'), 'warn')}</div>
+      </div>
+
+      <!-- Financial Overview (4 KPI Cards) -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">
+        <div class="card" style="padding:12px;margin:0">
+          <div class="hint" style="font-size:12px;text-transform:uppercase;font-weight:600">${esc(t('Monthly salary'))}</div>
+          <div style="font-size:20px;font-weight:800;margin:4px 0">${inr(sum.baseSalary)}</div>
+          <div class="hint" style="font-size:11px">${esc(t('Base rate'))}</div>
+        </div>
+        <div class="card" style="padding:12px;margin:0">
+          <div class="hint" style="font-size:12px;text-transform:uppercase;font-weight:600">${esc(t('Total paid so far'))}</div>
+          <div style="font-size:20px;font-weight:800;color:var(--ok,#16a34a);margin:4px 0">${inr(sum.totalPaid)}</div>
+          <div class="hint" style="font-size:11px">${inr(sum.totalSalaryPaid)} ${esc(t('sal'))} + ${inr(sum.totalAdvanceGiven)} ${esc(t('adv'))}</div>
+        </div>
+        <div class="card" style="padding:12px;margin:0">
+          <div class="hint" style="font-size:12px;text-transform:uppercase;font-weight:600">${esc(t('Active advance'))}</div>
+          <div style="font-size:20px;font-weight:800;color:${sum.activeAdvance > 0 ? '#b45309' : 'inherit'};margin:4px 0">${inr(sum.activeAdvance)}</div>
+          <div class="hint" style="font-size:11px">${sum.activeAdvance > 0 ? esc(t('Pending recovery')) : esc(t('No active advance'))}</div>
+        </div>
+        <div class="card" style="padding:12px;margin:0;background:var(--card-subtle,#f0fdf4);border:1px solid var(--ok-subtle,#bbf7d0)">
+          <div class="hint" style="font-size:12px;text-transform:uppercase;font-weight:700;color:var(--ok,#16a34a)">${esc(t('Net payable right now'))}</div>
+          <div style="font-size:22px;font-weight:900;color:var(--ok,#16a34a);margin:4px 0">${inr(sum.netPayable)}</div>
+          <div class="hint" style="font-size:11px">${sum.currentMonthDue > 0 ? (sum.activeAdvance > 0 ? esc(t('Due {d} − Adv {a}', { d: inr(sum.currentMonthDue), a: inr(Math.min(sum.activeAdvance, sum.currentMonthDue)) })) : esc(t('Full month due'))) : esc(t('All clear'))}</div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn primary" style="flex:1;min-width:140px" data-act="paysal" data-id="${s.id}" data-ym="${ym}">
+          ${ico('check', 'sm')} <span>${esc(t('Pay salary'))}</span>
+        </button>
+        <button class="btn" style="flex:1;min-width:140px;background:#fef3c7;border-color:#fde68a;color:#92400e" data-act="giveadv" data-id="${s.id}">
+          ${ico('plus', 'sm')} <span>${esc(t('Give advance'))}</span>
+        </button>
+      </div>
+
+      <!-- Month Breakdown Card -->
+      <div class="card stack" style="gap:8px;padding:12px;margin:0">
+        <div class="row sb" style="align-items:center">
+          <b>${fmtYM(ym)} ${esc(t('Attendance & Earned'))}</b>
+          <span class="badge ${p.due > 0 ? 'bad' : 'ok'}">${p.due > 0 ? `${esc(t('Due'))}: ${inr(p.due)}` : esc(t('Paid'))}</span>
+        </div>
+        <div class="row" style="gap:12px;font-size:13px;flex-wrap:wrap">
+          <span><b>${p.P}</b> ${esc(t('Present'))}</span>
+          <span><b>${p.A}</b> ${esc(t('Absent'))}</span>
+          <span><b>${p.H}</b> ${esc(t('Half day'))}</span>
+          <span>·</span>
+          <span>${esc(t('Earned'))}: <b>${inr(sum.currentMonthPayable)}</b></span>
+          <span>${esc(t('Paid'))}: <b>${inr(sum.currentMonthPaid)}</b></span>
+          <span>${esc(t('Salary due'))}: <b style="color:var(--bad)">${inr(sum.currentMonthDue)}</b></span>
+        </div>
+      </div>
+
+      <!-- Payment & Advance History -->
+      <div class="card stack" style="gap:8px;padding:12px;margin:0">
+        <div class="row sb" style="align-items:center">
+          <b>${esc(t('Payment & advance history'))} (${history.length})</b>
+        </div>
+        ${history.length ? `
+          <div style="overflow-x:auto">
+            <table class="tbl" style="width:100%;font-size:13px">
+              <thead><tr><th>${esc(t('Date'))}</th><th>${esc(t('Type'))}</th><th>${esc(t('Amount'))}</th><th>${esc(t('Mode'))}</th><th>${esc(t('Note'))}</th><th></th></tr></thead>
+              <tbody>
+                ${history.map(x => {
+                  const isA = x.isAdv || x.type === 'advance';
+                  return `<tr>
+                    <td style="white-space:nowrap">${repDmy(x.date || x.updated_at || today())}</td>
+                    <td>${isA ? `<span class="badge warn" style="font-size:11px">${esc(t('Advance'))}</span>` : `<span class="badge ok" style="font-size:11px">${esc(t('Salary'))} ${fmtYM(x.ym)}</span>`}</td>
+                    <td style="font-weight:700;color:${isA ? '#b45309' : 'var(--ok,#16a34a)'}">
+                      ${inr(x.amount)}
+                      ${x.advDeducted ? `<div class="hint" style="font-size:10px">${esc(t('Adv deducted'))}: ${inr(x.advDeducted)}</div>` : ''}
+                    </td>
+                    <td>${esc(t(x.mode || 'cash'))}</td>
+                    <td class="hint" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.note || '—')}</td>
+                    <td style="text-align:right">
+                      <button class="btn icon ghost xs" data-act="delsal" data-id="${x.id}" title="${esc(t('Delete record'))}">${ico('x', 'xs')}</button>
+                    </td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>` : `<div class="hint" style="padding:14px;text-align:center">${esc(t('No salary or advance payments recorded yet.'))}</div>`}
+      </div>
+
+      <!-- Staff Details & KYC -->
+      <div class="card stack" style="gap:8px;padding:12px;margin:0">
+        <b>${esc(t('Staff details'))}</b>
+        <dl class="kv" style="margin:0">
+          <dt>${esc(t('Department'))}</dt><dd>${esc(t(s.dept))}</dd>
+          <dt>${esc(t('Joining date'))}</dt><dd>${repDmy(s.joinDate) || '—'}</dd>
+          <dt>${esc(t('ID number'))}</dt><dd>${esc(s.idNo || '—')}</dd>
+          <dt>${esc(t('Address'))}</dt><dd>${esc(s.address || '—')}</dd>
+          <dt>${esc(t('App login'))}</dt><dd>${s.username ? '@' + esc(s.username) : esc(t('None'))}</dd>
+        </dl>
+        ${(s.docs || []).length ? group(t('Documents'), (s.docs || []).map(d => li({ icon: 'file', ic: 'info', t: t(d.type), end: docOpen(d) }))) : ''}
+      </div>
+    </div>
+  `;
+
+  sheet(s.name, html, {
+    wide: true,
+    foot: `
+      <button class="btn" data-act="staffedit" data-id="${s.id}">${ico('edit', 'sm')} <span>${esc(t('Edit'))}</span></button>
+      <button class="btn ${s.status === 'active' ? 'bad' : 'ok'}" data-act="staffstatus" data-id="${s.id}">${esc(t(s.status === 'active' ? 'Deactivate' : 'Activate'))}</button>
+      ${s.status !== 'active' ? `<button class="btn bad" data-act="staffremove" data-id="${s.id}">${esc(t('Remove'))}</button>` : ''}
+    `
+  });
 };
 A.staffedit = el => staffForm(staffById(el.dataset.id));
 A.staffstatus = el => {
@@ -478,7 +773,6 @@ A.staffstatus = el => {
 A.staffremove = el => confirmBox(t('Remove this staff member? Their history (tasks, salary) is kept.'), () => {
   const s = staffById(el.dataset.id); Store.patch(s.id, { status: 'removed', removedOn: today() });
   for (const sc of Store.all('hks')) if (Object.values(sc.assign || {}).includes(s.id)) { const a = { ...sc.assign }; for (const k in a) if (a[k] === s.id) a[k] = null; Store.patch(sc.id, { assign: a }); }
-  // A failure here must be seen: the record says "removed" but their login would still work.
   if (s.userId) Backend.admin('set_active', { user_id: s.userId, active: false }).catch(e => toast(`${t('Their login is still active')}: ${e.message}`, 'bad'));
 }, 'Remove', 'bad');
 A.attmark = el => {
@@ -488,7 +782,129 @@ A.attmark = el => {
   Store.put('att', { ...cur, days }); render();
 };
 A.attall = el => { const id = `att-${el.dataset.id}-${el.dataset.ym}`, cur = Store.get(id) || { id, staffId: el.dataset.id, ym: el.dataset.ym, days: {} }; const last = el.dataset.ym === ymOf(today()) ? +today().slice(8) : daysIn(el.dataset.ym); const days = { ...cur.days }; for (let d = 1; d <= last; d++) if (!days[d]) days[d] = 'P'; Store.put('att', { ...cur, days }); render(); };
-A.paysal = el => { const s = staffById(el.dataset.id), p = payrollFor(s, el.dataset.ym); formModal({ title: `${t('Pay salary')} · ${s.name}`, fields: [{ name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, value: p.due, required: true }, { name: 'mode', label: 'Paid by', type: 'select', options: [{ v: 'cash', l: t('Cash') }, { v: 'upi', l: 'UPI' }, { v: 'bank', l: t('Bank transfer') }] }], onSubmit: v => { const sal = Store.put('sal', { staffId: s.id, staffName: s.name, ym: el.dataset.ym, amount: v.amount, mode: v.mode, date: today() }); Store.put('exp', { id: `exp-${sal.id}`, date: today(), cat: S().expenseCats.includes('Salary') ? 'Salary' : 'Other', amount: v.amount, mode: 'cash', paid: true, vendor: s.name, note: `${t('Salary')} ${fmtYM(el.dataset.ym)}`, ref: sal.id }); toast('Salary paid'); } }); };
+A.paysal = el => {
+  const s = staffById(el.dataset.id);
+  if (!s) return;
+  const ym = el.dataset.ym || ymOf(today());
+  const summary = staffSalarySummary(s, ym);
+  const p = summary.attendance;
+  const activeAdv = summary.activeAdvance;
+  const maxAdvDeduct = Math.min(activeAdv, p.due);
+
+  const fields = [
+    { name: 'ym', label: 'Month', type: 'month', value: ym, required: true },
+    ...(maxAdvDeduct > 0 ? [
+      { name: 'advDeducted', label: `Deduct from advance (₹) [Max: ${inr(maxAdvDeduct)}]`, type: 'number', min: 0, max: maxAdvDeduct, value: maxAdvDeduct, hint: t('Deducts this amount from their active advance balance') }
+    ] : []),
+    { name: 'amount', label: maxAdvDeduct > 0 ? 'Cash/Bank amount to pay (₹)' : 'Amount (₹)', type: 'number', min: 0, value: Math.max(0, p.due - maxAdvDeduct), required: true, hint: maxAdvDeduct > 0 ? t('Net cash or bank payment handed over to staff') : '' },
+    { name: 'mode', label: 'Paid by', type: 'select', options: [{ v: 'cash', l: t('Cash') }, { v: 'upi', l: 'UPI' }, { v: 'bank', l: t('Bank transfer') }] },
+    { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
+    { name: 'note', label: 'Note', placeholder: 'e.g. Month salary / वेतन' }
+  ];
+
+  formModal({
+    title: `${t('Pay salary')} · ${s.name}`,
+    note: `${esc(t('Salary due for {m}:', { m: fmtYM(ym) }))} <b>${inr(p.due)}</b>${activeAdv > 0 ? ` · ${esc(t('Active advance:'))} <b style="color:#b45309">${inr(activeAdv)}</b>` : ''}`,
+    fields,
+    onChange(vals, form, changed) {
+      if (changed === 'advDeducted' && maxAdvDeduct > 0) {
+        const ded = Math.min(maxAdvDeduct, Math.max(0, Number(vals.advDeducted) || 0));
+        setField(form, 'amount', Math.max(0, p.due - ded));
+      }
+    },
+    onSubmit: v => {
+      const netAmount = Number(v.amount) || 0;
+      const advDed = Number(v.advDeducted) || 0;
+      if (netAmount <= 0 && advDed <= 0) return t('Enter amount or advance to deduct');
+      const sal = Store.put('sal', {
+        staffId: s.id,
+        staffName: s.name,
+        ym: v.ym || ym,
+        amount: netAmount,
+        advDeducted: advDed,
+        mode: v.mode || 'cash',
+        date: v.date || today(),
+        note: v.note || '',
+        type: 'salary'
+      });
+      if (netAmount > 0) {
+        Store.put('exp', {
+          id: `exp-${sal.id}`,
+          date: v.date || today(),
+          cat: S().expenseCats.includes('Salary') ? 'Salary' : 'Other',
+          amount: netAmount,
+          mode: v.mode || 'cash',
+          paid: true,
+          vendor: s.name,
+          note: `${t('Salary')} ${fmtYM(v.ym || ym)}${advDed > 0 ? ` (${t('Adv deducted')}: ${inr(advDed)})` : ''}`,
+          ref: sal.id
+        });
+      }
+      toast(t('Salary paid'));
+      closeModal();
+      render();
+      A.staffview({ dataset: { id: s.id } });
+    }
+  });
+};
+A.giveadv = el => {
+  const s = staffById(el.dataset.id);
+  if (!s) return;
+  const summary = staffSalarySummary(s);
+  formModal({
+    title: `${t('Give advance')} · ${s.name}`,
+    note: summary.activeAdvance > 0 ? `${t('Current active advance')}: <b style="color:#b45309">${inr(summary.activeAdvance)}</b>` : '',
+    fields: [
+      { name: 'amount', label: 'Advance amount (₹)', type: 'number', min: 1, required: true, placeholder: 'e.g. 5000' },
+      { name: 'mode', label: 'Paid by', type: 'select', options: [{ v: 'cash', l: t('Cash') }, { v: 'upi', l: 'UPI' }, { v: 'bank', l: t('Bank transfer') }] },
+      { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
+      { name: 'note', label: 'Reason / Note', placeholder: 'e.g. Medical emergency / त्यौहार का ख़र्च' }
+    ],
+    onSubmit: v => {
+      const amt = Number(v.amount);
+      if (!amt || amt <= 0) return t('Enter valid advance amount');
+      const sal = Store.put('sal', {
+        staffId: s.id,
+        staffName: s.name,
+        ym: ymOf(v.date || today()),
+        amount: amt,
+        isAdv: true,
+        type: 'advance',
+        mode: v.mode || 'cash',
+        date: v.date || today(),
+        note: v.note || t('Staff advance')
+      });
+      Store.put('exp', {
+        id: `exp-${sal.id}`,
+        date: v.date || today(),
+        cat: S().expenseCats.includes('Salary') ? 'Salary' : 'Other',
+        amount: amt,
+        mode: v.mode || 'cash',
+        paid: true,
+        vendor: s.name,
+        note: `${t('Staff advance')} · ${s.name}${v.note ? ' (' + v.note + ')' : ''}`,
+        ref: sal.id
+      });
+      toast(t('Advance recorded'));
+      closeModal();
+      render();
+      A.staffview({ dataset: { id: s.id } });
+    }
+  });
+};
+A.delsal = el => {
+  const id = el.dataset.id;
+  const sal = Store.get(id);
+  if (!sal) return;
+  const staffId = sal.staffId;
+  confirmBox(t('Delete this payment/advance record?'), () => {
+    Store.remove(id);
+    Store.remove('exp-' + id);
+    toast(t('Record removed'));
+    render();
+    if (staffId) A.staffview({ dataset: { id: staffId } });
+  }, 'Delete', 'bad');
+};
 
 /* ===================================================================== attendance (residents)
  * A roll call, not a time sheet. Everyone is present by default and the owner only flips the
@@ -541,7 +957,7 @@ function attRollView() {
     </div>
     ${future ? `<div class="note">${esc(t('This day has not happened yet.'))}</div>` : ''}
     <div class="tool">${searchBox('att', 'Search name or room')}</div>
-    <div class="tool">${roll.absent && !future ? btn('All present', 'attclear', `data-d="${d}" data-p="${pk}"`, 'sm ok', 'check') : ''}<span class="sp"></span>${btn('Export', 'attexport', '', 'sm', 'download')}</div>
+    <div class="tool">${roll.absent && !future ? btn('All present', 'attclear', `data-d="${d}" data-p="${pk}"`, 'sm ok', 'check') : ''}<span class="sp"></span><div class="tool-actions">${btn('Export', 'attexport', '', 'sm', 'download')}</div></div>
     ${list.length ? `<div class="group">${list.map(row).join('')}</div>` : `<div class="card">${empty('Nobody found', 'Try another search.')}</div>`}
     ${about('Everyone counts as present. Switch off only the people who are not here.')}`;
 }

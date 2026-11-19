@@ -37,19 +37,27 @@ async function deliver(g, phone, text) {
     if (g.kind === 'meta') {
       const phoneId = encodeURIComponent(g.session || '');
       const metaUrl = `${base || 'https://graph.facebook.com/v19.0'}/${phoneId}/messages`;
+      const isTpl = text && typeof text === 'object' && text.template;
+      const body = isTpl ? {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'template',
+        template: text.template
+      } : {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'text',
+        text: { preview_url: true, body: String(text || '') },
+      };
       r = await fetch(metaUrl, {
         method: 'POST', signal: ctl.signal,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${g.api_key}`,
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          recipient_type: 'individual',
-          to,
-          type: 'text',
-          text: { preview_url: true, body: text },
-        }),
+        body: JSON.stringify(body),
       });
     } else if (g.kind === 'evolution') {
       r = await fetch(`${base}/message/sendText/${encodeURIComponent(g.session || 'hostel')}`, {
@@ -131,6 +139,106 @@ const actions = {
     return { state: stateOf(st.json) || 'unknown' };
   },
 
+  // Meta Embedded Signup OAuth Exchange:
+  // Receives { hostel_id, code, waba_id, phone_number_id } from frontend Embedded Signup.
+  // Exchanges code with Meta Graph API for a customer-specific Access Token, subscribes WABA, and stores credentials per hostel.
+  async embedded_signup(b, me) {
+    const id = uuid(b.hostel_id, 'hostel');
+    const { role } = await hostelAccess(me, id);
+    if (!isAdminRole(role) && !me.isSuper) throw new HttpError(403, 'Only the owner or manager can connect WhatsApp');
+    await notDemo(id);
+
+    const code = String(b.code || '').trim();
+    const phoneId = String(b.phone_number_id || '').trim();
+    const wabaId = String(b.waba_id || '').trim();
+    if (!code) throw new HttpError(400, 'Missing Meta authorization code');
+    if (!phoneId) throw new HttpError(400, 'Missing Meta Phone Number ID');
+
+    const appId = process.env.META_APP_ID || process.env.FACEBOOK_APP_ID;
+    const appSecret = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
+    if (!appId || !appSecret) {
+      throw new HttpError(503, 'Meta WhatsApp App is not configured on the server (META_APP_ID / META_APP_SECRET missing)');
+    }
+
+    // 1. Exchange OAuth code for Customer-Specific Access Token
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 10000);
+    let tokenRes;
+    try {
+      const tokenUrl = `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}&code=${encodeURIComponent(code)}`;
+      tokenRes = await fetch(tokenUrl, { method: 'GET', signal: ctl.signal });
+    } catch (e) {
+      clearTimeout(timer);
+      throw new HttpError(502, 'Could not reach Meta OAuth endpoint: ' + e.message);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!tokenRes.ok) {
+      let errDetail = `Meta OAuth error ${tokenRes.status}`;
+      try { const errJson = await tokenRes.json(); if (errJson.error && errJson.error.message) errDetail = errJson.error.message; } catch (_) {}
+      throw new HttpError(400, 'Meta authorization failed: ' + errDetail);
+    }
+
+    const tokenData = await tokenRes.json();
+    const accessToken = tokenData.access_token;
+    if (!accessToken) throw new HttpError(400, 'Meta did not return an access token');
+
+    // 2. Subscribe the hostel's WABA to webhooks if waba_id provided
+    if (wabaId) {
+      const subCtl = new AbortController(), subTimer = setTimeout(() => subCtl.abort(), 8000);
+      try {
+        await fetch(`https://graph.facebook.com/v19.0/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+          method: 'POST',
+          signal: subCtl.signal,
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+      } catch (_) {
+      } finally {
+        clearTimeout(subTimer);
+      }
+    }
+
+    // 3. Register phone number if requested
+    if (b.pin) {
+      const regCtl = new AbortController(), regTimer = setTimeout(() => regCtl.abort(), 8000);
+      try {
+        await fetch(`https://graph.facebook.com/v19.0/${encodeURIComponent(phoneId)}/register`, {
+          method: 'POST',
+          signal: regCtl.signal,
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+          body: JSON.stringify({ messaging_product: 'whatsapp', pin: String(b.pin).trim() })
+        });
+      } catch (_) {
+      } finally {
+        clearTimeout(regTimer);
+      }
+    }
+
+    // 4. Store customer-specific token and phone ID into wa_gateways (Strict Per-Hostel Isolation)
+    const row = {
+      hostel_id: id,
+      kind: 'meta',
+      url: 'https://graph.facebook.com/v19.0',
+      api_key: accessToken,
+      session: phoneId
+    };
+
+    if (b.test_phone) {
+      const ph = String(b.test_phone).replace(/\D/g, '').slice(-10);
+      if (ph.length === 10) {
+        await deliver(row, ph, 'HostelOS: WhatsApp Cloud API is connected. Your dedicated hostel number is active.');
+      }
+    }
+
+    await rest('wa_gateways?on_conflict=hostel_id', {
+      method: 'POST',
+      body: [row],
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }
+    });
+
+    return { ok: true, connected: true, kind: 'meta', phone_number_id: phoneId, waba_id: wabaId || null };
+  },
+
   async save(b, me) {
     const id = uuid(b.hostel_id, 'hostel');
     const { role } = await hostelAccess(me, id);
@@ -141,6 +249,24 @@ const actions = {
     // Vercel cannot reach a home network, so the gateway needs a public https address
     // (a free Cloudflare Tunnel or ngrok in front of it is enough).
     if (!/^https:\/\/[^\s/]+\.[^\s]+$/i.test(url)) throw new HttpError(400, 'The gateway address must start with https://');
+    try {
+      const parsedHost = new URL(url).hostname.toLowerCase();
+      if (
+        parsedHost === 'localhost' ||
+        parsedHost === '127.0.0.1' ||
+        parsedHost === '0.0.0.0' ||
+        parsedHost.startsWith('192.168.') ||
+        parsedHost.startsWith('10.') ||
+        parsedHost.startsWith('169.254.') ||
+        parsedHost.endsWith('.local') ||
+        parsedHost.endsWith('.internal')
+      ) {
+        throw new HttpError(400, 'Private network and loopback addresses are not permitted');
+      }
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw new HttpError(400, 'Invalid gateway URL');
+    }
     const cur = await load(id);
     const key = String(b.api_key || '').trim() || (cur && cur.api_key) || '';
     if (!key) throw new HttpError(400, 'Enter the gateway API key / Access Token');
@@ -185,13 +311,19 @@ const actions = {
     const { role } = await hostelAccess(me, id);
     if (role === 'resident') throw new HttpError(403, 'Not allowed');
     await notDemo(id);
+    const [h] = await rest('hostels', `?id=eq.${id}&select=modules`);
+    if (h && h.modules && h.modules.automation === false) {
+      throw new HttpError(403, 'WhatsApp Cloud Automation is turned off by platform admin for this hostel');
+    }
     const list = (Array.isArray(b.messages) ? b.messages : []).slice(0, BATCH);
     const g = await load(id);
     if (!g) throw new HttpError(409, 'WhatsApp gateway is not set up');
     const out = [];
     for (let i = 0; i < list.length; i++) {
-      const phone = String(list[i].phone || '').replace(/\D/g, '').slice(-10);
-      const text = String(list[i].text || '').slice(0, 4000);
+      const rawMsg = list[i] || {};
+      const phone = String(rawMsg.phone || '').replace(/\D/g, '').slice(-10);
+      const isTplObj = rawMsg.template || (rawMsg.text && typeof rawMsg.text === 'object' && rawMsg.text.template);
+      const text = isTplObj ? (rawMsg.template ? { template: rawMsg.template } : rawMsg.text) : String(rawMsg.text || '').slice(0, 4000);
       if (phone.length !== 10 || !text) { out.push({ ok: false, error: 'Bad number' }); continue; }
       if (i) await sleep(GAP_MS);
       out.push(await deliver(g, phone, text));
@@ -205,14 +337,17 @@ module.exports = async (req, res) => {
   try {
     if (req.method !== 'POST') throw new HttpError(405, 'POST only');
     const b = await readJson(req);
-    const fn = actions[b.action];
+    const fn = Object.prototype.hasOwnProperty.call(actions, b.action) ? actions[b.action] : null;
     if (!fn) throw new HttpError(400, 'Unknown action');
     const me = await caller(req);
     limit('wa:' + me.id, 60, 60e3);
     res.status(200).json(await fn(b, me));
   } catch (e) {
-    if (!e.status) console.error(e);
+    if (!e.status) { if (process.env.NODE_ENV !== 'production') console.error(e); else console.error('[wa] unhandled:', e.message); }
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Server error' });
   }
 };
-module.exports._internals = { actions, deliver };
+// Expose internals only for the test runner — never in production.
+if (process.env.NODE_ENV !== 'production') {
+  module.exports._internals = { actions, deliver };
+}

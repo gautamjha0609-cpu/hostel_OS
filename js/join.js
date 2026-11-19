@@ -83,7 +83,7 @@
   var DOCS = [], PV = { on: false, state: '' };
 
   var api = function (body) {
-    return fetch('api/public/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ h: H, k: K }, body)) })
+    return fetch('/api/public/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ h: H, k: K }, body)) })
       .then(function (r) {
         return r.text().then(function (txt) {
           var d = null; try { d = JSON.parse(txt); } catch (e) { /* not our endpoint */ }
@@ -145,15 +145,15 @@
     shell('<form id="jf" class="card" novalidate autocomplete="off"><div class="fgrid">' +
       sec(T.you) +
       fld('j_name', T.name + ' *', 'type="text" maxlength="80" required') +
-      fld('j_phone', T.phone + ' *', 'type="tel" inputmode="tel" maxlength="14" required') +
+      fld('j_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
       fld('j_email', T.email, 'type="email" maxlength="120"') +
       fld('j_college', T.college, 'type="text" maxlength="120"') +
-      fld('j_idno', T.idNo, 'type="text" maxlength="40"') +
+      fld('j_idno', T.idNo, 'type="text" inputmode="numeric" maxlength="12" placeholder="12-digit Aadhaar" pattern="[0-9]{12}"') +
       fld('j_address', T.address, 'type="text" maxlength="240"') +
       '<div class="full"><label class="f" for="j_lang">' + esc(T.lang) + '</label><select id="j_lang"><option value="en">English</option><option value="hi"' + (hi ? ' selected' : '') + '>हिन्दी</option></select></div>' +
       sec(T.guardianSec) +
       fld('j_guardian', T.guardian, 'type="text" maxlength="80"') +
-      fld('j_gphone', T.guardianPhone, 'type="tel" inputmode="tel" maxlength="14"') +
+      fld('j_gphone', T.guardianPhone, 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}"') +
       ((info.docs || []).length
         ? sec(T.docsSec) + (info.upload
           ? '<div class="full"><div class="hint">' + esc(T.docsHint) + '</div></div>' + docRows
@@ -175,6 +175,24 @@
       '<div class="ferr" id="j_err" role="alert"></div>' +
       '<button class="btn primary block" type="submit" id="j_go" style="margin-top:14px">' + esc(T.submit) + '</button></form>');
 
+    var jf = document.getElementById('jf');
+    var sanitizeJoin = function (el) {
+      if (!el) return;
+      if (el.id === 'j_phone' || el.id === 'j_gphone') {
+        var v = el.value.replace(/\D/g, '');
+        if (v.length > 10 && v.startsWith('91')) v = v.slice(2);
+        else if (v.length > 10 && v.startsWith('0')) v = v.slice(1);
+        el.value = v.slice(0, 10);
+      } else if (el.id === 'j_idno') {
+        el.value = el.value.replace(/\D/g, '').slice(0, 12);
+      } else if (el.id === 'j_name' || el.id === 'j_guardian') {
+        try { el.value = el.value.replace(/[^\p{L}\p{M}\s.\-']/gu, '').slice(0, 80); }
+        catch (_) { el.value = el.value.replace(/[^a-zA-Z\s.\-']/g, '').slice(0, 80); }
+      }
+    };
+    jf.addEventListener('input', function (e) { sanitizeJoin(e.target); });
+    jf.addEventListener('paste', function (e) { setTimeout(function () { sanitizeJoin(e.target); }, 0); });
+
     var done = document.getElementById('j_pvdone');
     if (done) done.onchange = function () { document.getElementById('j_pvref').hidden = !done.checked; };
     var copy = document.getElementById('j_pvcopy');
@@ -193,8 +211,19 @@
       var name = val('j_name');
       var phone = cleanPhone(val('j_phone'));
       if (!name || !phone) { err.textContent = T.need; return; }
+      var validName = false;
+      try { validName = /^[\p{L}\p{M}\s.\-']{2,80}$/u.test(name); } catch (_) { validName = /^[a-zA-Z\s.\-']{2,80}$/.test(name); }
+      if (!validName) {
+        err.textContent = hi ? 'कृपया नाम में केवल अक्षर लिखें।' : 'Please enter a valid name (letters and spaces only).';
+        return;
+      }
       var gphone = val('j_gphone') ? cleanPhone(val('j_gphone')) : '';
       if (val('j_gphone') && !gphone) { err.textContent = T.needG; return; }
+      var rawId = val('j_idno');
+      if (rawId && rawId.replace(/\D/g, '').length !== 12) {
+        err.textContent = hi ? 'आधार नंबर ठीक 12 अंकों का होना चाहिए।' : 'Aadhaar number must be exactly 12 numeric digits.';
+        return;
+      }
       var email = val('j_email');
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         err.textContent = hi ? 'कृपया सही ईमेल पता भरें।' : 'Please enter a valid email address.';

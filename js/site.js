@@ -40,9 +40,11 @@
     roomsTag: 'कमरे', roomsH: ['कमरे और', 'किराया'], photosTag: 'तस्वीरें', photosH: ['एक झलक', 'अंदर की'],
     whereTag: 'जगह', map: 'रास्ता देखें', faqTag: 'FAQ', faqH: ['आम', 'सवाल'],
     askH: 'पूछताछ भेजें', askHint: 'अपनी जानकारी भरें, हम जल्दी जवाब देंगे।',
-    yname: 'आपका नाम', yphone: 'आपका मोबाइल नंबर', ymsg: 'आप क्या जानना चाहते हैं?',
-    send: 'WhatsApp पर भेजें',
-    need: 'कृपया अपना नाम और 10 अंकों का मोबाइल नंबर भरें।',
+    yname: 'आपका नाम', yphone: 'आपका मोबाइल नंबर', yemail: 'ईमेल (वैकल्पिक)',
+    yroom: 'कमरे का प्रकार', ydate: 'रहने की तारीख', yocc: 'कितने लोग', ybudget: 'बजट (₹/माह)',
+    ymsg: 'आप क्या जानना चाहते हैं?', consent: 'मुझे इस पूछताछ हेतु संपर्क करने की सहमति है।',
+    send: 'पूछताछ भेजें', inqSent: 'पूछताछ दर्ज हो गई है! हम जल्दी संपर्क करेंगे।', chatWa: 'WhatsApp पर बात करें',
+    need: 'कृपया अपना नाम और 10 अंकों का मान्य मोबाइल नंबर भरें।',
     sPrice: 'शुरुआती किराया', sRooms: 'कमरे के प्रकार', sFac: 'सुविधाएँ',
     goneT: 'यह पेज उपलब्ध नहीं है',
     goneD: 'लिंक गलत है या हॉस्टल ने यह पेज बंद कर दिया है। कृपया हॉस्टल से नया लिंक माँगें।',
@@ -58,9 +60,11 @@
     roomsTag: 'Rooms', roomsH: ['Rooms &', 'Pricing'], photosTag: 'Gallery', photosH: ['A Look', 'Inside'],
     whereTag: 'Our Location', map: 'Get Directions', faqTag: 'FAQs', faqH: ['Common', 'Questions'],
     askH: 'Send an Enquiry', askHint: 'Fill in your details and we’ll get back to you shortly.',
-    yname: 'Your Name', yphone: 'Your Mobile Number', ymsg: 'What would you like to know?',
-    send: 'Send on WhatsApp',
-    need: 'Please enter your name and a 10-digit mobile number.',
+    yname: 'Your Name', yphone: 'Your Mobile Number', yemail: 'Email (optional)',
+    yroom: 'Interested Room Type', ydate: 'Expected Move-in Date', yocc: 'Number of Occupants', ybudget: 'Budget (₹/month)',
+    ymsg: 'What would you like to know?', consent: 'I agree to be contacted regarding this inquiry.',
+    send: 'Submit Enquiry', inqSent: 'Enquiry submitted! We will contact you shortly.', chatWa: 'Chat directly on WhatsApp',
+    need: 'Please enter your name and a valid 10-digit mobile number.',
     sPrice: 'Starting price', sRooms: 'Room types', sFac: 'Facilities',
     goneT: 'This page is not available',
     goneD: 'The link may be wrong, or the hostel has taken the page down. Please ask them for a new link.',
@@ -337,13 +341,22 @@
       }).join('') + '</div></section>';
     }
     if (num) {
+      var roomOpts = rt.length ? rt.map(function (x) { return '<option value="' + esc(x.l) + '">' + esc(x.l) + ' (' + esc(inr(x.price)) + ')</option>'; }).join('') : '<option value="Single">Single Sharing</option><option value="Double">Double Sharing</option><option value="Triple">Triple Sharing</option>';
       right = '<section class="enq"><h2>' + ico('plane') + esc(T.askH) + '</h2><p class="sb">' + esc(T.askHint) + '</p>' +
         '<form id="ef" novalidate>' +
-        '<div class="in"><label for="e_name">' + esc(T.yname) + '</label>' + ico('user') + '<input id="e_name" type="text" maxlength="60" autocomplete="name" placeholder="' + esc(T.yname) + '"></div>' +
-        '<div class="in"><label for="e_phone">' + esc(T.yphone) + '</label>' + ico('phone') + '<input id="e_phone" type="tel" inputmode="tel" maxlength="14" autocomplete="tel" placeholder="' + esc(T.yphone) + '"></div>' +
-        '<div class="in"><label for="e_msg">' + esc(T.ymsg) + '</label>' + ico('msg') + '<textarea id="e_msg" maxlength="400" placeholder="' + esc(T.ymsg) + '"></textarea></div>' +
+        '<div style="display:none"><input id="e_hp" type="text" tabindex="-1" autocomplete="off" name="website"></div>' +
+        '<div class="in"><label for="e_name">' + esc(T.yname) + ' *</label>' + ico('user') + '<input id="e_name" type="text" maxlength="80" autocomplete="name" required placeholder="' + esc(T.yname) + '"></div>' +
+        '<div class="in"><label for="e_phone">' + esc(T.yphone) + ' *</label>' + ico('phone') + '<input id="e_phone" type="tel" inputmode="tel" maxlength="14" autocomplete="tel" required placeholder="10-digit mobile"></div>' +
+        '<div class="in"><label for="e_email">' + esc(T.yemail) + '</label>' + ico('user') + '<input id="e_email" type="email" maxlength="80" autocomplete="email" placeholder="name@example.com"></div>' +
+        '<div class="in"><label for="e_room">' + esc(T.yroom) + '</label>' + ico('home') + '<select id="e_room">' + roomOpts + '<option value="Any">Any / Not sure</option></select></div>' +
+        '<div class="in"><label for="e_date">' + esc(T.ydate) + '</label>' + ico('pin') + '<input id="e_date" type="date"></div>' +
+        '<div class="in"><label for="e_occ">' + esc(T.yocc) + '</label>' + ico('users') + '<input id="e_occ" type="number" min="1" max="10" value="1"></div>' +
+        '<div class="in"><label for="e_budget">' + esc(T.ybudget) + '</label>' + ico('drop') + '<input id="e_budget" type="number" min="0" placeholder="e.g. 7000"></div>' +
+        '<div class="in"><label for="e_msg">' + esc(T.ymsg) + '</label>' + ico('msg') + '<textarea id="e_msg" maxlength="500" placeholder="' + esc(T.ymsg) + '"></textarea></div>' +
+        '<div style="margin:8px 0;font-size:12px;display:flex;align-items:center;gap:6px"><input id="e_consent" type="checkbox" checked required> <label for="e_consent">' + esc(T.consent) + '</label></div>' +
         '<div class="err" id="e_err"></div>' +
-        '<button class="b gold" type="submit">' + ico('chat') + esc(T.send) + '</button></form></section>';
+        '<button class="b gold" id="e_sub" type="submit">' + ico('plane') + '<span>' + esc(T.send) + '</span></button>' +
+        '</form><div id="e_done" style="display:none;padding:16px;background:rgba(21,128,61,0.1);border-radius:12px;text-align:center"><p style="font-weight:bold;color:#15803d">' + esc(T.inqSent) + '</p><a class="b gold" id="e_wago" style="margin-top:10px;display:inline-flex" href="#" target="_blank" rel="noopener noreferrer">' + ico('chat') + '<span>' + esc(T.chatWa) + '</span></a></div></section>';
     }
     html += '<div class="bot"><div class="bl">' + left + '</div><div class="br">' + right + '</div></div>';
     html += '</main><div class="s-foot">' + esc(T.by) + '</div>';
@@ -389,14 +402,64 @@
     if (!f) return;
     f.addEventListener('submit', function (ev) {
       ev.preventDefault();
+      var hp = document.getElementById('e_hp') ? document.getElementById('e_hp').value : '';
+      if (hp) return; // honeypot
       var name = document.getElementById('e_name').value.trim();
-      var phone = ten(document.getElementById('e_phone').value);
+      var rawPhone = document.getElementById('e_phone').value.replace(/\D/g, '');
+      var phone = rawPhone.length === 12 && rawPhone.startsWith('91') ? rawPhone.slice(2) : rawPhone.slice(-10);
+      var email = document.getElementById('e_email') ? document.getElementById('e_email').value.trim() : '';
+      var roomType = document.getElementById('e_room') ? document.getElementById('e_room').value : 'Any';
+      var moveInDate = document.getElementById('e_date') ? document.getElementById('e_date').value : '';
+      var occupants = document.getElementById('e_occ') ? parseInt(document.getElementById('e_occ').value, 10) || 1 : 1;
+      var budget = document.getElementById('e_budget') ? parseFloat(document.getElementById('e_budget').value) : null;
       var msg = document.getElementById('e_msg').value.trim();
+      var consent = document.getElementById('e_consent') ? document.getElementById('e_consent').checked : true;
       var err = document.getElementById('e_err');
-      if (!name || phone.length !== 10) { err.textContent = T.need; return; }
+
+      if (!name || phone.length !== 10 || !/^[6-9]\d{9}$/.test(phone)) {
+        err.textContent = T.need;
+        return;
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        err.textContent = 'Please enter a valid email address';
+        return;
+      }
+      if (!consent) {
+        err.textContent = 'Please agree to be contacted';
+        return;
+      }
       err.textContent = '';
-      var text = T.hello + '\n' + T.iam + ' ' + name + '.\n' + T.ph + ': ' + phone + (msg ? '\n\n' + msg : '');
-      window.open(waLink(num, text), '_blank', 'noopener');
+      var btn = document.getElementById('e_sub');
+      if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
+
+      var payload = {
+        s: SLUG, h: H, name: name, phone: phone, email: email,
+        roomType: roomType, moveInDate: moveInDate, occupants: occupants,
+        budget: isNaN(budget) ? null : budget, message: msg, consent: consent
+      };
+
+      var waText = T.hello + '\n' + T.iam + ' ' + name + '.\n' + T.ph + ': ' + phone + '\nRoom: ' + roomType + (msg ? '\n\n' + msg : '');
+
+      fetch('/api/public?sub=inquiry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function () {
+        f.style.display = 'none';
+        var doneBox = document.getElementById('e_done');
+        var waLinkEl = document.getElementById('e_wago');
+        if (doneBox) doneBox.style.display = 'block';
+        if (waLinkEl && num) waLinkEl.href = waLink(num, waText);
+      }).catch(function () {
+        // Fallback: opens WhatsApp directly if offline / network error
+        window.open(waLink(num, waText), '_blank', 'noopener');
+        f.style.display = 'none';
+        var doneBox = document.getElementById('e_done');
+        if (doneBox) doneBox.style.display = 'block';
+      });
     });
   }
 

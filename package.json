@@ -4,7 +4,10 @@
   "private": true,
   "description": "Sarvlekh \u2014 hostel & PG management SaaS (static PWA + Supabase + one Vercel function)",
   "scripts": {
-    "test": "node --test tests/*.test.js",
+    "test": "node --test tests/*.test.js tests/verify_*.js",
+    "test:bench": "node tests/cashfree_load_benchmark.js && node tests/database_load_benchmark.js",
+    "deploy:staging": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
     "dev": "node scripts/dev-server.js",
     "dev:demo": "node scripts/dev-server.js --demo --port 5177",
     "release": "node scripts/release.js",

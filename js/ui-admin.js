@@ -121,12 +121,12 @@ function orgDetail(id) {
 A.addorg = () => formModal({
   title: 'New client', submit: 'Create client', wide: true, note: t('Creates the client, their first hostel and the owner login in one step.'),
   fields: [
-    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true }, { name: 'city', label: 'City' },
-    { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: 3 },
-    { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true }, { name: 'haddr', label: 'Address' },
-    { type: 'section', label: 'Owner login' }, { name: 'oname', label: 'Owner name', required: true }, { name: 'ophone', label: 'Owner mobile', type: 'tel', required: true },
+    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true, maxlength: 80 }, { name: 'city', label: 'City', maxlength: 60 },
+    { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, max: 10000000, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, max: 100, value: 3 },
+    { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true, maxlength: 80 }, { name: 'haddr', label: 'Address', maxlength: 240 },
+    { type: 'section', label: 'Owner login' }, { name: 'oname', label: 'Owner name', required: true, maxlength: 80 }, { name: 'ophone', label: 'Owner mobile', type: 'tel', required: true, maxlength: 10, placeholder: '10-digit mobile' },
     { name: 'ouser', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
-      info: t('Suggested from the name, and the mobile number is suggested as the password — that is what staff and residents get by default. Change either one here if you would rather set it yourself.') },
+      info: t('Default is their 10-digit mobile number. They can manage all their hostels under this login.') },
     { name: 'opass', label: 'Password', required: true },
     { name: 'mods', label: 'Modules', type: 'multi', options: OPTIONAL_MODULES.map(k => ({ v: k, l: t(k === 'residentApp' ? 'Resident app' : MOD[k].l) })), value: OPTIONAL_MODULES, full: true },
   ],
@@ -143,7 +143,7 @@ A.addorg = () => formModal({
 });
 A.editorg = el => {
   const o = adm.data.orgs.find(x => x.id === el.dataset.id);
-  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone }, { name: 'city', label: 'City', value: o.city }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
+  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true, maxlength: 80 }, { name: 'owner_name', label: 'Owner name', value: o.owner_name, maxlength: 80 }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone, maxlength: 10, placeholder: '10-digit mobile' }, { name: 'city', label: 'City', value: o.city, maxlength: 60 }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
     onSubmit: async v => { if (v.paid_till && (v.paid_till < '2020-01-01' || v.paid_till > addDays(today(), 366 * 5))) return t('Paid till looks wrong ({d}). It can be at most 5 years from today.', { d: fmtDate(v.paid_till) }); const patch = { ...v, phone: phone10(v.phone), paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
 };
 A.orgstatus = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id), next = o.status === 'active' ? 'suspended' : 'active'; confirmBox(next === 'suspended' ? t('Suspend {n}? Their staff and residents cannot log in until you activate again. Data is kept.', { n: o.name }) : t('Activate {n}?', { n: o.name }), async () => { await Backend.update('orgs', o.id, { status: next }); o.status = next; toast(next === 'active' ? 'Activated' : 'Suspended'); }, next === 'active' ? 'Activate' : 'Suspend', next === 'active' ? 'ok' : 'bad'); };
@@ -217,16 +217,18 @@ document.addEventListener('change', async e => {
  *
  * The dependency rules are enforced here rather than explained in a note, because a switch
  * that leaves another module half-working is exactly what broke before: the kitchen works out
- * what to cook from the mess menu, and cleaning tasks are assigned to housekeeping staff.
+ * what to cook from the mess menu, and inquiries come from the public landing page.
  */
 const MOD_GROUPS = [
   ['Stay & money', ['electricity', 'expenses']],
   ['Daily operations', ['mess', 'kitchen', 'housekeeping', 'laundry', 'attendance', 'gate', 'complaints']],
+  ['Verification & Inquiries', ['emitra', 'inquiries']],
   ['Team & admin', ['staff', 'notices', 'reports', 'automation']],
   ['Getting new residents', ['landing']],
   ['For residents', ['residentApp']],
 ];
 function modNote(k) {
+  if (k === 'automation') return t('Super Admin switch · 1 Consolidated Monthly Bill (Rent + Electricity + UPI QR) per resident');
   const needs = modNeeds(k).map(modLabel), used = modNeededBy(k).map(modLabel);
   return [needs.length ? t('Needs {m}', { m: needs.join(', ') }) : '',
     used.length ? t('{m} needs this', { m: used.join(', ') }) : ''].filter(Boolean).join(' · ');
@@ -286,6 +288,11 @@ function hostelInfoCard(h, o, st) {
         d: t(h.status === 'active' ? 'Staff and residents can log in' : 'Nobody can log into this hostel'),
         chev: false,
         end: `<label class="sw"><input type="checkbox" data-hstatus="${h.id}" ${h.status === 'active' ? 'checked' : ''} aria-label="${esc(t('Active'))}"><span></span></label>` }),
+      li({ icon: 'bot', ic: (h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? 'ok' : 'mute',
+        t: (h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? t('WhatsApp Cloud Automation: Active') : t('WhatsApp Cloud Automation: Off (1-Tap Manual)'),
+        d: t('Super Admin controls automatic monthly WhatsApp bill dispatch to manage Meta API cost.'),
+        chev: false,
+        end: `<span class="badge ${(h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? 'ok' : ''}">${(h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? t('Active') : t('Manual')}</span>` }),
     ].join(''), `${btn('Edit details', 'edithostel', `data-id="${h.id}"`, 'sm', 'edit')}`)}
     ${group('At a glance', [
       li({ icon: 'users', ic: 'info', t: t('{n} residents', { n: st.residents || 0 }), d: t('Counted for the whole hostel — blocks do not change this'), chev: false }),
@@ -364,15 +371,18 @@ A.delhostel = el => {
 // Suggested user ID and password follow what is typed until the admin types their own.
 function loginFields(h, opts = {}) {
   const blocks = h.blocks || [];
+  const o = (adm.data && adm.data.orgs ? adm.data.orgs.find(x => x.id === h.org_id) : null) || {};
+  const allowedRoles = ROLE_CHOICES.filter(r => r !== 'resident' && isRoleAllowed(r, h, o));
+  const activeRole = (opts.role && allowedRoles.includes(opts.role)) ? opts.role : (allowedRoles[0] || 'manager');
   return [
-    { name: 'full_name', label: 'Full name', required: true },
-    { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', required: true },
-    { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.filter(r => r !== 'resident').map(r => ({ v: r, l: t(ROLES[r].l) })), value: opts.role || 'manager' },
+    { name: 'full_name', label: 'Full name', required: true, maxlength: 80 },
+    { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', required: true, maxlength: 10, placeholder: '10-digit mobile' },
+    { name: 'role', label: 'Role', type: 'select', options: allowedRoles.map(r => ({ v: r, l: t(ROLES[r].l) })), value: activeRole },
     ...(blocks.length ? [{ name: 'block', label: 'Block', type: 'select', value: '',
       options: [{ v: '', l: t('All blocks') }, ...blocks.map(b => ({ v: b.k, l: b.l }))],
       info: t('Tied to one block, this person sees only that wing of the hostel.') }] : []),
     { name: 'perms', label: 'Extra modules (optional)', type: 'multi', full: true,
-      options: MODULES.filter(m => !['home', 'settings'].includes(m.k)).map(m => ({ v: m.k, l: t(m.l) })) },
+      options: MODULES.filter(m => !['home', 'settings'].includes(m.k) && isModOnHostel(m.k, h, o)).map(m => ({ v: m.k, l: t(m.l) })) },
     { type: 'section', label: 'How they log in' },
     { name: 'username', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
       info: t('Lowercase letters, numbers, dot, dash. This is what they type to log in, so keep it short.') },
@@ -386,15 +396,28 @@ const loginFollow2 = (nameF, phoneF, userF, passF) => (v, form, changed) => {
   const u = form.elements[userF], pw = form.elements[passF];
   if (changed === userF) u.dataset.touched = '1';
   if (changed === passF) pw.dataset.touched = '1';
-  if (changed === nameF && !u.dataset.touched) u.value = slug(v[nameF] || '');
-  if (changed === phoneF && !pw.dataset.touched) pw.value = phone10(v[phoneF]) || '';
+  if (changed === phoneF) {
+    const ph = phone10(v[phoneF]) || '';
+    if (!pw.dataset.touched) pw.value = ph;
+    if (!u.dataset.touched) u.value = ph || slug(v[nameF] || '');
+  } else if (changed === nameF && !u.dataset.touched && !v[phoneF]) {
+    u.value = slug(v[nameF] || '');
+  }
 };
 function loginFollow(v, form, changed) {
   const u = form.elements.username, pw = form.elements.password;
   if (changed === 'username') u.dataset.touched = '1';
   if (changed === 'password') pw.dataset.touched = '1';
-  if (changed === 'full_name' && !u.dataset.touched) u.value = slug(v.full_name || '');
-  if (changed === 'phone' && !pw.dataset.touched) pw.value = phone10(v.phone) || '';
+  if (changed === 'phone' || changed === 'role') {
+    const ph = phone10(v.phone) || '';
+    if (!pw.dataset.touched) pw.value = ph;
+    if (!u.dataset.touched) {
+      const hSlug = slug((admHostel(form.dataset?.h || '') || Store.hostel() || {}).name || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+      u.value = v.role === 'owner' ? ph : (ph ? `${ph}.${hSlug}` : slug(v.full_name || ''));
+    }
+  } else if (changed === 'full_name' && !u.dataset.touched && !v.phone) {
+    u.value = slug(v.full_name || '');
+  }
 }
 A.admadduser = el => {
   const h = admHostel(el.dataset.h); if (!h) return;
@@ -441,17 +464,19 @@ A.admmember = el => {
 A.admmemedit = el => {
   const m = adm.data.members.find(x => x.id === el.dataset.mid); if (!m) return;
   const h = admHostel(m.hostel_id) || {}, blocks = h.blocks || [];
+  const o = (adm.data && adm.data.orgs ? adm.data.orgs.find(x => x.id === h.org_id) : null) || {};
   const defaults = (ROLES[m.role] || ROLES.staff).mods;
+  const allowedRoles = ROLE_CHOICES.filter(r => r === m.role || isRoleAllowed(r, h, o));
   closeModal(true);
   formModal({
     title: t('Role and access'), submit: 'Save',
     note: t('Default for {r}: {m}', { r: t(ROLES[m.role] ? ROLES[m.role].l : m.role), m: defaults.map(k => modLabel(k)).join(', ') || '—' }),
     fields: [
-      { name: 'role', label: 'Role', type: 'select', options: ROLE_CHOICES.map(r => ({ v: r, l: t(ROLES[r].l) })), value: m.role },
+      { name: 'role', label: 'Role', type: 'select', options: allowedRoles.map(r => ({ v: r, l: t(ROLES[r].l) })), value: m.role },
       ...(blocks.length ? [{ name: 'block', label: 'Block', type: 'select', value: m.block || '',
         options: [{ v: '', l: t('All blocks') }, ...blocks.map(b => ({ v: b.k, l: b.l }))] }] : []),
       { name: 'perms', label: 'Also allow', type: 'multi', full: true, value: m.perms || [],
-        options: MODULES.filter(x => !['home', 'settings'].includes(x.k)).map(x => ({ v: x.k, l: t(x.l) })) },
+        options: MODULES.filter(x => !['home', 'settings'].includes(x.k) && isModOnHostel(x.k, h, o)).map(x => ({ v: x.k, l: t(x.l) })) },
       { name: 'deny', label: 'Hide these defaults', type: 'multi', full: true, value: m.deny || [],
         options: defaults.map(k => ({ v: k, l: modLabel(k) })) },
     ],
@@ -627,6 +652,10 @@ PAGES['admin-usage'] = {
       ${table([{ h: 'Hostel', f: h => `<b>${esc(h.name)}</b><div class="hint">${esc((orgs.find(o => o.id === h.org_id) || {}).name || '')}</div>` }, { h: 'Residents', f: h => statOf(h.id).residents || 0 }, { h: 'Records', f: h => (+statOf(h.id).rows || 0).toLocaleString('en-IN') }, { h: 'Last activity', f: h => (statOf(h.id).last_activity ? ago(statOf(h.id).last_activity) : '—') }, { h: '', acts: true, f: h => btn('Open', 'openhostel', `data-id="${h.id}"`, 'sm') }], hostels.slice().sort((a, b) => (+statOf(b.id).rows || 0) - (+statOf(a.id).rows || 0)), { key: 'usage' })}
       ${filesCard(adm.data.files)}
       ${backupCard(adm.data.backups, adm.data.drive)}
+      ${group('Cashfree Gateway & Financial Reconciliation', [
+        li({ icon: 'rupee', ic: 'ok', t: t('Payment Gateway Status & Reconciliation'), d: t('Reconciles pending payments across all PG properties against Cashfree authoritative orders.'), act: 'admreconcile' }),
+        li({ icon: 'alert', ic: 'warn', t: t('Initiate Authorized Refund'), d: t('Issue a verified UPI refund for a customer payment via Cashfree.'), act: 'admrefund' })
+      ])}
       ${group('Maintenance', [
         li({ icon: 'trash', ic: 'warn', t: t('Clean up deleted records'), d: t('Permanently removes records deleted more than 60 days ago.'), act: 'admpurge' }),
         li({ icon: 'box', ic: 'info', t: t('Archive old day logs'), d: t('Gate entries, cleaning tasks and meal skips older than 18 months. Bills, payments and salaries are never touched.'), act: 'admarchive' }),
@@ -702,3 +731,46 @@ A.admarchive = () => confirmBox(
   }, 'Archive', 'bad');
 
 A.admpurge = async () => { const n = await Backend.rpc('purge_deleted'); toast(t('{n} old records removed', { n: n || 0 })); adm.data = null; render(); };
+
+A.admreconcile = async () => {
+  toast(t('Running global payment reconciliation...'));
+  try {
+    const res = await Backend.admin('reconcile_payments');
+    if (res && res.ok) {
+      sheet(t('Payment Reconciliation Summary'), `
+        <div class="card" style="line-height:1.8">
+          <p><b>${esc(t('Orders Checked:'))}</b> ${res.orders_checked}</p>
+          <p><b>${esc(t('Discrepancies Found:'))}</b> ${res.mismatches_found}</p>
+          <p><b>${esc(t('Automatically Resolved:'))}</b> ${res.resolved_count}</p>
+        </div>
+      `, { foot: btn('Close', 'closemodal', '', 'primary') });
+    }
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+};
+
+A.admrefund = () => {
+  formModal({
+    title: t('Initiate Cashfree Refund'),
+    submit: t('Authorize Refund'),
+    note: t('Enter the Cashfree Order ID, refund amount, and reason. The refund is verified and executed directly via Cashfree Payments API.'),
+    fields: [
+      { name: 'order_id', label: t('Order ID (ord_... or cf_...)'), required: true },
+      { name: 'amount', label: t('Refund Amount (₹)'), type: 'number', min: 1, required: true },
+      { name: 'reason', label: t('Reason for Refund'), required: true }
+    ],
+    onSubmit: async v => {
+      try {
+        const r = await Backend.admin('initiate_refund', {
+          order_id: v.order_id,
+          amount: Number(v.amount),
+          reason: v.reason
+        });
+        toast(t('Refund {id} successfully processed (₹{a})', { id: r.refund_id, a: r.amount }), 'ok');
+      } catch (err) {
+        return err.message;
+      }
+    }
+  });
+};

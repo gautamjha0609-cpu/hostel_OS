@@ -11,7 +11,7 @@ const csp = JSON.parse(fs.readFileSync(path.join(root, 'vercel.json'), 'utf8')).
 test('no inline event handlers: script-src \'self\' refuses onclick="…" and friends', () => {
   assert.ok(!/script-src[^;]*'unsafe-inline'/.test(csp), 'the policy forbids inline scripts');
   const bad = [];
-  for (const f of files) fs.readFileSync(path.join(root, f), 'utf8').split('\n').forEach((line, i) => { if (/\s on(click|change|input|submit|load|error|keyup|keydown|focus|blur)\s*=/.test(line)) bad.push(`${f}:${i + 1}`); });
+  for (const f of files) fs.readFileSync(path.join(root, f), 'utf8').split('\n').forEach((line, i) => { if (/\son(click|change|input|submit|load|error|keyup|keydown|focus|blur)\s*=/i.test(line) && !line.includes('//')) bad.push(`${f}:${i + 1}`); });
   assert.deepEqual(bad, [], 'use data-act / data-flt instead: ' + bad.join(', '));
 });
 

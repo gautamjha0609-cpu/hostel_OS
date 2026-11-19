@@ -75,7 +75,7 @@ create table if not exists public.members (
   user_id    uuid not null references public.profiles(id) on delete cascade,
   org_id     uuid not null references public.orgs(id) on delete cascade,
   hostel_id  uuid references public.hostels(id) on delete cascade,  -- null = every hostel of the org
-  role       text not null check (role in ('owner','manager','accountant','cook','housekeeping','laundry','guard','staff','resident')),
+  role       text not null check (role in ('owner','manager','warden','accountant','cook','housekeeping','laundry','guard','staff','resident','emitra')),
   perms      text[] not null default '{}',   -- extra modules granted on top of the role defaults
   deny       text[] not null default '{}',   -- role-default modules taken away
   ref_id     text,                           -- docs.id of the resident / staff record
@@ -840,3 +840,325 @@ create policy members_admin_update on public.members for update to authenticated
 -- anon has no policy on any of these tables, so these grants were never usable; remove them
 -- so a future policy written "to public" by mistake cannot open a write path.
 revoke insert, update, delete on public.orgs, public.hostels, public.profiles, public.members, public.docs from anon;
+
+-- ---- 15. Cashfree UPI Payment Gateway & Multi-Owner Easy Split Settlement ----
+create table if not exists public.owner_payment_accounts (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.orgs(id) on delete cascade,
+  hostel_id uuid references public.hostels(id) on delete set null,
+  vendor_id text not null unique,
+  account_holder_name text not null,
+  bank_account_number text not null,
+  bank_ifsc text not null,
+  upi_vpa text,
+  email text not null,
+  phone text not null,
+  kyc_status text not null default 'PENDING' check (kyc_status in ('PENDING', 'SUBMITTED', 'VERIFIED', 'ACTIVE', 'REJECTED', 'SUSPENDED')),
+  cf_vendor_details jsonb not null default '{}'::jsonb,
+  is_settlement_active boolean not null default false,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp()
+);
+
+create table if not exists public.payment_orders (
+  id text primary key,
+  hostel_id uuid not null references public.hostels(id) on delete restrict,
+  org_id uuid not null references public.orgs(id) on delete restrict,
+  res_id text not null,
+  inv_id text,
+  order_amount numeric(12,2) not null check (order_amount > 0),
+  currency text not null default 'INR' check (currency = 'INR'),
+  status text not null default 'CREATED' check (status in ('CREATED', 'PENDING', 'PROCESSING', 'SUCCESS', 'FAILED', 'EXPIRED', 'CANCELLED', 'REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED', 'UNDER_REVIEW')),
+  cf_order_id text,
+  payment_session_id text,
+  vendor_id text references public.owner_payment_accounts(vendor_id),
+  vendor_allocation_amount numeric(12,2) default 0.00,
+  splits jsonb default '[]'::jsonb,
+  customer_details jsonb not null default '{}'::jsonb,
+  order_meta jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  expires_at timestamptz
+);
+
+create table if not exists public.payment_transactions (
+  id text primary key,
+  order_id text not null references public.payment_orders(id) on delete restrict,
+  hostel_id uuid not null references public.hostels(id) on delete restrict,
+  org_id uuid not null references public.orgs(id) on delete restrict,
+  res_id text not null,
+  amount numeric(12,2) not null check (amount > 0),
+  currency text not null default 'INR',
+  payment_method text not null default 'upi',
+  payment_group text default 'upi',
+  payment_details jsonb not null default '{}'::jsonb,
+  status text not null check (status in ('SUCCESS', 'FAILED', 'PENDING', 'CANCELLED', 'USER_DROPPED')),
+  gateway_time timestamptz,
+  bank_reference text,
+  error_details jsonb default '{}'::jsonb,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp()
+);
+
+create table if not exists public.payment_settlements (
+  id text primary key,
+  order_id text references public.payment_orders(id) on delete set null,
+  cf_payment_id text references public.payment_transactions(id) on delete set null,
+  org_id uuid not null references public.orgs(id) on delete restrict,
+  hostel_id uuid not null references public.hostels(id) on delete restrict,
+  vendor_id text not null references public.owner_payment_accounts(vendor_id) on delete restrict,
+  settlement_amount numeric(12,2) not null check (settlement_amount >= 0),
+  service_charge numeric(12,2) default 0.00,
+  service_tax numeric(12,2) default 0.00,
+  utr text,
+  status text not null default 'PENDING' check (status in ('PENDING', 'INITIATED', 'SETTLED', 'FAILED')),
+  settlement_time timestamptz,
+  failure_reason text,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp()
+);
+
+create table if not exists public.payment_refunds (
+  id text primary key,
+  order_id text not null references public.payment_orders(id) on delete restrict,
+  cf_payment_id text references public.payment_transactions(id) on delete set null,
+  hostel_id uuid not null references public.hostels(id) on delete restrict,
+  res_id text not null,
+  refund_amount numeric(12,2) not null check (refund_amount > 0),
+  status text not null default 'PENDING' check (status in ('PENDING', 'SUCCESS', 'FAILED', 'CANCELLED')),
+  cf_refund_id text,
+  reason text not null,
+  initiated_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp()
+);
+
+create table if not exists public.payment_webhook_logs (
+  id uuid primary key default gen_random_uuid(),
+  event_id text,
+  event_type text not null,
+  order_id text,
+  cf_payment_id text,
+  signature text not null,
+  signature_valid boolean not null,
+  processed boolean not null default false,
+  error_message text,
+  payload jsonb not null,
+  created_at timestamptz not null default clock_timestamp()
+);
+
+create table if not exists public.payment_reconciliation_logs (
+  id uuid primary key default gen_random_uuid(),
+  hostel_id uuid references public.hostels(id) on delete set null,
+  orders_checked integer not null default 0,
+  mismatches_found integer not null default 0,
+  resolved_count integer not null default 0,
+  details jsonb not null default '[]'::jsonb,
+  run_by text default 'cron',
+  created_at timestamptz not null default clock_timestamp()
+);
+
+alter table public.owner_payment_accounts enable row level security;
+alter table public.payment_orders enable row level security;
+alter table public.payment_transactions enable row level security;
+alter table public.payment_settlements enable row level security;
+alter table public.payment_refunds enable row level security;
+alter table public.payment_webhook_logs enable row level security;
+alter table public.payment_reconciliation_logs enable row level security;
+
+-- Owner Payment Accounts: Super Admin or Org Admins
+create policy if not exists owner_payment_accounts_read on public.owner_payment_accounts
+  for select to authenticated
+  using (
+    is_super() or org_id in (
+      select org_id from public.my_access() where role in ('owner', 'manager')
+    )
+  );
+
+create policy if not exists owner_payment_accounts_write on public.owner_payment_accounts
+  for all to authenticated
+  using (
+    is_super() or org_id in (
+      select org_id from public.my_access() where role = 'owner'
+    )
+  );
+
+-- Payment Orders: Residents can view their own; Admins can view hostel orders
+create policy if not exists payment_orders_read on public.payment_orders
+  for select to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access()
+      where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+    ) or (
+      res_id in (select ref_id from public.members where user_id = auth.uid() and active = true)
+    )
+  );
+
+-- Payment Transactions: Same access model
+create policy if not exists payment_transactions_read on public.payment_transactions
+  for select to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access()
+      where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+    ) or (
+      res_id in (select ref_id from public.members where user_id = auth.uid() and active = true)
+    )
+  );
+
+-- Settlements: Owners and Managers only
+create policy if not exists payment_settlements_read on public.payment_settlements
+  for select to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access()
+      where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+    )
+  );
+
+-- Refunds: Admins manage; Residents view their own
+create policy if not exists payment_refunds_read on public.payment_refunds
+  for select to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access()
+      where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+    ) or (
+      res_id in (select ref_id from public.members where user_id = auth.uid() and active = true)
+    )
+  );
+
+create policy if not exists payment_refunds_write on public.payment_refunds
+  for all to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access()
+      where role in ('owner', 'manager')
+    )
+  );
+
+-- Webhook logs & Reconciliation logs: Super admin & managers
+create policy if not exists payment_reconcile_read on public.payment_reconciliation_logs
+  for select to authenticated
+  using (
+    is_super() or hostel_id in (
+      select hostel_id from public.my_access() where role in ('owner', 'manager')
+    )
+  );
+
+-- Indexes for Payment Gateway & Multi-Owner Easy Split Settlement
+create index if not exists idx_owner_payment_accounts_org on public.owner_payment_accounts (org_id);
+create index if not exists idx_owner_payment_accounts_vendor on public.owner_payment_accounts (vendor_id);
+create index if not exists idx_payment_orders_hostel on public.payment_orders (hostel_id);
+create index if not exists idx_payment_orders_org on public.payment_orders (org_id);
+create index if not exists idx_payment_orders_res on public.payment_orders (res_id);
+create index if not exists idx_payment_orders_status on public.payment_orders (status);
+create index if not exists idx_payment_orders_created on public.payment_orders (created_at desc);
+create index if not exists idx_payment_orders_hostel_created on public.payment_orders (hostel_id, created_at desc);
+create index if not exists idx_payment_orders_org_created on public.payment_orders (org_id, created_at desc);
+create index if not exists idx_payment_orders_pending_sweep on public.payment_orders (status, created_at desc) where status in ('CREATED', 'PENDING', 'PROCESSING');
+create index if not exists idx_payment_tx_order on public.payment_transactions (order_id);
+create index if not exists idx_payment_tx_hostel on public.payment_transactions (hostel_id);
+create index if not exists idx_payment_tx_res on public.payment_transactions (res_id);
+create index if not exists idx_payment_tx_status on public.payment_transactions (status);
+create index if not exists idx_payment_tx_created on public.payment_transactions (created_at desc);
+create index if not exists idx_payment_tx_hostel_created on public.payment_transactions (hostel_id, created_at desc);
+create index if not exists idx_settlements_vendor on public.payment_settlements (vendor_id);
+create index if not exists idx_settlements_hostel on public.payment_settlements (hostel_id);
+create index if not exists idx_settlements_status on public.payment_settlements (status);
+create index if not exists idx_refunds_order on public.payment_refunds (order_id);
+create index if not exists idx_refunds_hostel on public.payment_refunds (hostel_id);
+create index if not exists idx_webhook_logs_order on public.payment_webhook_logs (order_id);
+create index if not exists idx_webhook_logs_event on public.payment_webhook_logs (event_type);
+create index if not exists idx_webhook_logs_prune on public.payment_webhook_logs (processed, created_at) where processed = true;
+create index if not exists idx_reconcile_logs_created on public.payment_reconciliation_logs (created_at desc);
+
+-- Nightly webhook payload pruning function (callable by nightly sweep cron or super admin)
+create or replace function public.prune_payment_webhook_logs(p_retention_days integer default 90)
+returns integer
+language plpgsql security definer set search_path = public as $$
+declare
+  v_cutoff timestamptz;
+  v_deleted integer;
+begin
+  v_cutoff := clock_timestamp() - (p_retention_days || ' days')::interval;
+  delete from public.payment_webhook_logs
+  where processed = true and created_at < v_cutoff;
+  get diagnostics v_deleted = row_count;
+
+  delete from public.payment_reconciliation_logs
+  where created_at < v_cutoff;
+
+  return v_deleted;
+end;
+$$;
+
+grant execute on function public.prune_payment_webhook_logs(integer) to service_role;
+
+-- ---------------------------------------------------------------- bank statements & reconciliation
+create table if not exists public.bank_statements (
+  id uuid primary key default gen_random_uuid(),
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  filename text not null,
+  account_no_masked text,
+  total_rows int not null default 0,
+  matched_count int not null default 0,
+  unmatched_count int not null default 0,
+  uploaded_by uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.bank_statement_transactions (
+  id uuid primary key default gen_random_uuid(),
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  statement_id uuid references public.bank_statements(id) on delete cascade,
+  tx_date date not null,
+  amount numeric(12,2) not null,
+  direction text not null check (direction in ('CR', 'DR')),
+  ref_no text,
+  narration text,
+  status text not null default 'unmatched' check (status in ('unmatched', 'matched', 'probable', 'mismatch', 'duplicate', 'manual_review')),
+  matched_claim_id text,
+  matched_pay_id text,
+  reconciled_at timestamptz,
+  reconciled_by uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists bank_tx_unique_ref on public.bank_statement_transactions(hostel_id, ref_no, amount, tx_date)
+where ref_no is not null and direction = 'CR';
+create index if not exists bank_tx_hostel_status on public.bank_statement_transactions(hostel_id, status);
+create index if not exists bank_tx_ref on public.bank_statement_transactions(ref_no);
+create index if not exists docs_inquiry on public.docs(hostel_id, kind) where kind = 'inquiry';
+create index if not exists docs_mtr_period on public.docs(hostel_id, res_id, day) where kind = 'mtr_period';
+create index if not exists docs_claim_utr on public.docs(hostel_id, (data->>'utr')) where kind = 'claim';
+
+alter table public.bank_statements enable row level security;
+alter table public.bank_statement_transactions enable row level security;
+
+create policy bank_statements_read on public.bank_statements for select to authenticated using (
+  hostel_id in (
+    select hostel_id from public.my_access()
+    where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+  )
+);
+create policy bank_statements_write on public.bank_statements for insert to authenticated with check (
+  hostel_id in (
+    select hostel_id from public.my_access()
+    where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+  )
+);
+create policy bank_tx_read on public.bank_statement_transactions for select to authenticated using (
+  hostel_id in (
+    select hostel_id from public.my_access()
+    where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+  )
+);
+create policy bank_tx_write on public.bank_statement_transactions for all to authenticated using (
+  hostel_id in (
+    select hostel_id from public.my_access()
+    where role in ('owner', 'manager', 'accountant') or perms && array['payments', 'finance']
+  )
+);
+

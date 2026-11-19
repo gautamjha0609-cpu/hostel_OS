@@ -128,6 +128,32 @@ const CryptoVault = {
   }
 };
 
+/* ===================================================================== persistent login cache */
+const AuthCache = {
+  KEY: 'hostelos.auth.cached',
+  save(u, p, uid) {
+    if (!u || !p) return;
+    const entry = { u, p, uid: uid || '', t: Date.now() };
+    LS.set(this.KEY, entry);
+    IDB.set(this.KEY, entry).catch(() => {});
+    LS.set('hostelos.last_user', u);
+  },
+  async get() {
+    let entry = LS.get(this.KEY);
+    if (!entry) {
+      entry = await IDB.get(this.KEY).catch(() => null);
+      if (entry && entry.u && entry.p) LS.set(this.KEY, entry);
+    }
+    return entry;
+  },
+  clear() {
+    LS.del(this.KEY);
+    IDB.del(this.KEY).catch(() => {});
+  }
+};
+if (typeof window !== 'undefined') window.AuthCache = AuthCache;
+if (typeof globalThis !== 'undefined') globalThis.AuthCache = AuthCache;
+
 /* ===================================================================== cloud backend */
 const Cloud = {
   session: LS.get('hostelos.session'),
@@ -147,23 +173,59 @@ const Cloud = {
     return data;
   },
   rest(path, opt) { return this.http(`${CFG.SUPABASE_URL}/rest/v1/${path}`, opt); },
-  saveSession(s) { this.session = s ? { access_token: s.access_token, refresh_token: s.refresh_token, expires_at: s.expires_at || Math.floor(Date.now() / 1000) + (s.expires_in || 3600), uid: s.user ? s.user.id : this.session && this.session.uid } : null; s ? LS.set('hostelos.session', this.session) : LS.del('hostelos.session'); },
+  saveSession(s) {
+    this.session = s ? { access_token: s.access_token, refresh_token: s.refresh_token, expires_at: s.expires_at || Math.floor(Date.now() / 1000) + (s.expires_in || 3600), uid: s.user ? s.user.id : this.session && this.session.uid } : null;
+    if (s) {
+      LS.set('hostelos.session', this.session);
+      IDB.set('hostelos.session', this.session).catch(() => {});
+    } else {
+      LS.del('hostelos.session');
+      IDB.del('hostelos.session').catch(() => {});
+    }
+  },
   async login(username, password) {
     const s = await this.http(`${CFG.SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: 'POST', auth: false, body: { email: `${slug(username)}@${EMAIL_DOMAIN}`, password } });
-    this.saveSession(s); return s.user.id;
+    this.saveSession(s);
+    AuthCache.save(username, password, s.user.id);
+    return s.user.id;
   },
   refreshing: null,
   async refresh(force) {
-    if (!this.session) throw new AppError('Please log in', { status: 401 });
+    if (!this.session) {
+      const creds = await AuthCache.get().catch(() => null);
+      if (creds && creds.u && creds.p) {
+        await this.login(creds.u, creds.p);
+        return;
+      }
+      throw new AppError('Please log in', { status: 401 });
+    }
     if (!force && this.session.expires_at - 60 > Date.now() / 1000) return;
     this.refreshing = this.refreshing || this.http(`${CFG.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', auth: false, body: { refresh_token: this.session.refresh_token } })
       .then(s => this.saveSession(s))
-      .catch(e => { if (e.status === 400 || e.status === 401) { this.saveSession(null); history.replaceState(null, '', '/'); location.reload(); } throw e; })
+      .catch(async e => {
+        if (e.status === 400 || e.status === 401) {
+          const creds = await AuthCache.get().catch(() => null);
+          if (creds && creds.u && creds.p) {
+            try {
+              await this.login(creds.u, creds.p);
+              return;
+            } catch (err2) { /* continue to wipe */ }
+          }
+          this.saveSession(null);
+          history.replaceState(null, '', '/');
+          location.reload();
+        }
+        throw e;
+      })
       .finally(() => { this.refreshing = null; });
     return this.refreshing;
   },
   async token() { await this.refresh(false); return this.session.access_token; },
-  async logout() { try { await this.http(`${CFG.SUPABASE_URL}/auth/v1/logout`, { method: 'POST' }); } catch (e) { /* offline is fine */ } this.saveSession(null); },
+  async logout() {
+    try { await this.http(`${CFG.SUPABASE_URL}/auth/v1/logout`, { method: 'POST' }); } catch (e) { /* offline is fine */ }
+    this.saveSession(null);
+    AuthCache.clear();
+  },
   async changePassword(pw) { await this.http(`${CFG.SUPABASE_URL}/auth/v1/user`, { method: 'PUT', body: { password: pw } }); },
   uid() { return this.session && this.session.uid; },
   async loadMeta() {
@@ -192,7 +254,7 @@ const Cloud = {
     if (!rows.length) return;
     const standard = [];
     for (const r of rows) {
-      if (r.kind === 'res' && !r.deleted) {
+      if (r.kind === 'res' && !r.deleted && r.data && r.data.roomId && r.data.bed) {
         await this.rpc('allocate_bed', {
           p_hostel_id: r.hostel_id,
           p_res_id: r.id,
@@ -204,9 +266,13 @@ const Cloud = {
           if (err.message && (err.message.includes('not vacant') || err.message.includes('already exists'))) {
             throw new AppError(err.message, { status: 409, code: '23505' });
           }
+          if (err.status === 404 || (err.message && err.message.includes('Could not find the function'))) {
+            standard.push(r);
+            return;
+          }
           throw err;
         });
-      } else if (r.kind === 'pay' && !r.deleted) {
+      } else if (r.kind === 'pay' && !r.deleted && r.data && r.data.amount) {
         await this.rpc('record_payment_atomic', {
           p_hostel_id: r.hostel_id,
           p_idempotency_key: (r.data && r.data.idempotencyKey) || r.id,
@@ -221,17 +287,25 @@ const Cloud = {
           if (err.message && err.message.includes('Idempotency conflict')) {
             throw new AppError(err.message, { status: 409, code: '40900' });
           }
+          if (err.status === 404 || (err.message && err.message.includes('Could not find the function'))) {
+            standard.push(r);
+            return;
+          }
           throw err;
         });
-      } else if (r.kind === 'mv' && !r.deleted) {
+      } else if (r.kind === 'mv' && !r.deleted && r.data && r.data.itemId && r.data.qm != null && r.data.qm !== 0) {
         await this.rpc('record_stock_movement', {
           p_hostel_id: r.hostel_id,
-          p_item_id: r.data && r.data.itemId,
-          p_qm: r.data && r.data.qm,
+          p_item_id: r.data.itemId,
+          p_qm: r.data.qm,
           p_move_doc: r.data
         }).catch(err => {
           if (err.message && err.message.includes('Insufficient stock')) {
             throw new AppError(err.message, { status: 409, code: '55P03' });
+          }
+          if (err.status === 404 || (err.message && err.message.includes('Could not find the function'))) {
+            standard.push(r);
+            return;
           }
           throw err;
         });
@@ -281,36 +355,106 @@ const Demo = {
     if (this.db) return this.db;
     this.db = LS.get(DKEY);
     if (!this.db || this.db.v !== 2) { this.db = { v: 2, orgs: [], hostels: [], profiles: [], members: [], docs: {} }; this.seedMeta(); }
+    else { this.seedMeta(); }
     return this.db;
   },
   save: debounce(function () { if (!LS.set(DKEY, Demo.db)) toast('Browser storage is full — export a backup in Settings.', 'bad'); }, 300),
   session: LS.get('hostelos.demo.session'),
   seedMeta() {
     const d = this.db, now = nowIso();
-    const org = (id, name, owner, phone, city, modules = {}) => d.orgs.push({ id, name, owner_name: owner, phone, city, plan: 'standard', fee: 499, paid_till: addDays(today(), 20), status: 'active', modules, max_hostels: 3, max_beds: 300, created_at: now });
-    const hostel = (id, org_id, name, city) => d.hostels.push({ id, org_id, name, city, address: city, status: 'active', settings: {}, created_at: now });
+    d.orgs = d.orgs || [];
+    d.hostels = d.hostels || [];
+    d.profiles = d.profiles || [];
+    d.members = d.members || [];
+    d.docs = d.docs || {};
+    let changed = false;
+
+    const org = (id, name, owner, phone, city, modules = {}) => {
+      let ex = d.orgs.find(o => o.id === id);
+      if (!ex) { d.orgs.push({ id, name, owner_name: owner, phone, city, plan: 'standard', fee: 499, paid_till: addDays(today(), 20), status: 'active', modules, max_hostels: 3, max_beds: 300, created_at: now }); changed = true; }
+      else if (!ex.owner_name) { ex.owner_name = owner; changed = true; }
+    };
+    const hostel = (id, org_id, name, city) => {
+      let ex = d.hostels.find(h => h.id === id);
+      if (!ex) { d.hostels.push({ id, org_id, name, city, address: city, status: 'active', settings: {}, created_at: now }); changed = true; }
+    };
     org('org1', 'Sharma PG Group', 'Ramesh Sharma', '9876500001', 'Kota');
     org('org2', 'Green Valley Hostels', 'Anita Verma', '9876500002', 'Indore', { laundry: false });
+    org('org_aravali', 'Aravali Living Group', 'Rajesh Singhal', '9876543210', 'Jaipur');
     hostel('h1', 'org1', 'Sunrise Boys PG', 'Kota'); hostel('h2', 'org1', 'Sunrise Girls PG', 'Kota'); hostel('h3', 'org2', 'Green Valley Hostel', 'Indore');
-    const user = (id, username, full_name, phone, password, is_super = false) => d.profiles.push({ id, username, full_name, phone, password, is_super, lang: 'en', active: true, created_at: now });
-    const mem = (user_id, org_id, hostel_id, role, ref_id = null) => d.members.push({ id: uid('m'), user_id, org_id, hostel_id, role, perms: [], deny: [], ref_id, active: true, created_at: now });
+    hostel('h_aravali', 'org_aravali', 'Aravali Student Residency', 'Jaipur');
+
+    const user = (id, username, full_name, phone, password, is_super = false) => {
+      const uSlug = slug(username);
+      let ex = d.profiles.find(p => p.username === uSlug || p.id === id);
+      if (!ex) {
+        d.profiles.push({ id, username: uSlug, full_name, phone, password, is_super, lang: 'en', active: true, created_at: now });
+        changed = true;
+      } else {
+        if (ex.password !== password || ex.username !== uSlug || ex.phone !== phone) {
+          ex.password = password;
+          ex.username = uSlug;
+          ex.phone = phone;
+          changed = true;
+        }
+      }
+    };
+    const mem = (user_id, org_id, hostel_id, role, ref_id = null, perms = []) => {
+      let ex = d.members.find(m => m.user_id === user_id && m.org_id === org_id && (m.hostel_id || null) === (hostel_id || null));
+      if (!ex) {
+        d.members.push({ id: uid('m'), user_id, org_id, hostel_id, role, perms, deny: [], ref_id, active: true, created_at: now });
+        changed = true;
+      } else if (ex.role !== role) {
+        ex.role = role;
+        if (perms && perms.length) ex.perms = perms;
+        changed = true;
+      }
+    };
     user('u0', 'admin', 'Platform Admin', '9000000000', 'admin123', true);
-    user('u1', 'ramesh.sharma', 'Ramesh Sharma', '9876500001', '9876500001'); mem('u1', 'org1', null, 'owner');
-    user('u2', 'anita.verma', 'Anita Verma', '9876500002', '9876500002'); mem('u2', 'org2', null, 'owner');
-    user('u3', 'raju.cook', 'Raju Cook', '9876500003', '9876500003'); mem('u3', 'org1', 'h1', 'cook', 'st-cook');
-    user('u4', 'sunita.hk', 'Sunita Devi', '9876500004', '9876500004'); mem('u4', 'org1', 'h1', 'housekeeping', 'st-hk1');
-    user('u5', 'mohan.laundry', 'Mohan Lal', '9876500005', '9876500005'); mem('u5', 'org1', 'h1', 'laundry', 'st-ld');
-    user('u6', 'gate.guard', 'Bahadur Singh', '9876500006', '9876500006'); mem('u6', 'org1', 'h1', 'guard', 'st-gd');
-    user('u7', 'aman.gupta', 'Aman Gupta', '9812300001', '9812300001'); mem('u7', 'org1', 'h1', 'resident', 'res-1');
+    user('u1', '9876500001', 'Ramesh Sharma', '9876500001', '9876500001'); mem('u1', 'org1', null, 'owner');
+    user('u2', '9876500002', 'Anita Verma', '9876500002', '9876500002'); mem('u2', 'org2', null, 'owner');
+    user('u3', '9876500003.sunrise', 'Raju Cook', '9876500003', '9876500003'); mem('u3', 'org1', 'h1', 'cook', 'st-cook');
+    user('u4', '9876500004.sunrise', 'Sunita Devi', '9876500004', '9876500004'); mem('u4', 'org1', 'h1', 'housekeeping', 'st-hk1');
+    user('u5', '9876500005.sunrise', 'Mohan Lal', '9876500005', '9876500005'); mem('u5', 'org1', 'h1', 'laundry', 'st-ld');
+    user('u6', '9876500006.sunrise', 'Bahadur Singh', '9876500006', '9876500006'); mem('u6', 'org1', 'h1', 'guard', 'st-gd');
+    user('u7', '9812300001.sunrise', 'Aman Gupta', '9812300001', '9812300001'); mem('u7', 'org1', 'h1', 'resident', 'res-1');
+    user('u8', '9876500007.sunrise', 'Vikram Singh', '9876500007', '9876500007'); mem('u8', 'org1', 'h1', 'manager');
+    user('u9', '9876500008.sunrise', 'Shanti Warden', '9876500008', '9876500008'); mem('u9', 'org1', 'h1', 'warden', null, ['attendance', 'gate', 'residents', 'complaints', 'electricity', 'rooms']);
+    user('u10', '9876543210', 'Rajesh Singhal', '9876543210', '9876543210'); mem('u10', 'org_aravali', null, 'owner');
+    user('u11', '9811100001.aravali', 'Aryan Sharma', '9811100001', '9811100001'); mem('u11', 'org_aravali', 'h_aravali', 'resident', 'res-aravali-1');
+    user('u12', '9812345678.sunrise', 'Resident (Test User)', '9812345678', '9812345678'); mem('u12', 'org1', 'h1', 'resident', 'res-1');
+    if (changed) LS.set(DKEY, Demo.db);
   },
   uid() { return this.session && this.session.uid; },
   async login(username, password) {
-    const d = this.load(), p = d.profiles.find(x => x.username === slug(username));
+    const sUname = slug(username);
+    const legacyPhone = {
+      'ramesh.sharma': '9876500001', 'rajesh.singhal': '9876543210', 'anita.verma': '9876500002',
+      'vikram.manager': '9876500007', 'shanti.warden': '9876500008', 'aryan.sharma': '9811100001',
+      'aman.gupta': '9812300001', 'raju.cook': '9876500003', 'sunita.hk': '9876500004',
+      'mohan.laundry': '9876500005', 'gate.guard': '9876500006'
+    }[sUname];
+    const d = this.load(), p = d.profiles.find(x => {
+      if (x.username === sUname) return true;
+      if (x.phone && (x.phone === String(username).trim() || sUname.startsWith(x.phone + '.') || sUname.replace(/\./g, '') === x.phone)) return true;
+      if (legacyPhone && x.phone === legacyPhone) return true;
+      if (x.full_name && slug(x.full_name) === sUname) return true;
+      return false;
+    });
     if (!p || p.password !== password) throw new AppError('Wrong username or password');
     if (!p.active) throw new AppError('Account disabled. Contact your PG owner.');
-    this.session = { uid: p.id }; LS.set('hostelos.demo.session', this.session); return p.id;
+    this.session = { uid: p.id };
+    LS.set('hostelos.demo.session', this.session);
+    IDB.set('hostelos.demo.session', this.session).catch(() => {});
+    AuthCache.save(username, password, p.id);
+    return p.id;
   },
-  async logout() { this.session = null; LS.del('hostelos.demo.session'); },
+  async logout() {
+    this.session = null;
+    LS.del('hostelos.demo.session');
+    IDB.del('hostelos.demo.session').catch(() => {});
+    AuthCache.clear();
+  },
   async changePassword(pw) { const p = this.load().profiles.find(x => x.id === this.uid()); p.password = pw; this.save(); },
   async loadMeta() {
     const d = this.load(), me = d.profiles.find(p => p.id === this.uid());
@@ -348,7 +492,11 @@ const Demo = {
     return { id: h.id, status: h.status, modules: clone(h.modules || {}), blocks: clone(h.blocks || []) };
   },
   async saveSettings(id, patch, replaceKeys = []) {
-    const h = this.load().hostels.find(x => x.id === id); if (!h) return {};
+    let h = this.load().hostels.find(x => x.id === id);
+    if (!h) {
+      if (typeof Store !== 'undefined' && Store.hostels) h = Store.hostels.find(x => x.id === id);
+      if (!h) return deepMerge({}, patch);
+    }
     h.settings = deepMerge(h.settings || {}, patch);
     for (const k of replaceKeys || []) if (k in patch) h.settings[k] = patch[k];
     this.save();
@@ -476,6 +624,7 @@ const Store = {
       this.ver++;
     }
     if (this.prune()) this.persist();
+    if (typeof reconcileBeds === 'function') reconcileBeds();
     if (this.docs.size) { this.sync().catch(() => {}); } else { await this.sync(); }
   },
 
@@ -619,7 +768,7 @@ const Store = {
   async saveSettings(patch, replaceKeys = []) {
     const h = this.hostel(); if (!h) return;
     h.settings = await Backend.saveSettings(h.id, patch, replaceKeys);
-    _setCache = { src: null, val: null };
+    _setCache = { srcH: null, srcO: null, val: null };
     LS.set(`hostelos.meta.${Backend.uid()}`, { me: this.me, members: this.members, orgs: this.orgs, hostels: this.hostels });
   },
   // Lists (meals, expense categories…) must replace rather than merge, or removed entries return.
@@ -636,6 +785,7 @@ const Store = {
     }
     await this.flush().catch(() => {});
     await Backend.logout();
+    if (typeof AuthCache !== 'undefined') AuthCache.clear();
     try { Object.keys(localStorage).filter(k => k.startsWith(`hostelos.cache.${uidv}`) || k.startsWith(`hostelos.meta.${uidv}`)).forEach(k => localStorage.removeItem(k)); } catch (e) { /* ignore */ }
     try { for (const k of await IDB.keys()) if (String(k).startsWith(`hostelos.cache.${uidv}`)) await IDB.del(k); } catch (e) { /* ignore */ }
     this.me = null; this.ctx = null; this.docs = new Map(); this.byKind = new Map(); this.outbox = [];

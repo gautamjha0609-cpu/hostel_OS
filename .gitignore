@@ -31,3 +31,6 @@ DATABASE_INVENTORY.md
 DATA_CLEANUP_PLAN.md
 DATA_CLEANUP_EXECUTION_REPORT.md
 supabase/cleanup/
+artifacts/
+pnpm-lock.yaml
+supabase/.temp/
