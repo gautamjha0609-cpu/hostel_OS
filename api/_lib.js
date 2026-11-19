@@ -180,4 +180,53 @@ function isValidPersonName(s) {
 
 const isValidEmail = s => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
 
-module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, readBodyWithRaw, cleanPhone, cleanAadhaar, isValidPersonName, isValidEmail };
+function sendViaSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, from, to, subject, html, text }) {
+  return new Promise((resolve, reject) => {
+    const tls = require('tls');
+    const socket = tls.connect(port, host, { rejectUnauthorized: true }, () => {});
+    socket.setEncoding('utf8');
+    let step = 0, buffer = '';
+    const send = cmd => socket.write(cmd + '\r\n');
+    socket.on('data', chunk => {
+      buffer += chunk;
+      const lines = buffer.split('\r\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        const code = parseInt(line.slice(0, 3), 10);
+        if (line[3] === '-') continue;
+        if (code >= 400) {
+          socket.write('QUIT\r\n'); socket.end();
+          return reject(new Error(`SMTP error (${code}): ${line}`));
+        }
+        if (step === 0 && code === 220) { step = 1; send('EHLO localhost'); }
+        else if (step === 1 && code === 250) { step = 2; send('AUTH LOGIN'); }
+        else if (step === 2 && code === 334) { step = 3; send(Buffer.from(user).toString('base64')); }
+        else if (step === 3 && code === 334) { step = 4; send(Buffer.from(String(pass || '').replace(/\s+/g, '')).toString('base64')); }
+        else if (step === 4 && code === 235) { step = 5; send(`MAIL FROM:<${user}>`); }
+        else if (step === 5 && code === 250) { step = 6; send(`RCPT TO:<${to}>`); }
+        else if (step === 6 && code === 250) { step = 7; send('DATA'); }
+        else if (step === 7 && code === 354) {
+          step = 8;
+          const fromH = from ? `From: ${from}\r\n` : `From: ${user}\r\n`;
+          const msg = [
+            fromH,
+            `To: ${to}\r\n`,
+            `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=\r\n`,
+            'MIME-Version: 1.0\r\n',
+            'Content-Type: text/html; charset=UTF-8\r\n',
+            'Content-Transfer-Encoding: base64\r\n\r\n',
+            Buffer.from(html || text || '').toString('base64'),
+            '\r\n.'
+          ].join('');
+          send(msg);
+        } else if (step === 8 && code === 250) { step = 9; send('QUIT'); }
+        else if (step === 9 && code === 221) { socket.end(); resolve({ ok: true, provider: 'smtp' }); }
+      }
+    });
+    socket.on('error', reject);
+    socket.setTimeout(12000, () => { socket.destroy(); reject(new Error('SMTP connection timed out')); });
+  });
+}
+
+module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, readBodyWithRaw, cleanPhone, cleanAadhaar, isValidPersonName, isValidEmail, sendViaSmtp };

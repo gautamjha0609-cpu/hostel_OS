@@ -16,7 +16,7 @@
 // GET /api/admin?cron=sweep   Authorization: Bearer <CRON_SECRET>   the same clean-up, daily (vercel.json)
 
 const crypto = require('crypto');
-const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone } = require('./_lib.js');
+const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone, sendViaSmtp } = require('./_lib.js');
 const Cashfree = require('./_cashfree.js');
 
 const sbUrl = () => (process.env.SUPABASE_URL || URL_ || '').replace(/\/$/, '');
@@ -881,22 +881,51 @@ const actions = {
     const subject = String(b.subject || 'Hostel Notice').slice(0, 150);
     const messageId = 'email-' + crypto.randomBytes(8).toString('hex');
 
-    // Deliver via external email provider if configured (e.g. RESEND_API_KEY)
+    // 1. Deliver via Direct SMTP (e.g. Gmail with App Password) if configured
+    if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+      try {
+        const hostelName = b.hostel_name || b.hostelName || '';
+        const sender = hostelName ? `"${hostelName}" <${process.env.SMTP_USER}>` : process.env.SMTP_USER;
+        await sendViaSmtp({
+          host: process.env.SMTP_HOST || 'smtp.gmail.com',
+          port: +(process.env.SMTP_PORT || 465),
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+          from: sender,
+          to: email,
+          subject,
+          html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
+          text: b.text || ''
+        });
+        return { ok: true, status: 'sent', provider: 'smtp', messageId, recipient: email };
+      } catch (e) {
+        console.warn('Direct SMTP email delivery failed:', e.message);
+        throw new HttpError(400, `Email delivery failed via SMTP: ${e.message}`);
+      }
+    }
+
+    // 2. Deliver via external email provider if configured (e.g. RESEND_API_KEY)
     if (process.env.RESEND_API_KEY) {
       try {
-        const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <onboarding@resend.dev>';
-        const hostelName = b.hostel_name || b.hostelName || '';
+        const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>';
+        let hostelName = b.hostel_name || b.hostelName || '';
+        if (!hostelName && hostel_id) {
+          const hRow = await rest('hostels', `?id=eq.${hostel_id}&select=name`).catch(() => []);
+          if (hRow && hRow[0] && hRow[0].name) hostelName = hRow[0].name;
+        }
+        if (!hostelName) hostelName = 'Sarvlekh';
+
         let sender = fromConfig;
-        if (hostelName && fromConfig.includes('<')) {
+        if (fromConfig.includes('<')) {
           const m = fromConfig.match(/<([^>]+)>/);
           if (m) sender = `"${hostelName}" <${m[1]}>`;
-        } else if (hostelName && fromConfig.includes('@')) {
+        } else if (fromConfig.includes('@')) {
           sender = `"${hostelName}" <${fromConfig}>`;
         }
 
         const replyTo = b.reply_to || b.replyTo || (me && me.email ? me.email : undefined);
 
-        await fetch('https://api.resend.com/emails', {
+        const resendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -908,6 +937,11 @@ const actions = {
             text: b.text || ''
           })
         });
+        if (!resendRes.ok) {
+          const errData = await resendRes.json().catch(() => ({}));
+          console.warn('Resend email delivery failed:', resendRes.status, errData);
+          throw new HttpError(resendRes.status >= 500 ? 502 : 400, errData.message || 'Email delivery failed via Resend');
+        }
       } catch (e) {
         console.warn('External email delivery warning:', e.message);
       }

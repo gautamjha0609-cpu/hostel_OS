@@ -1260,14 +1260,18 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
 </html>`;
 }
 
-async function sendBrandedEmail({ to, subject, html, text, resId, hostelId }) {
+async function sendBrandedEmail({ to, subject, html, text, resId, hostelId, replyTo }) {
   if (!to || !isValidEmail(to)) return false;
+  const h = (typeof Store !== 'undefined' && Store.hostel) ? (Store.hostel() || {}) : {};
+  const hostelName = h.name || '';
   if (typeof Backend !== 'undefined' && Backend.admin) {
     return Backend.admin('send_resident_email', {
       to,
       subject,
       html,
       text,
+      hostel_name: hostelName,
+      reply_to: replyTo || undefined,
       res_id: resId || null,
       hostel_id: hostelId || (Store.ctx && Store.ctx.hostelId) || null
     }).catch(err => {
@@ -4568,6 +4572,33 @@ function sendAgreementEmail(agrId, opts = {}) {
 
   if ((agr.emailStatus === 'delivered' || agr.emailStatus === 'sent') && !opts.forceResend) {
     return { ok: true, delivered: true, sent: true, alreadyDelivered: true, status: 'already_delivered', agreement: Store.get(agrId) };
+  }
+
+  const h = (typeof Store !== 'undefined' && Store.hostel) ? (Store.hostel() || {}) : {};
+  const hName = h.name || 'Sunrise PG';
+  const hSettings = (h && h.settings) || {};
+  const ownerEmail = opts.replyTo || hSettings.email || (typeof S === 'function' && S().pay && S().pay.email) || (Store.me && Store.me.email) || ((Store.org && Store.org()) ? Store.org().owner_email : undefined);
+  const room = r ? roomById(r.roomId) : null;
+  const roomStr = room ? room.no : (r ? r.roomId : '-');
+  const html = renderBrandedEmailHtml({
+    hostelName: hName,
+    title: 'Tenancy Agreement',
+    headline: 'Tenancy Agreement & Admission Confirmation',
+    recipientName: (r && r.name) || agr.tenantName || 'Resident',
+    bodyLines: `Room: ${roomStr} (Bed ${r && r.bed || '-'})\nMonthly Rent: ₹${(agr.rent || (r && r.rent) || 0).toLocaleString('en-IN')}\nSecurity Deposit: ₹${(agr.deposit || (r && r.deposit) || 0).toLocaleString('en-IN')}\nAgreement Period: ${fmtDate(agr.startDate)} to ${fmtDate(agr.endDate || addDays(agr.startDate, 335))}\n\nYour rental agreement terms and house rules have been accepted and registered.`,
+    date: fmtDate(today())
+  });
+
+  if (typeof sendBrandedEmail === 'function') {
+    sendBrandedEmail({
+      to: email,
+      subject: `Rental Agreement & Stay Confirmation · ${hName}`,
+      html,
+      text: `Rental Agreement confirmation for ${hName}. Room: ${roomStr}. Rent: ₹${agr.rent || (r && r.rent) || 0}.`,
+      resId: r && r.id,
+      hostelId: h.id,
+      replyTo: ownerEmail
+    }).catch(err => console.warn('Agreement sendBrandedEmail err:', err.message));
   }
 
   const initialStatus = opts.confirmed ? 'delivered' : 'sent';
