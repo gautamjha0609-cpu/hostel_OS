@@ -324,9 +324,10 @@ const SETTINGS_PAGES = {
             { v: 'property_level', l: t('Property common meter (Building meter allocated proportionally)') }
           ]
         },
-        { name: 'allocation', label: 'Sharing allocation method', type: 'select', full: true, value: e.allocation || 'occupancy_days',
+        { name: 'allocation', label: 'Sharing allocation method', type: 'select', full: true, value: e.allocation || 'daily_occupancy',
           options: [
-            { v: 'occupancy_days', l: t('Pro-rata based on actual occupancy days in period') },
+            { v: 'daily_occupancy', l: t('Day + Occupancy dynamic slices (Daily occupants share each day)') },
+            { v: 'occupancy_days', l: t('Pro-rata stay days ratio (Total days in period)') },
             { v: 'equal', l: t('Equal sharing among active occupants') }
           ]
         },

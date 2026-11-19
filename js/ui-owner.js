@@ -2286,7 +2286,23 @@ PAGES.electricity = {
       { h: 'Date', f: m => fmtShort(m.date) },
       { h: 'Reading', f: m => `${num(m.prev)} → ${num(m.curr)}` },
       { h: 'Units', f: m => { const isAbnormal = m.units > 10000; return `<b class="${isAbnormal ? 'bad-t' : ''}">${num(m.units)}</b>${isAbnormal ? ` <span class="badge bad sm">⚠️ ${esc(t('Abnormal'))}</span>` : ''}`; } },
-      { h: 'Billed', f: m => { if (m.opening) return badge(m.meterReplaced ? 'Replaced' : 'Opening', 'mute'); if (m.status === 'review') return badge(m.isReplacement ? 'New meter claim' : 'Check reading', 'warn'); const isAbnormal = m.units > 10000 || !roomById(m.roomId); return isAbnormal ? `<b class="bad-t">${inr(m.total)}</b>` : inr(m.total); } },
+      { h: 'Billed', f: m => {
+        if (m.opening) return badge(m.meterReplaced ? 'Replaced' : 'Opening', 'mute');
+        if (m.status === 'review') return badge(m.isReplacement ? 'New meter claim' : 'Check reading', 'warn');
+        const isAbnormal = m.units > 10000 || !roomById(m.roomId);
+        let tot = (m.total != null && !isNaN(m.total)) ? m.total : (Array.isArray(m.shares) && m.shares.length ? sum(m.shares, s => s.amount) : null);
+        if ((tot == null || tot === 0) && (!m.shares || !m.shares.length) && m.units > 0 && m.status === 'billed') {
+          const fromDate = m.prevDate || (m.span ? addDays(m.date, -m.span) : null);
+          const occ = meterOccupants(m.roomId, fromDate, m.date);
+          const occupants = occ.length ? occ.map(o => o[0]) : (typeof activeRes === 'function' ? activeRes().filter(r => r.roomId === m.roomId).map(r => r.id) : []);
+          if (occupants.length) {
+            const sh = splitElectricity(m.roomId, m.units, m.rate || S().elec.rate, occupants, occ.length ? occ.map(o => o[1]) : null, freeMonths(fromDate, m.date));
+            tot = sum(sh, s => s.amount);
+          }
+        }
+        tot = tot || 0;
+        return isAbnormal ? `<b class="bad-t">${inr(tot)}</b>` : inr(tot);
+      } },
       {
         h: '', acts: true, f: m => {
           const isAbnormal = m.units > 10000 || m.curr > 999999 || !roomById(m.roomId);
@@ -2438,6 +2454,9 @@ A.meterview = el => {
     const occupants = occ.length ? occ.map(o => o[0]) : activeRes().filter(r => r.roomId === m.roomId).map(r => r.id);
     if (occupants.length) {
       shares = splitElectricity(m.roomId, m.units, m.rate || S().elec.rate, occupants, occ.length ? occ.map(o => o[1]) : null, freeMonths(fromDate, m.date));
+      if (!m.shares || !m.shares.length) {
+        Store.patch(m.id, { shares, total: sum(shares, s => s.amount) });
+      }
     }
   }
   shares = shares || [];

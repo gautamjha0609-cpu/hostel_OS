@@ -2388,18 +2388,50 @@ function freeMonths(from, to) {
 }
 // Who shared the room between two readings, and for what part of that time. Includes people
 // who checked out during the period, so their units are not left on the roommates' bills.
+// Supports both 'occupancy_days' (pro-rata stay days) and 'daily_occupancy' (Day + Occupancy concurrency slices).
 function meterOccupants(roomId, from, to) {
   const span = from ? Math.max(0, diffDays(to, from)) : 0;
-  const out = [];
+  const cfg = (typeof S === 'function' && S().elec) || {};
+  const isDailyOcc = cfg.allocation === 'daily_occupancy';
+
+  const roomRes = [];
   for (const r of Store.all('res')) {
     if (r.roomId !== roomId || r.checkIn > to) continue;
     if (r.status !== 'active' && !(r.left && from && r.left > from)) continue;
-    if (!span) { if (r.status === 'active') out.push([r.id, 1]); continue; }
+    if (!span) { if (r.status === 'active') roomRes.push({ r, d: 1 }); continue; }
     const a = r.checkIn > from ? r.checkIn : from, b = r.status === 'active' || !r.left || r.left > to ? to : r.left;
     const d = Math.max(0, diffDays(b, a));
-    if (d > 0) out.push([r.id, d / span]);
+    if (d > 0) roomRes.push({ r, d });
   }
-  return out;
+
+  if (!span) return roomRes.map(x => [x.r.id, 1]);
+  if (!roomRes.length) return [];
+
+  if (isDailyOcc && span > 1) {
+    // Dynamic Day + Occupancy Based Distribution:
+    // Daily concurrency slices: each day's units divided by concurrent occupants on that day
+    const weights = new Map(roomRes.map(x => [x.r.id, 0]));
+    let coveredDays = 0;
+    for (let d = 0; d < span; d++) {
+      const curDate = addDays(from, d);
+      const present = roomRes.filter(x => x.r.checkIn <= curDate && (x.r.status !== 'left' || (x.r.left && x.r.left > curDate)));
+      if (present.length > 0) {
+        coveredDays++;
+        const frac = 1 / (span * present.length);
+        for (const p of present) {
+          weights.set(p.r.id, weights.get(p.r.id) + frac);
+        }
+      }
+    }
+    const totW = Array.from(weights.values()).reduce((a, b) => a + b, 0);
+    if (totW > 0 && totW < 1 && coveredDays > 0) {
+      const scale = 1 / totW;
+      for (const [id, w] of weights.entries()) weights.set(id, w * scale);
+    }
+    return roomRes.map(x => [x.r.id, weights.get(x.r.id) || 0]);
+  }
+
+  return roomRes.map(x => [x.r.id, x.d / span]);
 }
 function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo = null, ...rest }) {
   const room = roomById(roomId); if (!room) throw new Error('Choose a room');
