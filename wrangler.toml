@@ -10,13 +10,14 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "./dist"
 binding = "ASSETS"
-html_handling = "auto-trailing-slash"
+html_handling = "none"
 not_found_handling = "single-page-application"
 # Static files are served by Cloudflare itself (free, unlimited). Only these paths wake the Worker.
 run_worker_first = ["/api/*", "/h/*", "/health"]
 
 [triggers]
-crons = ["30 21 * * *"]
+# Enable at domain cutover (and remove the cron from vercel.json), so the nightly sweep never runs twice:
+crons = []   # was: ["30 21 * * *"]
 
 [vars]
 ENVIRONMENT = "production"
@@ -38,7 +39,7 @@ APP_NAME = "HostelOS"
 [env.staging.assets]
 directory = "./dist"
 binding = "ASSETS"
-html_handling = "auto-trailing-slash"
+html_handling = "none"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/h/*", "/health"]
 

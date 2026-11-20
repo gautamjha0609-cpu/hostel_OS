@@ -103,7 +103,7 @@ const worker = {
         // Handle /h/:slug microsite rewrite
         const slugMatch = url.pathname.match(/^\/h\/([a-z0-9-]+)/i);
         if (slugMatch) {
-          const siteUrl = new URL('/site', request.url);
+          const siteUrl = new URL('/site.html', request.url);
           siteUrl.searchParams.set('s', slugMatch[1]);
           const assetRes = await env.ASSETS.fetch(new Request(siteUrl.toString(), request));
           const newHeaders = new Headers(assetRes.headers);
