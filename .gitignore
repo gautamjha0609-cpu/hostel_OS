@@ -44,12 +44,13 @@ Sarvlekh_QA_Report_*.xlsx
 tests/
 docs/
 supabase/
-workers/
 .github/
-wrangler.toml
-.assetsignore
 package-lock.json
 env.local.example
 ENVIRONMENT_VARIABLES.md
 scripts/*
 !scripts/release.js
+!scripts/build-assets.js
+dist/
+.wrangler/
+.dev.vars

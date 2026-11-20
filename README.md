@@ -325,3 +325,16 @@ Super admin: **Usage -> Backups -> Connect Google Drive**. Google asks once; the
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `BACKUP_PASSPHRASE` as environment variables (Vercel and
 `.env.local`), and allow `https://<your domain>/api/admin?oauth=callback` as a redirect URI on the OAuth client.
 Files from Drive ending in `.enc` are opened by `scripts/restore.js` when `BACKUP_PASSPHRASE` is set.
+
+## Deploy on Cloudflare Workers
+
+```
+npm run build            # stamps the cache version and copies the allowlisted files into dist/
+npx wrangler login
+npx wrangler deploy      # production (Worker "sarvlekh")   |   npx wrangler deploy --env staging
+```
+
+Secrets are set once with `npx wrangler secret put NAME` (never committed): `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`, `SETUP_KEY`, plus the optional ones for payments, email and
+WhatsApp (`CASHFREE_*`, `SMTP_*`, `RESEND_API_KEY`, `META_*`, `EVOLUTION_*`, `BACKUP_PASSPHRASE`). For
+local runs put them in `.dev.vars` (git-ignored) and start `npx wrangler dev`.

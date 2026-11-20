@@ -5,7 +5,7 @@
 // its own VERSION (the commit id). Locally, `npm run release` stamps a timestamp.
 const fs = require('fs'), path = require('path');
 const f = process.env.SW_FILE || path.join(__dirname, '..', 'sw.js');
-const sha = String(process.env.VERCEL_GIT_COMMIT_SHA || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 12);
+const sha = String(process.env.WORKERS_CI_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 12);
 const vStamp = (sha || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12));
 const v = 'hostelos-' + vStamp;
 const src = fs.readFileSync(f, 'utf8');

@@ -2,15 +2,17 @@
   "name": "hostelos",
   "version": "1.0.0",
   "private": true,
-  "description": "Sarvlekh \u2014 hostel & PG management SaaS (static PWA + Supabase + one Vercel function)",
+  "description": "Sarvlekh — hostel & PG management SaaS (static PWA + Supabase + one Cloudflare Worker)",
   "scripts": {
     "test": "node --test tests/*.test.js tests/verify_*.js",
     "test:bench": "node tests/cashfree_load_benchmark.js && node tests/database_load_benchmark.js",
-    "deploy:staging": "wrangler deploy",
-    "deploy:prod": "wrangler deploy --env production",
     "dev": "node scripts/dev-server.js",
     "dev:demo": "node scripts/dev-server.js --demo --port 5177",
     "release": "node scripts/release.js",
+    "build": "node scripts/release.js && node scripts/build-assets.js",
+    "dev:cf": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:staging": "npm run build && wrangler deploy --env staging",
     "domain": "node scripts/set-domain.js"
   },
   "engines": {

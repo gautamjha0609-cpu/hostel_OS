@@ -13,3 +13,5 @@ artifacts
 docs
 wrangler.toml
 *.md
+scripts/build-assets.js
+_headers
