@@ -10,9 +10,9 @@
     "dev:demo": "node scripts/dev-server.js --demo --port 5177",
     "release": "node scripts/release.js",
     "build": "node scripts/release.js && node scripts/build-assets.js",
-    "dev:cf": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
-    "deploy:staging": "npm run build && wrangler deploy --env staging",
+    "dev:cf": "npm run build && npx wrangler dev",
+    "deploy": "npm run build && npx wrangler deploy",
+    "deploy:staging": "npm run build && npx wrangler deploy --env staging",
     "domain": "node scripts/set-domain.js"
   },
   "engines": {

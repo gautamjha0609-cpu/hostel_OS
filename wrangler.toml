@@ -2,7 +2,7 @@
 # Build:   npm run build        (stamps the cache version, copies the allowlisted files into dist/)
 # Deploy:  npm run deploy       (production)  |  npm run deploy:staging
 # Secrets (never in this file):  wrangler secret put SUPABASE_SERVICE_ROLE_KEY  (and the others in ENVIRONMENT_VARIABLES.md)
-name = "sarvlekh"
+name = "hostelos"
 main = "workers/entry.mjs"
 compatibility_date = "2026-11-19"
 compatibility_flags = ["nodejs_compat"]
@@ -20,17 +20,20 @@ crons = ["30 21 * * *"]
 
 [vars]
 ENVIRONMENT = "production"
-APP_NAME = "Sarvlekh"
+APP_NAME = "HostelOS"
 
 [observability]
 enabled = true
 
 [env.staging]
-name = "sarvlekh-staging"
+name = "hostelos-staging"
+
+[env.staging.triggers]
+crons = []   # staging shares the live database: no nightly sweep from here
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
-APP_NAME = "Sarvlekh"
+APP_NAME = "HostelOS"
 
 [env.staging.assets]
 directory = "./dist"
