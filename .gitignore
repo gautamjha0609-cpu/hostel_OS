@@ -39,3 +39,17 @@ supabase/.temp/
 .claude/
 Sarvlekh_QA_Report_*.xlsx
 .p_*.js
+
+# Dev-only material: kept on the developer machine, never published (the deploy needs only the app, /api and scripts/release.js)
+tests/
+docs/
+supabase/
+workers/
+.github/
+wrangler.toml
+.assetsignore
+package-lock.json
+env.local.example
+ENVIRONMENT_VARIABLES.md
+scripts/*
+!scripts/release.js
