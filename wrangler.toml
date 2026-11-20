@@ -41,3 +41,18 @@ binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/h/*", "/health"]
+
+# Per-IP abuse guard for /api/* (Cloudflare Rate Limiting binding; limits are per location)
+[[ratelimits]]
+name = "API_LIMITER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 120
+  period = 60
+
+[[env.staging.ratelimits]]
+name = "API_LIMITER"
+namespace_id = "1002"
+  [env.staging.ratelimits.simple]
+  limit = 120
+  period = 60

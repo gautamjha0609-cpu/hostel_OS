@@ -10,6 +10,15 @@ class HttpError extends Error { constructor(status, msg) { super(msg); this.stat
 
 // Every call to Supabase is bounded. A Vercel function that waits on a hung upstream is killed at
 // 10 s with a blank 504 the browser cannot read; giving up at 8 s lets us answer in JSON instead.
+// Database error text can name tables, columns and constraints. Show people our own messages
+// (raised on purpose by the database functions) and a plain sentence for everything internal.
+function publicDbMessage(data, status) {
+  const raw = String((data && (data.msg || data.message || data.error_description || data.error)) || '');
+  if (!raw) return 'Request failed (' + status + ')';
+  if (/duplicate key/i.test(raw)) return 'That record already exists.';
+  if (/violates|constraint|relation \"|column \"|syntax error|permission denied|does not exist|PGRST|schema cache|jwt|row-level security/i.test(raw)) return 'The request could not be completed.';
+  return raw;
+}
 async function sb(path, { method = 'GET', body, headers = {}, timeout = 8000 } = {}) {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeout);
   let r, text;
@@ -27,8 +36,7 @@ async function sb(path, { method = 'GET', body, headers = {}, timeout = 8000 } =
   let data = null, unreadable = false;
   try { data = text ? JSON.parse(text) : null; } catch (e) { unreadable = true; /* an HTML error page from the edge, not our JSON */ }
   if (!r.ok) {
-    throw new HttpError(r.status >= 500 ? 502 : 400,
-      (data && (data.msg || data.message || data.error_description || data.error)) || 'Supabase error ' + r.status);
+    throw new HttpError(r.status >= 500 ? 502 : 400, publicDbMessage(data, r.status));
   }
   if (unreadable) throw new HttpError(502, 'Unexpected reply from the database');
   return data;

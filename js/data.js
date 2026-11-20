@@ -253,8 +253,9 @@ const Cloud = {
   async push(rows) {
     if (!rows.length) return;
     const standard = [];
-    for (const r of rows) {
-      if (r.kind === 'res' && !r.deleted && r.data && r.data.roomId && r.data.bed) {
+    for (const row of rows) {
+      const { _new, ...r } = row;   // _new is a client-side marker, never a database column
+      if (_new && r.kind === 'res' && !r.deleted && r.data && r.data.roomId && r.data.bed) {
         await this.rpc('allocate_bed', {
           p_hostel_id: r.hostel_id,
           p_res_id: r.id,
@@ -272,7 +273,7 @@ const Cloud = {
           }
           throw err;
         });
-      } else if (r.kind === 'pay' && !r.deleted && r.data && r.data.amount) {
+      } else if (_new && r.kind === 'pay' && !r.deleted && r.data && r.data.amount) {
         await this.rpc('record_payment_atomic', {
           p_hostel_id: r.hostel_id,
           p_idempotency_key: (r.data && r.data.idempotencyKey) || r.id,
@@ -293,7 +294,7 @@ const Cloud = {
           }
           throw err;
         });
-      } else if (r.kind === 'mv' && !r.deleted && r.data && r.data.itemId && r.data.qm != null && r.data.qm !== 0) {
+      } else if (_new && r.kind === 'mv' && !r.deleted && r.data && r.data.itemId && r.data.qm != null && r.data.qm !== 0) {
         await this.rpc('record_stock_movement', {
           p_hostel_id: r.hostel_id,
           p_item_id: r.data.itemId,
@@ -472,7 +473,7 @@ const Demo = {
   },
   async push(rows) {
     const d = this.load(), ts = nowIso();
-    for (const r of rows) { (d.docs[r.hostel_id] = d.docs[r.hostel_id] || {})[r.id] = { ...r, updated_at: ts }; }
+    for (const row of rows) { const { _new, ...r } = row; (d.docs[r.hostel_id] = d.docs[r.hostel_id] || {})[r.id] = { ...r, updated_at: ts }; }
     this.save();
   },
   async saveHostel(id, patch) { Object.assign(this.load().hostels.find(h => h.id === id), patch); this.save(); },
@@ -744,9 +745,14 @@ const Store = {
     obj.kind = kind;
     obj._u = obj._u || nowIso();
     delete obj._del;
+    const isNew = !this.docs.has(obj.id);
     this.docs.set(obj.id, obj);
     this.byKind.delete(kind); this.ver++;
     const row = this.toRow(obj);
+    // A brand-new record must go through the atomic database functions; a later edit of the same
+    // record is a plain update. The flag rides in the outbox (and survives reloads) until it is sent.
+    const queued = this.outbox.find(r => r.id === row.id);
+    if (isNew || (queued && queued._new)) row._new = true;
     this.outbox = this.outbox.filter(r => r.id !== row.id); this.outbox.push(row);
     this.wake(); this.persist(); this.scheduleFlush();
     return obj;

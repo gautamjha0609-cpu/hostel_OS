@@ -128,6 +128,24 @@ const worker = {
       return new Response('Assets binding unavailable in local stub', { status: 404, headers: notFoundHeaders });
     }
 
+    // Abuse guard: per-IP limit (Cloudflare Rate Limiting binding, when configured) and a body size cap.
+    const MAX_BODY = 3 * 1024 * 1024;
+    if (env.API_LIMITER && typeof env.API_LIMITER.limit === 'function') {
+      const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+      let ok = true;
+      try { ok = (await env.API_LIMITER.limit({ key: ip })).success; } catch (_) { ok = true; }
+      if (!ok) {
+        const h = new Headers({ 'Content-Type': 'application/json', 'Retry-After': '30', 'Access-Control-Allow-Origin': corsOrigin() });
+        applySecurityHeaders(h);
+        return new Response(JSON.stringify({ error: 'Too many requests. Please wait a moment and try again.' }), { status: 429, headers: h });
+      }
+    }
+    if (Number(request.headers.get('content-length') || 0) > MAX_BODY) {
+      const h = new Headers({ 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': corsOrigin() });
+      applySecurityHeaders(h);
+      return new Response(JSON.stringify({ error: 'Request too large' }), { status: 413, headers: h });
+    }
+
     // Dynamic API Router for /api/public, /api/admin, /api/wa
     let handler;
     const path = url.pathname.replace(/\/+$/, '');
