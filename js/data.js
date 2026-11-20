@@ -299,7 +299,7 @@ const Cloud = {
           p_hostel_id: r.hostel_id,
           p_item_id: r.data.itemId,
           p_qm: r.data.qm,
-          p_move_doc: r.data
+          p_move_doc: { ...r.data, id: r.id }
         }).catch(err => {
           if (err.message && err.message.includes('Insufficient stock')) {
             throw new AppError(err.message, { status: 409, code: '55P03' });

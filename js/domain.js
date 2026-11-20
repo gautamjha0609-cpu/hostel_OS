@@ -917,7 +917,8 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   if (left > 0) Store.patch(resId, { credit: round2((r.credit || 0) + left) });
   const no = (S().receiptNo || 0) + Store.all('pay').length + 1;
   const refType = ref ? classifyPaymentRef(ref).type : null;
-  const pay = Store.put('pay', { resId, roomId: r.roomId, amount, mode, ref, refType, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
+  // The id must be 'pay-' + idempotency key: that is the id record_payment_atomic gives the record in the database, so the local copy, the saved copy and any later reversal are one and the same document.
+  const pay = Store.put('pay', { id: 'pay-' + idmpKey, resId, roomId: r.roomId, amount, mode, ref, refType, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
   alog('payment_recorded', `${r.name}: ${inr(amount)} (${mode})`, { payId: pay.id, resId, amount, mode, ref, claimId });
   notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}`, category: 'payment' });
   return pay;
