@@ -9,7 +9,7 @@ test('cf-worker: OPTIONS preflight returns 204 with CORS and security headers', 
     SUPABASE_SERVICE_ROLE_KEY: 'test-key'
   });
   assert.equal(res.status, 204);
-  assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://sarvlekh.in');
   assert.equal(res.headers.get('Access-Control-Allow-Methods'), 'GET, POST, OPTIONS');
   assert.equal(res.headers.get('Access-Control-Allow-Headers'), 'Content-Type, Authorization, X-Hostel-Id');
   assert.ok(res.headers.get('Content-Security-Policy'), 'CSP header must be present');
@@ -164,7 +164,7 @@ test('cf-worker: POST /api/admin enforces authentication', async () => {
     SUPABASE_SERVICE_ROLE_KEY: 'test-key'
   });
   assert.equal(res.status, 401);
-  assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://sarvlekh.in');
   assert.equal(res.headers.get('Access-Control-Allow-Methods'), 'GET, POST, OPTIONS');
   assert.equal(res.headers.get('Access-Control-Allow-Headers'), 'Content-Type, Authorization, X-Hostel-Id');
   const data = await res.json();
@@ -303,13 +303,13 @@ test('cf-worker: Percent-encoded paths (/%73upabase/schema.sql, /%2eenv) are dec
   }
 });
 
-test('cf-worker: Unknown /api/* endpoints return 404 with Access-Control-Allow-Origin: *', async () => {
+test('cf-worker: Unknown /api/* endpoints return 404 with Access-Control-Allow-Origin: sarvlekh.in', async () => {
   const req = new Request('https://edge.hostelos.in/api/unknown_endpoint', { method: 'GET' });
   const res = await worker.fetch(req);
   assert.equal(res.status, 404);
   const data = await res.json();
   assert.equal(data.error, 'Endpoint not found');
-  assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://sarvlekh.in');
   assert.equal(res.headers.get('Access-Control-Allow-Methods'), 'GET, POST, OPTIONS');
   assert.equal(res.headers.get('Access-Control-Allow-Headers'), 'Content-Type, Authorization, X-Hostel-Id');
 });

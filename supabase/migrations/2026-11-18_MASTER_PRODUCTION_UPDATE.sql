@@ -30,7 +30,7 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 
 -- ==============================================================================
 -- SECTION 1: ROLE CHECK UPDATE (Warden, E-Mitra, Cook, Guard, etc.)
@@ -70,7 +70,7 @@ BEGIN
        AND (NEW.data->>'status') IN ('active', 'notice')
        AND current_setting('app.allow_critical_doc_write', true) IS DISTINCT FROM 'true'
        AND NOT (SELECT is_super()) THEN
-      RAISE EXCEPTION 'Direct room/bed transfers for resident are forbidden. Use room shift operations.', NEW.kind
+      RAISE EXCEPTION 'Direct room/bed transfers for resident are forbidden. Use room shift operations.'
         USING errcode = '42501';
     END IF;
   END IF;
@@ -191,7 +191,7 @@ BEGIN
         RAISE EXCEPTION 'Invoice roomId must match room %', p_room_id USING errcode = '22023';
       END IF;
       IF (v_inv->'data'->>'type') NOT IN ('rent', 'deposit') THEN
-        RAISE EXCEPTION 'Initial check-in invoice type must be rent or deposit', v_idx USING errcode = '22023';
+        RAISE EXCEPTION 'Initial check-in invoice type must be rent or deposit' USING errcode = '22023';
       END IF;
       IF (v_inv->'data'->>'amount')::numeric <= 0 OR (v_inv->'data'->>'amount')::numeric <> round((v_inv->'data'->>'amount')::numeric, 2) THEN
         RAISE EXCEPTION 'Invoice amount must be positive with at most 2 decimal places' USING errcode = '22023';
@@ -661,7 +661,7 @@ CREATE OR REPLACE FUNCTION public.record_payment_atomic(
   p_target_inv_ids text[] DEFAULT null,
   p_exclude_inv_ids text[] DEFAULT null
 ) RETURNS jsonb
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
 DECLARE
   v_caller uuid;
   v_is_service_role boolean := false;
@@ -1012,18 +1012,18 @@ create index if not exists docs_mtr_period on public.docs(hostel_id, res_id, day
 create index if not exists docs_claim_utr on public.docs(hostel_id, (data->>'utr')) where kind = 'claim';
 
 -- 4b. Document search & Trigram indexes (pg_trgm)
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;
 
 CREATE INDEX IF NOT EXISTS idx_docs_res_name_trgm
-  ON public.docs USING gin ((data->>'name') gin_trgm_ops)
+  ON public.docs USING gin ((data->>'name') extensions.gin_trgm_ops)
   WHERE kind = 'res' AND NOT deleted;
 
 CREATE INDEX IF NOT EXISTS idx_docs_res_phone_trgm
-  ON public.docs USING gin ((data->>'phone') gin_trgm_ops)
+  ON public.docs USING gin ((data->>'phone') extensions.gin_trgm_ops)
   WHERE kind = 'res' AND NOT deleted;
 
 CREATE INDEX IF NOT EXISTS idx_bank_tx_narration_trgm
-  ON public.bank_statement_transactions USING gin (narration gin_trgm_ops);
+  ON public.bank_statement_transactions USING gin (narration extensions.gin_trgm_ops);
 
 -- 4c. Foreign key and search performance indexes
 CREATE INDEX IF NOT EXISTS idx_account_invites_user ON public.account_invites (user_id);

@@ -7,13 +7,28 @@ const resOnly = { when: () => isResident() && orgEnabled('residentApp') };
 // screen checks the module itself. Otherwise a bookmarked link reaches a page whose module
 // the hostel does not have — the menu hides it, but the URL still worked.
 const resMod = m => ({ when: () => isResident() && orgEnabled('residentApp') && orgEnabled(m) });
-const noRecord = () => `<div class="card">${empty('Your resident record is not linked yet', 'Please ask the PG owner.')}</div>`;
+/* When a resident's own record cannot be found. There are three very different reasons, and each gets its own screen:
+ *  1. the app is still loading (first sign-in, slow network): show "loading" and try again by itself - never an error;
+ *  2. they have checked out: say so, plainly;
+ *  3. the login is really not linked to a resident: say what to do, with the owner's number and a way to retry. */
+let noRecTries = 0;
+function noRecord() {
+  if (!isResident()) { setTimeout(() => go(homeFor()), 0); return ''; }   // a staff or owner login on a resident address: send them home
+  const gone = Store.get(ctx().refId), loading = CLOUD && !Store.lastSync && noRecTries < 8;
+  if (loading) { noRecTries++; setTimeout(() => { if (!meRes()) render(); }, 1200); return `<div class="narrow"><div class="card nr"><div class="spin"></div><b>${esc(t('Loading your details...'))}</b><p>${esc(t('This takes a moment the first time.'))}</p></div></div>`; }
+  noRecTries = 0;
+  if (gone && gone.status === 'left') return `<div class="narrow"><div class="card nr"><span class="nr-ic ok">${ico('check')}</span><b>${esc(t('You have checked out'))}</b><p>${esc(t('Thank you for staying with us. Your records are with the owner.'))}</p><div class="nr-a">${btn('Log out', 'logout', '', '', 'logout')}</div></div></div>`;
+  const ph = phone10((S().pay || {}).phone || (Store.hostel() || {}).phone || '');
+  return `<div class="narrow"><div class="card nr"><span class="nr-ic">${ico('user')}</span><b>${esc(t('Your account is not linked to a room yet'))}</b><p>${esc(t('The owner needs to link your login to your resident record. Tell them your mobile number and they can fix it in a minute.'))}</p>
+    <div class="nr-a">${ph ? `<a class="btn primary" href="tel:${esc(ph)}">${ico('phone', 'sm')} ${esc(t('Call the owner'))}</a><a class="btn wa" href="https://wa.me/91${esc(ph)}" target="_blank" rel="noopener">${ico('wa', 'sm')} WhatsApp</a>` : ''}${btn('Try again', 'syncnow', '', '', 'sync')}${btn('Log out', 'logout', '', 'ghost', 'logout')}</div></div></div>`;
+}
 
 PAGES['r-home'] = {
   title: 'Home', ...resOnly,
   render() {
     if (!orgEnabled('residentApp')) return `<div class="card">${empty('Resident app is not enabled', 'Please contact the PG owner.')}</div>`;
     const r = meRes(); if (!r) return noRecord();
+    setTimeout(resumeUpiAwait, 600);
     const due = resDue(r.id), open = openInv(r.id), p = S().pay;
     const pending = Store.all('claim').filter(c => c.resId === r.id && c.status === 'pending');
     const next = meals().find(m => nowMinutes() < minutes(m.time));
@@ -21,11 +36,23 @@ PAGES['r-home'] = {
     const task = hkTasks().filter(x => x.roomId === r.roomId && x.date >= today()).sort(by('date'))[0];
     const agr = typeof getActiveAgreement === 'function' ? getActiveAgreement(r.id) : null;
     return `<div class="narrow stack">
-      <div style="margin-top:6px"><h2 style="font-size:28px">${esc(t('Hi {n}', { n: r.name.split(' ')[0] }))} 👋</h2><p class="muted">${esc(hostelName())} · ${t('Room')} ${esc(roomName(r.roomId))}-${esc(r.bed)}</p></div>
+      ${homeHero({
+        name: r.name.split(' ')[0], sub: `${esc(hostelName())}<br>${esc(t('Room'))} ${esc(roomName(r.roomId))}-${esc(r.bed)}`,
+        cards: [
+          { l: due ? 'Amount due' : 'All paid', icon: 'wallet', v: inr(due), tone: due ? 'bad' : 'ok', s: esc(due ? t('{n} open bills', { n: open.length }) : t('Nothing to pay')) },
+          { l: 'Next meal', icon: 'utensils', v: next ? esc(mealName(next.k)) : '-', tone: '', s: esc(next ? fmtTime(next.time) : t('No more meals today')), to: 'r-meals' },
+        ],
+        strip: [
+          { icon: 'bed', v: `${esc(roomName(r.roomId))}-${esc(r.bed)}`, l: 'Your room' },
+          { icon: 'file', v: open.length, l: 'Open bills' },
+          { icon: 'broom', v: task ? esc(task.date === today() ? t('Today') : fmtShort(task.date)) : '-', l: 'Next cleaning' },
+        ],
+      })}
       <div class="hero ${due ? '' : 'ok'}"><div class="muted sm">${esc(t(due ? 'Amount due' : 'All paid'))}</div><div class="big">${inr(due)}</div>
-        ${pending.length ? `<div class="sm" style="margin-top:6px">⏳ ${esc(t('{a} payment waiting for owner to verify', { a: inr(sum(pending, c => c.amount)) }))}</div>` : ''}
+        ${pending.length ? `<div class="sm" style="margin-top:6px">${esc(t('{a} payment waiting for owner to verify', { a: inr(sum(pending, c => c.amount)) }))}</div>` : ''}
         ${due ? `<div class="row" style="margin-top:14px"><button class="btn primary" data-act="rcfpay">${ico('rupee', 'sm')} ${esc(t('Pay with UPI'))}</button><button class="btn" data-act="rqr">${ico('qr', 'sm')} QR</button><button class="btn" data-act="rclaim">${ico('check', 'sm')} ${esc(t('I have paid'))}</button></div>` : ''}</div>
-      ${feeNotices.length ? group('Fees & Billing Notices', feeNotices.map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok'), act: 'rviewinv', attrs: `data-id="${fn.invId || fn.id || ''}"` })).join('')) : (open.length ? group('Bill details', open.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : 'rupee', ic: invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title, d: `${t('due')} ${fmtShort(i.due)}`, end: `<b>${inr(invBal(i))}</b>`, act: 'rviewinv', attrs: `data-id="${i.id}"` })).join('')) : '')}
+      ${(() => { const cl = Store.all('claim').filter(c => c.resId === r.id && (c.status !== 'approved' || (c.ts || '') > addDays(today(), -7))).sort(by('ts', -1)).slice(0, 4); return cl.length ? group('My payment confirmations', cl.map(c => li({ icon: c.status === 'approved' ? 'check' : c.status === 'rejected' ? 'alert' : 'clock', ic: c.status === 'approved' ? 'ok' : c.status === 'rejected' ? 'bad' : 'warn', t: `${inr(c.amount)} · UTR ${c.utr}`, d: c.status === 'rejected' ? `${t('Not verified')}: ${c.reason || ''}` : c.status === 'approved' ? t('Confirmed by the owner · receipt in Transaction history') : t('Waiting for the owner to check the UTR and screenshot'), end: badge(c.status === 'approved' ? 'Confirmed' : c.status === 'rejected' ? 'Rejected' : 'Waiting', c.status === 'approved' ? 'ok' : c.status === 'rejected' ? 'bad' : 'warn'), chev: false })).join('')) : ''; })()}
+      ${feeNotices.some(fn => fn.balance > 0) ? group('Fees & Billing Notices', feeNotices.filter(fn => fn.balance > 0).map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok'), act: 'rviewinv', attrs: `data-id="${fn.invId || fn.id || ''}"` })).join('')) : (open.length ? group('Bill details', open.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : 'rupee', ic: invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title, d: `${t('due')} ${fmtShort(i.due)}`, end: `<b>${inr(invBal(i))}</b>`, act: 'rviewinv', attrs: `data-id="${i.id}"` })).join('')) : '')}
       ${orgEnabled('electricity') ? (() => {
         const elecCfg = S().elec || {};
         const scanRole = elecCfg.scanRole || 'both';
@@ -67,37 +94,63 @@ PAGES['r-home'] = {
             ic: 'ok',
             t: t('Room meter reading recorded'),
             d: t('Reading of {u} units recorded on {d} · Billed for {m}', { u: num(last.curr), d: fmtShort(last.date), m: fmtYM(curYM) }),
-            act: elecInv ? 'rviewinv' : '',
-            attrs: elecInv ? `data-id="${elecInv.id}"` : '',
-            chev: !!elecInv,
-            end: badge('Billed & View Split', 'ok')
+            act: 'relec',
+            end: badge('Billed', 'ok')
           }));
         }
 
         return group('Room electricity meter', li({
           icon: 'bolt',
           ic: 'warn',
-          t: t('Submit room meter reading'),
-          d: last ? t('Snap photo of Room {r}\'s meter (last reading: {u} on {d})', { r: roomName(r.roomId), u: num(last.curr), d: fmtShort(last.date) }) : t('Snap photo of Room {r}\'s meter to record reading', { r: roomName(r.roomId) }),
-          act: 'rmeterscan',
+          t: t('Enter room meter reading'),
+          d: last ? t('Type Room {r}\'s meter reading (last: {u} on {d})', { r: roomName(r.roomId), u: num(last.curr), d: fmtShort(last.date) }) : t('Type Room {r}\'s meter reading', { r: roomName(r.roomId) }),
+          act: 'rmeterread',
           end: badge('Action needed', 'warn')
         }));
       })() : ''}
+      ${orgEnabled('electricity') ? (() => { const mine = resElecReadings(r.id); if (!mine.length) return ''; const m = mine[0], sh = m.shares.find(x => x.resId === r.id);
+        return group('', li({ icon: 'bolt', ic: 'tn3', t: t('My electricity'), d: t('Last bill {a} · reading of {d}', { a: inr(sh.amount), d: fmtShort(m.date) }), act: 'relec', end: `<b>${inr(sh.amount)}</b>` })); })() : ''}
       ${agr ? group('Rental agreement', li({ icon: 'file', ic: 'ok', t: `${t('Rental agreement')} (v${agr.version})`, d: `${fmtDate(agr.startDate)} – ${fmtDate(agr.endDate)} · ${inr(agr.rent)}/mo`, act: 'agrview', attrs: `data-id="${agr.id}"` })) : ''}
       ${orgEnabled('mess') && next ? `<div class="card"><h3>${ico('utensils', 'sm')} ${esc(mealName(next.k))} · ${fmtTime(next.time)}<span class="sp"></span><a class="sm" href="/r-meals">${esc(t('All meals'))}</a></h3>${mealRow(r, today(), next)}</div>` : ''}
       ${orgEnabled('housekeeping') && task ? group('Room cleaning', li({ icon: 'broom', ic: task.status === 'done' ? 'ok' : 'info', t: task.date === today() ? t('Today') : fmtDate(task.date), d: `${task.schedName || ''}${task.time ? ' · ' + fmtTime(task.time) : ''} · ${t(HK_STAT[task.status][0])}`, act: 'go', attrs: 'data-to="r-clean"' })) : ''}
       ${attOn() ? (() => { const m = attMonth(r.id, ymOf(today())); return group('My attendance', li({ icon: 'check', ic: m.absent ? 'warn' : 'ok', t: t('{n} days present', { n: m.present }), d: m.absent ? t('{n} days marked absent in {m}: {d}', { n: m.absent, m: fmtYM(ymOf(today())), d: m.absentDays.join(', ') }) : t('Nothing marked absent in {m}', { m: fmtYM(ymOf(today())) }), chev: false })); })() : ''}
-      ${generalNotices.length ? group('General Notices', generalNotices.slice(0, 3).map(n => li({ icon: 'megaphone', ic: 'teal', t: n.title, d: n.body })).join('')) : ''}
-      ${group('Recent payments', Store.all('pay').filter(x => x.resId === r.id).sort(by('date', -1)).slice(0, 4).map(x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: `${fmtDate(x.date)} · ${x.mode.toUpperCase()}`, act: 'receipt', attrs: `data-id="${x.id}"` })).join(''))}
+      ${generalNotices.length ? `<div class="group-t">${esc(t('General Notices'))}</div>${noticeCards(generalNotices.slice(0, 3), r)}` : ''}
+      ${group('Transaction history', Store.all('pay').filter(x => x.resId === r.id).sort(by('date', -1)).slice(0, 4).map(x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: `${fmtDate(x.date)} · ${x.mode.toUpperCase()}`, act: 'receipt', attrs: `data-id="${x.id}"` })).join(''))}
     </div>`;
   },
 };
 A.rqr = () => {
-  const r = meRes(), due = resDue(r.id), uri = upiUri(due, `${r.name} ${roomName(r.roomId)}`);
+  const r = meRes(), due = resDue(r.id);
+  if (!(due > 0)) return toast(t('No dues to pay'), 'ok');
+  if (!S().pay.upiId) return toast(t('The owner has not added a UPI ID yet. Please pay the owner directly.'), 'bad');
+  const note = `${r.name.split(' ')[0]} Rm ${roomName(r.roomId)} ${fmtYM(ymOf(today()))}`, uri = upiUri(due, note);
   const hId = Store.hostelId || (Store.hostel() || {}).id;
   const payUrl = `${location.origin}/pay.html?hostel_id=${hId}&res_id=${r.id}&am=${due}`;
-  sheet('Scan & pay', `<div class="qr">${qrSvg(uri, 6)}</div><p style="text-align:center;margin-top:12px"><b style="font-size:22px">${inr(due)}</b><br><span class="muted">${esc(S().pay.payee || hostelName())} · ${esc(S().pay.upiId)}</span></p><div class="row" style="margin-top:14px;justify-content:center"><a class="btn primary sm" href="${esc(payUrl)}" target="_blank" rel="noopener">${ico('rupee', 'sm')} Open Online Pay Portal</a></div><p class="hint" style="text-align:center;margin-top:8px">${esc(t('Scan with any UPI app, or pay online with instant receipt.'))}</p>`, { foot: `<button class="btn primary block" data-act="rclaim">${esc(t('I have paid'))}</button>` });
+  const open = openInv(r.id);
+  sheet(t('Pay {a}', { a: inr(due) }), `<div class="qr">${qrSvg(uri, 6)}</div>
+    <p style="text-align:center;margin:10px 0 2px"><b style="font-size:24px">${inr(due)}</b><br><span class="muted">${esc(S().pay.payee || hostelName())} · ${esc(S().pay.upiId)}</span></p>
+    ${open.length ? `<div class="group" style="margin-top:10px">${open.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : 'rupee', ic: 'tn0', t: i.title, end: `<b>${inr(invBal(i))}</b>`, chev: false })).join('')}</div>` : ''}
+    <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap;justify-content:center">${/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ? `<a class="btn primary" data-act="rupiopen" href="${esc(uri)}">${ico('rupee', 'sm')} ${esc(t('Open my UPI app'))}</a>` : `<p class="hint" style="width:100%;text-align:center;margin:0">${esc(t('On a computer, scan the QR with your phone\'s UPI app.'))}</p>`}${orgEnabled('cashfree') ? `<a class="btn" href="${esc(payUrl)}" target="_blank" rel="noopener">${esc(t('Online pay page'))}</a>` : ''}</div>
+    <p class="hint" style="text-align:center;margin-top:10px">${esc(t('The amount and the UPI ID of the owner are already filled in. After paying, come back here and add the UTR and a screenshot - both are needed so the owner can confirm.'))}</p>`,
+    { foot: `<button class="btn primary block" data-act="rclaim">${esc(t('I have paid'))}</button>` });
 };
+// Came back from the UPI app: bring up the proof form (UTR + screenshot) straight away
+let upiAwait = null;
+A.rupiopen = () => { upiAwait = { at: Date.now(), amount: resDue((meRes() || {}).id) }; try { LS.set('hostelos.upiwait', JSON.stringify(upiAwait)); } catch (e) { /* ignore */ } };
+// the page was unloaded while the UPI app was open: ask once on return
+function resumeUpiAwait() {
+  let w; try { w = JSON.parse(LS.get('hostelos.upiwait') || 'null'); } catch (e) { w = null; }
+  if (!w) return; LS.set('hostelos.upiwait', '');
+  if (Date.now() - w.at > 30 * 60e3 || Date.now() - w.at < 4000 || upiAwait) return;
+  if (!(resDue((meRes() || {}).id) > 0)) return;
+  setTimeout(() => A.rclaim(null, null, w.amount), 500);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !upiAwait) return;
+  const w = upiAwait; upiAwait = null; try { LS.set('hostelos.upiwait', ''); } catch (e) { /* ignore */ }
+  if (Date.now() - w.at < 4000) return;           // bounced straight back: nothing was paid
+  setTimeout(() => A.rclaim(null, null, w.amount), 300);
+});
 
 A.rviewinv = el => {
   const invId = el.dataset.id;
@@ -116,24 +169,13 @@ A.rviewinv = el => {
     if (elecInv) {
       const m = Store.get(elecInv.meterId) || Store.all('meter').find(x => x.id === elecInv.meterId || (elecInv.id && elecInv.id.includes(x.id))) || lastMeter(elecInv.roomId || r.roomId);
       const s = m && (m.shares || []).find(x => x.resId === elecInv.resId || x.resId === r.id);
-      if (m) {
-        elecDetailsHtml = `
-          <div class="card" style="background:var(--subtle);padding:10px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--line);font-size:12.5px;line-height:1.5">
-            <div style="font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between">
-              <span>⚡ ${esc(t('Electricity Meter Split'))}</span>
-              <b class="ok-t">${inr(elecInv.amount)}</b>
-            </div>
-            <div>${esc(t('Room Readings'))}: <b>${num(m.prev)} → ${num(m.curr)}</b> (${num(m.units)} ${t('units')})</div>
-            ${s ? `<div class="muted xs" style="margin-top:2px">${esc(t('Resident share'))}: ${num(s.units)} units - ${num(s.free)} free quota = <b>${num(s.billable)} billable units</b> @ ₹${m.rate || S().elec.rate}/unit</div>` : ''}
-          </div>
-        `;
-      }
+      if (m && s) elecDetailsHtml = `<div style="margin-bottom:12px">${elecShareCard(m, s, { title: t('Electricity Meter Split'), sub: `${t('Room Readings')}: ${num(m.prev)} → ${num(m.curr)} (${num(m.units)} ${t('units')})` })}</div>`;
     }
 
     const html = `
       <div class="card" style="font-size:13px;line-height:1.6">
         <div style="text-align:center;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px">
-          <div style="font-size:24px;margin-bottom:4px">📑</div>
+          
           <h3 style="margin:0">${esc(t('Fee Notice & Bills · {m}', { m: fmtYM(ym) }))}</h3>
           <span class="muted xs">${esc(hostelName())} · ${esc(roomName(r.roomId))}-${esc(r.bed)}</span>
         </div>
@@ -188,7 +230,7 @@ A.rviewinv = el => {
     const html = `
       <div class="card" style="font-size:13px;line-height:1.6">
         <div style="text-align:center;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px">
-          <div style="font-size:24px;margin-bottom:4px">⚡</div>
+          
           <h3 style="margin:0">${esc(t('Electricity Bill Statement'))}</h3>
           <span class="muted xs">${esc(t('Room'))} ${esc(roomName(inv.roomId || (r && r.roomId)))} · ${fmtDate(toDate)}</span>
         </div>
@@ -218,7 +260,7 @@ A.rviewinv = el => {
 
         <div style="text-align:center;margin-top:10px">
           <button type="button" class="btn xs ghost" data-act="elecsplitinfo" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);padding:4px 10px;border-radius:16px;border:1px solid var(--line);background:var(--subtle)">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;font-size:10px">i</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--accent-solid);color:#fff;font-weight:700;font-size:10px">i</span>
             <span>${esc(t('How is this bill calculated?'))}</span>
           </button>
         </div>
@@ -263,6 +305,8 @@ A.rcfpay = async () => {
   if (!due || due <= 0) return toast(t('No dues to pay'), 'ok');
   const h = Store.hostel();
   if (!h || !h.id) return toast(t('Hostel information missing'), 'bad');
+  // No online gateway (demo, or the owner has not set one up): the direct UPI link and QR with the exact amount are the way to pay
+  if (!CLOUD || !orgEnabled('cashfree')) return A.rqr();
 
   sheet(t('Pay dues with UPI'), `<div class="card" style="text-align:center;padding:24px 16px"><div class="spin"></div><p style="margin-top:12px" class="muted">${esc(t('Opening Cashfree UPI checkout...'))}</p></div>`);
   try {
@@ -279,7 +323,7 @@ A.rcfpay = async () => {
     const j = await res.json();
     if (!j || !j.ok) {
       closeModal();
-      return toast(j?.error || 'Could not create payment order', 'bad');
+      return S().pay.upiId ? A.rqr() : toast(j?.error || 'Could not create payment order', 'bad');
     }
     const payUrl = `/pay.html?order_id=${encodeURIComponent(j.order_id)}`;
     const payWindow = window.open(payUrl, '_blank');
@@ -291,46 +335,66 @@ A.rcfpay = async () => {
     }
   } catch (err) {
     closeModal();
+    if (S().pay.upiId) return A.rqr();
     toast('Failed to reach payment gateway: ' + err.message, 'bad');
   }
 };
 // Resident reports a UPI payment; owner verifies with one tap in Approvals.
-A.rclaim = () => {
+A.rclaim = (el, ev, amount) => {
   const r = meRes();
   formModal({
     title: 'I have paid', submit: 'Send to owner',
-    note: t('Enter the 12-digit UPI reference (RRN) or bank UTR / transaction ID. The owner verifies it and you get a receipt.'),
-    fields: [{ name: 'amount', label: 'Amount paid (₹)', type: 'number', min: 1, value: resDue(r.id) || '', required: true }, { name: 'utr', label: 'UTR / transaction ID', inputmode: 'text', autocapitalize: 'characters', required: true, pattern: /^[A-Za-z0-9_-]{6,35}$/ }, { name: 'date', label: 'Paid on', type: 'date', value: today() }, { name: 'proof', label: 'Payment screenshot (optional)', type: 'file', accept: 'image/*' }],
+    note: t('Both are needed: the 12-digit UPI reference (UTR) from your UPI app, and a screenshot of the successful payment. The owner checks them and you get a receipt.'),
+    fields: [{ name: 'amount', label: 'Amount paid (₹)', type: 'number', min: 1, max: 10000000, value: amount || resDue(r.id) || '', required: true }, { name: 'utr', label: 'UTR / transaction ID', inputmode: 'text', autocapitalize: 'characters', required: true, pattern: /^[A-Za-z0-9_-]{6,35}$/ }, { name: 'date', label: 'Paid on', type: 'date', value: today(), required: true }, { name: 'proof', label: 'Payment screenshot', type: 'file', accept: 'image/*', required: true }],
     onSubmit: v => {
-      const utrStr = String(v.utr || '').trim();
+      if (!(+v.amount >= 1) || +v.amount > 10000000) return t('Enter the amount you paid (₹1 to ₹1,00,00,000)');
+      if (v.date > today()) return t('The date cannot be in the future');
+      if (v.date < addDays(today(), -60)) return t('This payment is more than 60 days old. Please ask the owner to record it.');
+      const utrStr = String(v.utr || '').trim().replace(/\s+/g, '').toUpperCase();
       const refInfo = classifyPaymentRef(utrStr);
       if (!refInfo.valid) return refInfo.reason;
-      if (Store.all('claim').some(c => c.utr === utrStr && c.status !== 'rejected')) return 'This UTR was already submitted';
+      if (Store.all('claim').some(c => String(c.utr || '').toUpperCase() === utrStr && c.status !== 'rejected') || Store.all('pay').some(p => String(p.ref || '').toUpperCase() === utrStr && !p.reversed)) return 'This UTR was already submitted';
       const saveIt = proofUrl => {
         Store.put('claim', { resId: r.id, roomId: r.roomId, amount: v.amount, utr: utrStr, refType: refInfo.type, date: v.date, status: 'pending', proofUrl: proofUrl || null, ts: nowIso() });
         notify({ to: 'admin', title: t('UPI payment to verify'), body: `${r.name} · ${inr(v.amount)} (${refInfo.label})`, link: 'inbox' });
         toast('Sent. You will get a receipt once verified.');
-        closeModal();
+        closeModal(); render();
       };
-      if (v.proof && v.proof[0]) {
-        const reader = new FileReader();
-        reader.onload = ev => saveIt(ev.target.result);
-        reader.readAsDataURL(v.proof[0]);
-        return false;
-      }
-      saveIt(null);
+      if (!(v.proof && v.proof[0])) return t('Add the payment screenshot');
+      // the screenshot is shrunk before it is stored, so a month of payments never fills the storage
+      compressImage(v.proof[0], 1000, 0.6).then(f => { const reader = new FileReader(); reader.onload = ev => saveIt(ev.target.result); reader.readAsDataURL(f); });
+      return false;
     },
   });
 };
 
+// General notices are phone-notification cards: swipe one away and it stays hidden for this resident (restore link below).
+const hiddenNotices = rid => { try { return JSON.parse(LS.get('hostelos.hidn.' + rid) || '[]'); } catch (e) { return []; } };
+function noticeCards(list, r) {
+  const hid = hiddenNotices(r.id), shown = list.filter(n => !hid.includes(n.id));
+  const cards = shown.map(n => swipeCard({ act: 'rnoticehide', id: n.id, icon: 'megaphone', pinned: n.pinned, title: n.title, body: n.body, time: fmtShort(n.date), label: 'Dismiss' })).join('');
+  const back = hid.length && list.some(n => hid.includes(n.id)) ? `<button type="button" class="btn sm ghost" data-act="rnoticeshow">${esc(t('Show dismissed notices'))}</button>` : '';
+  return cards || back ? `<div class="swp-list fold-list">${cards}</div>${back}` : `<div class="card muted">${esc(t('No general notices in the last 30 days.'))}</div>`;
+}
+A.rnoticehide = el => { const r = meRes(); if (!r) return; const hid = hiddenNotices(r.id); if (!hid.includes(el.dataset.id)) hid.push(el.dataset.id); LS.set('hostelos.hidn.' + r.id, JSON.stringify(hid.slice(-100))); render(); toast(t('Notice dismissed'), 'ok', { label: 'Undo', run: () => { LS.set('hostelos.hidn.' + r.id, JSON.stringify(hiddenNotices(r.id).filter(x => x !== el.dataset.id))); render(); } }); };
+A.rnoticeshow = () => { const r = meRes(); if (!r) return; LS.set('hostelos.hidn.' + r.id, '[]'); render(); };
 function mealRow(r, date, m) {
-  const sk = !!Store.get(skipId(r.id, date, m.k)), tf = !!Store.get(tiffinId(r.id, date, m.k));
+  const sk = skippedOn(r.id, date, m.k), tf = tiffinOn(r.id, date, m.k), byPlan = (tf && !Store.get(tiffinId(r.id, date, m.k))) || (sk && !Store.get(skipId(r.id, date, m.k)));
   const open = beforeCutoff(date, m.k, 'skip'), topen = beforeCutoff(date, m.k, 'tiffin'), leave = onLeave(r.id, date);
-  const ds = dishesFor(date, m.k).map(d => d.name).join(', ');
-  const mess = S().mess;
-  return `<div class="meal"><div class="body"><b>${esc(mealName(m.k))}</b> <span class="hint">${fmtTime(m.time)}</span><div class="sm muted">${esc(ds || t('Menu not set'))}</div>
-    <div class="xs muted">${leave ? esc(t('You are on leave')) : sk ? esc(t('Skipped')) : tf ? esc(t('Tiffin will be packed')) : esc(t('You are eating'))}${!open && !leave ? ' · ' + esc(t('locked')) : ` · ${esc(t('change till {t}', { t: `${fmtTime(m.cutoff)}${m.prev ? ' ' + t('previous day') : ''}` }))}`}</div></div>
-    ${leave || r.food === false ? '' : `<div class="row nw" style="gap:6px">${mess.tiffin ? `<button class="btn sm ${tf ? 'primary' : ''}" data-act="rtif" data-date="${date}" data-meal="${m.k}" ${topen ? '' : 'disabled'}>${ico('pack', 'sm')}${esc(t('Tiffin'))}</button>` : ''}${mess.skip ? `<button class="btn sm ${sk ? 'bad' : ''}" data-act="rskip" data-date="${date}" data-meal="${m.k}" ${open ? '' : 'disabled'}>${ico('skip', 'sm')}${esc(t(sk ? 'Skipped' : 'Skip'))}</button>` : ''}</div>`}</div>`;
+  const dishes = dishesFor(date, m.k).map(d => d.name);
+  const mess = S().mess, hr = +String(m.time || '12').slice(0, 2);
+  const icn = hr < 11 ? 'sun' : hr < 17 ? 'utensils' : 'moon';
+  const [cls, label] = leave ? ['info', 'On leave'] : sk ? ['bad', 'Skipped'] : tf ? ['warn', 'Tiffin'] : ['ok', 'Eating'];
+  const acts = leave || r.food === false ? '' : `<div class="mealc-acts">${mess.tiffin ? `<button class="btn sm ${tf ? 'primary' : ''}" data-act="rtif" data-date="${date}" data-meal="${m.k}" aria-pressed="${tf}" title="${esc(tf ? t('Tap to cancel the tiffin for this day') : t('Tap to take a tiffin this day'))}" ${topen ? '' : 'disabled'}>${ico('pack', 'sm')}${esc(t('Tiffin'))}${tf ? ' ' + ico('check', 'xs') : ''}</button>` : ''}${mess.skip ? `<button class="btn sm ${sk ? 'bad' : ''}" data-act="rskip" data-date="${date}" data-meal="${m.k}" ${open ? '' : 'disabled'}>${ico('skip', 'sm')}${esc(t(sk ? 'Skipped' : 'Skip'))}</button>` : ''}</div>`;
+  const planTag = byPlan ? `<span class="mealc-plan">${ico('cal', 'xs')} ${esc(t('From your weekly plan'))}</span>` : '';
+  const when = leave ? '' : open
+    ? `<span class="mealc-when">${ico('clock', 'sm')}${esc(t('Change till {t}', { t: `${fmtTime(m.cutoff)}${m.prev ? ' ' + t('previous day') : ''}` }))}</span>`
+    : `<span class="mealc-when lock">${ico('lock', 'sm')}${esc(t('Locked'))}</span>`;
+  return `<div class="mealc ${sk ? 'is-skip' : ''}">
+    <div class="mealc-top"><span class="mealc-ic">${ico(icn)}</span><div class="mealc-t"><b>${esc(mealName(m.k))}</b><span>${fmtTime(m.time)}</span></div><span class="badge ${cls}">${esc(t(label))}</span></div>
+    <div class="mealc-dishes">${dishes.length ? dishes.map(x => `<i>${esc(x)}</i>`).join('') : `<em>${esc(t('Menu not set'))}</em>`}</div>
+    ${planTag}<div class="mealc-foot">${when}${acts}</div>
+  </div>`;
 }
 PAGES['r-meals'] = {
   title: 'Meals', ...resMod('mess'),
@@ -338,20 +402,74 @@ PAGES['r-meals'] = {
     const r = meRes(); if (!r) return noRecord();
     const date = ui.flt.rmd || today();
     const leaves = Store.all('leave').filter(l => l.resId === r.id && l.to >= today());
-    return `<div class="narrow">${head('Meals', t('Skip a meal or order a tiffin before the cut-off time.'))}
+    return `<div class="narrow">${head('Meals')}
       <div class="days7" style="margin-bottom:14px">${[...Array(7)].map((_, i) => addDays(today(), i)).map(d => `<button class="${d === date ? 'on' : ''}" data-act="setflt" data-k="rmd" data-v="${d}"><span>${DAYS()[parse(d).getDay()]}</span><b>${parse(d).getDate()}</b></button>`).join('')}</div>
       ${r.food === false ? `<div class="note">${esc(t('You are not on the mess plan.'))}</div>` : ''}
-      <div class="group">${meals().map(m => mealRow(r, date, m)).join('')}</div>
+      ${r.food !== false && (S().mess.tiffin || S().mess.skip) ? `<div class="group" style="margin-bottom:14px">${(() => { const tt = S().mess.tiffin !== false ? tifPlanText(r.id) : '', ss = S().mess.skip !== false ? tifPlanText(r.id, 'skipPlan') : ''; return `<div class="li tpl" data-act="rtifplan"><span class="ic warn">${ico('cal')}</span><span class="body"><span class="t">${esc(t('Weekly meal plan'))}</span>${tt || ss ? `${tt ? `<span class="tpl-l tif"><i></i>${esc(t('Tiffin'))} · ${esc(tt)}</span>` : ''}${ss ? `<span class="tpl-l skp"><i></i>${esc(t('Skip'))} · ${esc(ss)}</span>` : ''}` : `<span class="d">${esc(t('Set the days once - it happens every week'))}</span>`}</span><span class="end">${btn(tt || ss ? 'Edit' : 'Set', 'rtifplan', '', 'sm primary')}</span></div>`; })()}${S().mess.tiffin ? li({ icon: 'edit', ic: 'warn', t: t('My tiffin note'), d: tifNoteOf(r.id) || t('Tell the kitchen how to pack it - set once, used every time'), act: 'rtifnote', end: btn(tifNoteOf(r.id) ? 'Edit' : 'Add', 'rtifnote', '', 'sm') }) : ''}</div>` : ''}
+      <div class="mealc-day">${date === today() ? `<span class="badge ok">${esc(t('Today'))}</span>` : ''}<b>${esc(fmtDate(date))}</b></div>
+      <div class="mealc-list">${meals().map(m => mealRow(r, date, m)).join('')}</div>
       ${group('Going home? (leave)', [...leaves.map(l => li({ icon: 'cal', ic: 'info', t: `${fmtDate(l.from)} – ${fmtDate(l.to)}`, d: l.reason || '', end: l.from > today() ? btn('', 'rleavedel', `data-id="${l.id}" aria-label="${esc(t('Delete'))}"`, 'sm', 'trash') : '' })), li({ icon: 'plus', ic: 'ok', t: t('Add leave — all meals off'), act: 'rleave' })].join(''))}</div>`;
   },
 };
 A.rskip = el => { try { const on = toggleSkip(ctx().refId, el.dataset.date, el.dataset.meal); haptic(); toast(on ? 'Meal skipped' : 'Meal back on'); } catch (e) { toast(e.message, 'bad'); } render(); };
+A.rtifnote = () => { const r = meRes(); if (!r) return; formModal({ title: 'My tiffin note', note: t('One short line. The cook sees your name with this note on every tiffin you order.'), fields: [{ name: 'note', label: 'How should it be packed?', value: tifNoteOf(r.id), maxlength: TIF_NOTE_MAX, placeholder: t('e.g. 3 roti, dry sabzi, no curd'), full: true }], onSubmit: v => { setTifNote(r.id, v.note); toast('Saved'); } }); };
+// The weekly plan editor: two tabs (Tiffin / Skip), meals down the side, weekdays across. A meal on a day can be
+// tiffin OR skip, never both: ticking one clears the other.
+const tpIcon = m => { const hr = +String(m.time || '12').slice(0, 2); return hr < 11 ? 'sun' : hr < 17 ? 'utensils' : 'moon'; };
+function tpPanes(p) {
+  const pane = (kind, pre, plan, tone) => `<div class="tp-pane ${kind === 'tp' ? 'on' : ''}" data-p="${kind}">${meals().map(m => `<div class="tpr ${tone}"><div class="tpr-h"><span class="tpr-ic">${ico(tpIcon(m), 'sm')}</span><div class="tpr-t"><b>${esc(mealName(m.k))}</b><small>${esc(fmtTime(m.time))}</small></div><span class="tpq"><button type="button" data-act="tpset" data-p="wk">${esc(t('Mon-Fri'))}</button><button type="button" data-act="tpset" data-p="all">${esc(t('All'))}</button><button type="button" data-act="tpset" data-p="none">${esc(t('Clear'))}</button></span></div><div class="tpc-row">${TIF_PLAN_DAYS.map(d => `<label class="tpc"><input type="checkbox" name="${pre}_${m.k}_${d}" ${((plan || {})[d] || []).includes(m.k) ? 'checked' : ''}><span>${esc(DAYS()[d])}</span></label>`).join('')}</div></div>`).join('')}</div>`;
+  const tifOn = S().mess.tiffin !== false, skipOn = S().mess.skip !== false;
+  return `<div class="tp" data-on="${tifOn ? 'tp' : 'sp'}">
+    <div class="tp-tabs" role="tablist">${tifOn ? `<button type="button" class="tp-tab on" role="tab" data-act="tptab" data-t="tp">${ico('pack', 'sm')}<span>${esc(t('Tiffin'))}</span><i class="tp-n" data-n="tp">0</i></button>` : ''}${skipOn ? `<button type="button" class="tp-tab ${tifOn ? '' : 'on'}" role="tab" data-act="tptab" data-t="sp">${ico('x', 'sm')}<span>${esc(t('Skip'))}</span><i class="tp-n" data-n="sp">0</i></button>` : ''}<span class="tp-ink"></span></div>
+    ${tifOn ? pane('tp', 'tp', p && p.plan, 'tif') : ''}${skipOn ? pane('sp', 'sp', p && p.skipPlan, 'skp') : ''}
+  </div>`;
+}
+function tpRefresh(root0) {
+  const root = (root0.closest && root0.closest('.tp')) || root0.querySelector('.tp') || root0;
+  const q = pre => $$(`input[name^="${pre}_"]:checked`, root).length;
+  const nt = q('tp'), ns = q('sp');
+  $$('.tp-n[data-n="tp"]', root).forEach(e => { e.textContent = nt; e.classList.toggle('z', !nt); });
+  $$('.tp-n[data-n="sp"]', root).forEach(e => { e.textContent = ns; e.classList.toggle('z', !ns); });
+}
+A.rtifplan = el => {
+  const r = meRes(); if (!r) return;
+  const p = tifPlanOf(r.id);
+  formModal({
+    title: 'My weekly meal plan', submit: 'Save plan', wide: true,
+    fields: [{ type: 'html', html: tpPanes(p) }],
+    onSubmit: (v, f) => {
+      const plan = {}, skip = {};
+      $$('input[name^="tp_"]:checked', f).forEach(i => { const [, k, d] = i.name.split('_'); (plan[+d] = plan[+d] || []).push(k); });
+      $$('input[name^="sp_"]:checked', f).forEach(i => { const [, k, d] = i.name.split('_'); (skip[+d] = skip[+d] || []).push(k); });
+      setTifPlan(r.id, S().mess.tiffin !== false ? plan : undefined, S().mess.skip !== false ? skip : undefined);
+      toast(Object.keys(plan).length || Object.keys(skip).length ? t('Weekly plan saved') : t('Weekly plan cleared'), 'ok'); render();
+    },
+  });
+  setTimeout(() => { const m = $('.modal') || document; tpRefresh(m); if (el && el.dataset && el.dataset.tab === 'sp') { const b = $('.tp-tab[data-t="sp"]', m); if (b) A.tptab(b); } }, 30);
+};
+A.tptab = el => {
+  const root = el.closest('.tp'); if (!root) return;
+  root.dataset.on = el.dataset.t;
+  $$('.tp-tab', root).forEach(b => b.classList.toggle('on', b === el));
+  $$('.tp-pane', root).forEach(x => x.classList.toggle('on', x.dataset.p === el.dataset.t));
+};
+A.tpset = el => {
+  const row = el.closest('.tpr'), p = el.dataset.p;
+  $$('input[type=checkbox]', row).forEach((i, k) => { const d = TIF_PLAN_DAYS[k], on = p === 'all' ? true : p === 'wk' ? d >= 1 && d <= 5 : false; if (i.checked !== on) { i.checked = on; i.dispatchEvent(new Event('change', { bubbles: true })); } });
+};
+// tiffin and skip exclude each other on the same meal and day; the tab counters follow
+document.addEventListener('change', e => {
+  const i = e.target; if (!i || !i.matches || !i.matches('.tp .tpc input')) return;
+  if (i.checked) { const other = (i.name.startsWith('tp_') ? 'sp_' : 'tp_') + i.name.slice(3), o = i.closest('.tp').querySelector(`input[name="${other}"]`); if (o && o.checked) o.checked = false; }
+  tpRefresh(i.closest('.tp'));
+});
 A.rtif = el => { try { const on = toggleTiffin(ctx().refId, el.dataset.date, el.dataset.meal); haptic(); toast(on ? 'Tiffin ordered' : 'Tiffin cancelled'); } catch (e) { toast(e.message, 'bad'); } render(); };
 A.rleave = () => formModal({
   title: 'Add leave', note: t('Your meals are not counted on these days.'),
   fields: [{ name: 'from', label: 'From', type: 'date', value: addDays(today(), 1), required: true }, { name: 'to', label: 'To (including)', type: 'date', value: addDays(today(), 2), required: true }, { name: 'reason', label: 'Reason' }],
   onSubmit: v => {
-    if (v.to < v.from) return 'End date is before start date';
+    const lp = leaveProblem(meRes().id, v.from, v.to); if (lp) return lp;
+    if (v.from > addDays(today(), 180)) return t('Leave can be added at most 6 months ahead');
     if (v.from < today() || (v.from === today() && !beforeCutoff(today(), meals()[meals().length - 1].k, 'skip'))) return 'Leave must start from tomorrow';
     const r = meRes(); Store.put('leave', { resId: r.id, roomId: r.roomId, from: v.from, to: v.to, date: v.from, reason: v.reason }); notify({ to: 'admin', title: t('Resident on leave'), body: `${r.name}: ${fmtShort(v.from)} – ${fmtShort(v.to)}` }); toast('Leave saved');
   },
@@ -368,14 +486,14 @@ PAGES['r-clean'] = {
     const recent = tasks.filter(x => x.date <= today()).slice(0, 10);
     return `<div class="narrow">${head('Room cleaning', `${t('Room')} ${esc(roomName(r.roomId))}`)}
       ${group('Next cleaning', upcoming.map(u => li({ icon: 'cal', ic: 'info', t: u.d === today() ? t('Today') : fmtDate(u.d), d: `${u.s.name}${u.s.time ? ' · ' + fmtTime(u.s.time) : ''}` })).join('') || li({ icon: 'cal', ic: 'mute', t: t('No cleaning scheduled') }))}
-      ${group('Recent cleaning', recent.map(x => { const fb = Store.get(`hkf-${x.id}-${r.id}`); return `<div class="li"><span class="ic ${x.status === 'done' ? 'ok' : x.status === 'pending' ? '' : 'bad'}">${ico(x.status === 'done' ? 'check' : 'broom')}</span><span class="body"><span class="t">${x.date === today() ? esc(t('Today')) : fmtDate(x.date)} · ${esc(t(HK_STAT[x.status][0]))}</span><span class="d">${esc(x.staffName || '')}${x.reason ? ' · ' + esc(x.reason) : ''}${fb ? ' · ' + (fb.ok ? '👍 ' + esc(t('You confirmed')) : '👎 ' + esc(t('You reported an issue'))) : ''}</span></span><span class="end">${x.status === 'done' && !fb ? `${btn('👎', 'rfb', `data-id="${x.id}" data-ok="0" aria-label="${esc(t('Not satisfied'))}"`, 'sm bad')}${btn('👍 ' + t('OK'), 'rfb', `data-id="${x.id}" data-ok="1"`, 'sm ok')}` : ''}${x.status === 'pending' && canMarkHk(x) ? btn('Mark cleaned', 'rhkdone', `data-id="${x.id}"`, 'sm ok') : ''}${(x.status === 'missed' || x.status === 'not_cleaned') && !fb ? btn('Report', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad') : ''}</span></div>`; }).join(''), t('Your feedback goes straight to the owner.'))}</div>`;
+      ${group('Recent cleaning', recent.map(x => { const fb = Store.get(`hkf-${x.id}-${r.id}`); return `<div class="li hkrow"><span class="ic ${x.status === 'done' ? 'ok' : x.status === 'pending' ? '' : 'bad'}">${ico(x.status === 'done' ? 'check' : 'broom')}</span><span class="body"><span class="t">${x.date === today() ? esc(t('Today')) : fmtDate(x.date)} · ${esc(t(HK_STAT[x.status][0]))}</span><span class="d">${esc(x.staffName || '')}${x.reason ? ' · ' + esc(x.reason) : ''}${fb ? ' · ' + (fb.ok ? esc(t('You confirmed')) : esc(t('You reported an issue'))) : ''}</span></span><span class="end">${x.status === 'done' && !fb ? `${btn('Issue', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad', 'alert')}${btn('Satisfied', 'rfb', `data-id="${x.id}" data-ok="1"`, 'sm ok', 'check')}` : ''}${x.status === 'pending' && canMarkHk(x) ? btn('Mark cleaned', 'rhkdone', `data-id="${x.id}"`, 'sm ok') : ''}${(x.status === 'missed' || x.status === 'not_cleaned') && !fb ? btn('Report', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad') : ''}</span></div>`; }).join(''), t('Your feedback goes straight to the owner.'))}</div>`;
   },
 };
 A.rhkdone = el => { setHkStatus(el.dataset.id, 'done'); toast('Thanks — marked as cleaned'); render(); };
 A.rfb = el => {
   const ok = el.dataset.ok === '1', r = meRes();
   if (ok) { hkFeedback(el.dataset.id, r.id, true); toast('Thanks for confirming!'); render(); return; }
-  formModal({ title: 'What was wrong?', fields: [{ name: 'note', label: 'Tell the owner', type: 'textarea', required: true, full: true }], onSubmit: v => { hkFeedback(el.dataset.id, r.id, false, v.note); toast('Sent to owner'); } });
+  formModal({ title: 'What was wrong?', fields: [{ name: 'note', label: 'Tell the owner', type: 'textarea', required: true, full: true }], onSubmit: v => { if (String(v.note || '').trim().length < 3) return t('Please say what was wrong (a few words)'); hkFeedback(el.dataset.id, r.id, false, v.note.trim()); toast('Sent to owner'); } });
 };
 
 PAGES['r-laundry'] = {
@@ -405,9 +523,9 @@ PAGES['r-help'] = {
         d: [x.text, x.from ? `${fmtShort(x.from)}${x.to && x.to !== x.from ? ' – ' + fmtShort(x.to) : ''}` : '', ago(x.ts), x.reply ? `${t('Owner')}: ${x.reply}` : ''].filter(Boolean).join(' · '),
         end: x.status === 'seen' ? badge('Seen', 'ok') : badge('Sent'), chev: false,
       })).join(''), t('Unwell, going home, back late — anything the owner should know.')) : ''}
-      ${orgEnabled('complaints') ? group('My complaints', mine.map(c => li({ icon: 'wrench', ic: c.status === 'resolved' ? 'ok' : c.status === 'progress' ? 'warn' : 'bad', t: `${t(c.cat)} · ${t(c.status === 'resolved' ? 'Resolved' : c.status === 'progress' ? 'In progress' : 'Open')}`, d: `${c.text}${c.reply ? ' → ' + c.reply : ''} · ${ago(c.ts)}` })).join('')) : ''}
-      ${feeNotices.length ? group('Fees & Billing Notices (Last 3 Months)', feeNotices.map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok') })).join('')) : ''}
-      ${group('General Notices (Active 30 Days)', generalNotices.length ? generalNotices.map(n => li({ icon: 'megaphone', ic: 'teal', t: `${n.pinned ? '📌 ' : ''}${n.title}`, d: `${n.body} · ${fmtShort(n.date)}` })).join('') : `<div class="li noic"><span class="body muted">${esc(t('No general notices in the last 30 days.'))}</span></div>`)}
+      ${orgEnabled('complaints') ? group('My complaints', mine.map(c => li({ icon: 'wrench', ic: c.status === 'resolved' ? 'ok' : 'warn', t: `${t(c.cat)} · ${t(c.status === 'resolved' ? 'Resolved' : 'Open')}`, d: `${c.text}${c.reply ? ' → ' + c.reply : ''} · ${ago(c.ts)}`, end: c.status === 'resolved' ? '' : btn('Mark resolved', 'rcmpdone', `data-id="${c.id}"`, 'sm ok', 'check') })).join('')) : ''}
+      ${feeNotices.some(fn => fn.balance > 0) ? group('Fees & Billing Notices', feeNotices.filter(fn => fn.balance > 0).map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok') })).join('')) : ''}
+      <div class="group-t">${esc(t('General Notices (Active 30 Days)'))}</div>${noticeCards(generalNotices, r)}
       ${ph ? group('Contact owner', `${li({ icon: 'phone', ic: 'ok', t: t('Call'), end: `<a class="btn sm" href="tel:${esc(ph)}">${esc(ph)}</a>` })}${li({ icon: 'wa', ic: 'ok', t: 'WhatsApp', end: `<a class="btn sm wa" href="${esc(waUrl(ph, `Hi, ${r.name} (${roomName(r.roomId)}) here. `))}" target="_blank" rel="noopener">${esc(t('Chat'))}</a>` })}`) : ''}</div>`;
   },
 };
@@ -431,8 +549,8 @@ A.rtell = () => {
     },
   });
 };
-A.rcmp = () => { const r = meRes(); formModal({ title: 'New complaint', fields: [{ name: 'cat', label: 'Category', type: 'select', options: CMP_CATS }, { name: 'text', label: 'Problem', type: 'textarea', required: true, full: true }], onSubmit: v => { Store.put('cmp', { resId: r.id, roomId: r.roomId, cat: v.cat, text: v.text, status: 'open', date: today(), ts: nowIso(), src: 'resident' }); notify({ to: 'admin', title: t('New complaint'), body: `${roomName(r.roomId)} · ${t(v.cat)}`, link: 'complaints' }); toast('Complaint sent'); } }); };
-A.rmeterscan = () => {
+A.rcmp = () => { const r = meRes(); formModal({ title: 'New complaint', fields: [{ name: 'cat', label: 'Category', type: 'select', options: CMP_CATS }, { name: 'text', label: 'Problem', type: 'textarea', required: true, full: true, maxlength: 500 }], onSubmit: v => { const tx = String(v.text || '').trim(); if (tx.length < 5) return t('Describe the problem in a few words'); Store.put('cmp', { resId: r.id, roomId: r.roomId, cat: v.cat, text: tx.slice(0, 500), status: 'open', date: today(), ts: nowIso(), src: 'resident' }); notify({ to: 'admin', title: t('New complaint'), body: `${roomName(r.roomId)} · ${t(v.cat)}`, link: 'complaints' }); toast('Complaint sent'); } }); };
+A.rmeterread = () => {
   const r = meRes();
   if (!r || !r.roomId) {
     toast(t('No room assigned to your account.'), 'bad');
@@ -457,27 +575,21 @@ A.rmeterscan = () => {
   const prev = last ? last.curr : 0;
   const room = roomById(r.roomId);
   const reg = typeof getMeterForRoom === 'function' ? getMeterForRoom(r.roomId) : null;
-  const expectedCode = (reg && reg.qrCode) || (room ? `MTR-${room.no}` : `MTR-${r.roomId}`);
 
   formModal({
-    title: `${t('Scan room meter')} · ${roomName(r.roomId)}`,
+    title: `${t('Room meter reading')} · ${roomName(r.roomId)}`,
     note: `<div style="background:var(--card-subtle,#f8fafc);border:1px solid var(--line);border-radius:var(--r);padding:10px 14px;margin:4px 0 10px">
       <div class="row" style="justify-content:space-between;margin-bottom:6px">
         <span class="muted sm">${esc(t('Previous reading'))}:</span>
         <b style="font-size:15px;color:var(--text,#1e293b)">${num(prev)} ${esc(t('units'))}${last ? ` <span class="xs muted">(${fmtShort(last.date)})</span>` : ''}</b>
-      </div>
-      <div class="row" style="justify-content:space-between;margin-bottom:6px">
-        <span class="muted sm">${esc(t('Room meter sticker code'))}:</span>
-        <span class="badge sm info">🏷️ ${esc(expectedCode)}</span>
       </div>
       <div id="mlivecalc" style="font-size:12px;color:var(--text-mute,#64748b);border-top:1px dashed var(--line);padding-top:6px;margin-top:6px">
         ${esc(t('Enter current reading to calculate units consumed & bill'))}
       </div>
     </div>`,
     fields: [
-      { name: 'photo', label: 'Camera photo of meter display', type: 'file', accept: 'image/*', capture: true, required: true },
-      { name: 'qrCode', label: 'Meter sticker / QR code on meter', value: expectedCode, required: true, hint: t('Check sticker on Room {r}\'s meter: {c}', { r: roomName(r.roomId), c: expectedCode }) },
       { name: 'curr', label: 'Current meter reading', type: 'number', step: 0.1, min: 0, required: true },
+      { name: 'photo', label: 'Photo of the meter', type: 'file', accept: 'image/*', required: true, hint: t('A clear photo of the meter display, so the owner can check the reading.') },
       { name: 'isReplaced', label: 'Meter was recently replaced or reset to 0 (नया मीटर लगा या रीसेट हुआ)', type: 'checkbox', full: true },
       { name: 'replaceNote', label: 'Reason / Note for owner if meter was replaced', placeholder: 'e.g. Electrician installed new digital submeter yesterday', full: true, hidden: true }
     ],
@@ -492,7 +604,7 @@ A.rmeterscan = () => {
           if (isNaN(c) || vals.curr === '' || vals.curr == null) {
             calcEl.innerHTML = esc(t('Enter current reading to calculate units consumed & bill'));
           } else if (!vals.isReplaced && c < prev) {
-            calcEl.innerHTML = `<span style="color:var(--bad,#ef4444);font-weight:600">⚠️ ${esc(t('Current reading ({c}) is lower than previous ({p})! Reading cannot decrease. If meter was replaced, check the box below.', { c: num(c), p: num(prev) }))}</span>`;
+            calcEl.innerHTML = `<span style="color:var(--bad,#ef4444);font-weight:600">${esc(t('Current reading ({c}) is lower than previous ({p})! Reading cannot decrease. If meter was replaced, check the box below.', { c: num(c), p: num(prev) }))}</span>`;
           } else {
             const u = round2(vals.isReplaced ? c : (c - prev));
             const rate = S().elec.rate || 0;
@@ -528,31 +640,48 @@ A.rmeterscan = () => {
       if (isNaN(curr)) return t('Enter a valid non-negative reading');
       if (!v.isReplaced && curr < prev) return t('Current reading ({c}) cannot be less than previous reading ({p}). Check "Meter replaced/reset" if a new meter was installed.', { c: curr, p: prev });
 
-      const fraud = validateMeterReadingFraud({ roomId: r.roomId, curr, prev, meterQr: v.qrCode, isReplaced: !!v.isReplaced });
+      const fraud = validateMeterReadingFraud({ roomId: r.roomId, curr, prev, isReplaced: !!v.isReplaced });
       if (!fraud.valid) return fraud.flags.join('. ');
 
-      const photoName = (v.photo && v.photo[0]) ? (v.photo[0].name || 'meter-photo.jpg') : null;
-      try {
-        const m = addReading({
-          roomId: r.roomId,
-          curr,
-          prev: v.isReplaced ? 0 : prev,
-          date: today(),
-          qrCode: v.qrCode,
-          photo: photoName,
-          status: 'review',
-          isReplacement: !!v.isReplaced,
-          replaceReason: v.isReplaced ? (v.replaceNote || t('Resident reported meter replaced/reset')) : null,
-          submittedBy: r.name,
-          isManual: false
-        });
-        notify({ to: 'admin', title: v.isReplaced ? t('Meter replacement claim submitted') : t('Meter reading submitted'), body: `${r.name} · ${roomName(r.roomId)}: ${v.isReplaced ? 'New reading ' + curr : round2(curr - prev) + ' units'}`, link: 'inbox' });
-        closeModal();
-        render();
-        toast(v.isReplaced ? t('Meter replacement reading submitted for owner verification!') : t('Meter reading submitted for verification! ({u} units)', { u: num(curr - prev) }), 'ok');
-      } catch (err) {
-        return err.message;
-      }
+      if (!(v.photo && v.photo[0])) return t('Add a photo of the meter display');
+      const photoName = v.photo[0].name || 'meter-photo.jpg';
+      // the photo is shrunk and kept with the reading, so the owner sees what the resident saw
+      compressImage(v.photo[0], 900, 0.6).then(f => { const reader = new FileReader(); reader.onload = ev => {
+        try {
+          const m = addReading({
+            roomId: r.roomId,
+            curr,
+            prev: v.isReplaced ? 0 : prev,
+            date: today(),
+            photo: photoName,
+            photoUrl: ev.target.result,
+            status: 'review',
+            isReplacement: !!v.isReplaced,
+            replaceReason: v.isReplaced ? (v.replaceNote || t('Resident reported meter replaced/reset')) : null,
+            submittedBy: r.name,
+            isManual: false
+          });
+          notify({ to: 'admin', title: v.isReplaced ? t('Meter replacement claim submitted') : t('Meter reading submitted'), body: `${r.name} · ${roomName(r.roomId)}: ${v.isReplaced ? 'New reading ' + curr : num(m.units) + ' ' + t('units')}`, link: 'inbox' });
+          closeModal();
+          render();
+          toast(v.isReplaced ? t('Meter replacement reading submitted for owner verification!') : t('Meter reading submitted for verification! ({u} units)', { u: num(curr - prev) }), 'ok');
+        } catch (err) { const e = document.querySelector('#mform .ferr'); if (e) e.textContent = err.message; else toast(err.message, 'bad'); const b = document.querySelector('[data-act="msubmit"]'); if (b) b.disabled = false; }
+      }; reader.readAsDataURL(f); });
+      return false;
     }
   });
+};
+
+// Readings of this resident's room in which they had a share, newest first.
+const resElecReadings = id => meters().filter(m => !m.opening && m.status !== 'review' && (m.shares || []).some(x => x.resId === id)).sort(by('date', -1));
+A.relec = () => {
+  const r = meRes(); if (!r) return;
+  const list = resElecReadings(r.id).slice(0, 8);
+  if (!list.length) return toast(t('No electricity bill yet'));
+  const ym = ymOf(list[0].date), monthTotal = sum(list.filter(m => ymOf(m.date) === ym), m => (m.shares.find(x => x.resId === r.id) || {}).amount || 0);
+  const free = S().elec.freeUnits || 0;
+  sheet(t('My electricity'), `<div class="elhero" style="margin-bottom:12px"><div class="el-t"><span>${esc(t('Billed in {m}', { m: fmtYM(ym) }))}</span><b>${inr(monthTotal)}</b><small>${esc(t('Room {r} · {a} per unit · {f} free units a month', { r: roomName(r.roomId), a: inr(S().elec.rate), f: free }))}</small></div></div>
+    <div class="elsl">${list.map(m => { const sh = m.shares.find(x => x.resId === r.id), inv = resInvoices(r.id).find(i => i.meterId === m.id || (i.id && i.id.includes(m.id)));
+      return elecShareCard(m, sh, { title: `${fmtShort(m.prevDate || addDays(m.date, -(m.span || 30)))} - ${fmtShort(m.date)}`, sub: `${t('Meter')} ${num(m.prev)} to ${num(m.curr)} · ${num(m.units)} ${t('units')}${inv ? ' · ' + (invBal(inv) > 0 ? t('due') : t('paid')) : ''}` }); }).join('')}</div>
+    <p class="hint" style="margin-top:12px">${esc(t('Free units are given for the days you stayed, and each bill covers the days between two meter readings.'))}</p>`);
 };

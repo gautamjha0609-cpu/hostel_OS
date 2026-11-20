@@ -6,7 +6,7 @@
 // most once every 12 hours. A deploy is picked up immediately when VERSION changes; Vercel stamps a new
 // VERSION on every deploy (build command in vercel.json), no manual step.
 // API, Supabase and Google calls are never cached.
-const VERSION = 'hostelos-202611191051';
+const VERSION = 'hostelos-202611200957';
 const locHost = (typeof self !== 'undefined' && self.location && (self.location.hostname || (self.location.origin ? new URL(self.location.origin).hostname : ''))) || (typeof location !== 'undefined' && location.hostname) || '';
 const locPort = (typeof self !== 'undefined' && self.location && (self.location.port || (self.location.origin ? new URL(self.location.origin).port : ''))) || (typeof location !== 'undefined' && location.port) || '';
 const isDev = /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(locHost) || locPort === '5176' || locPort === '5177';

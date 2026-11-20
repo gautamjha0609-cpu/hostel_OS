@@ -14,6 +14,7 @@ const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, readBodyWith
 
 const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+const NAME_OK = /^[\p{L}\p{M}\s.\-'()]{2,80}$/u;   // letters, spaces and . - ' ( ) only: no digits, markup or symbols
 const phone10 = v => cleanPhone(v) || str(v, 20).replace(/\D/g, '').slice(-10);
 const sameKey = (want, got) => !!want && want.length === got.length && crypto.timingSafeEqual(Buffer.from(want), Buffer.from(got));
 
@@ -52,8 +53,14 @@ async function visit(req, res) {
     const e = b.entry || {};
     const name = str(e.name, 80);
     if (!name) throw new HttpError(400, 'Name is required');
+    if (!NAME_OK.test(name)) throw new HttpError(400, 'Name can contain letters and spaces only');
     const phone = cleanPhone(e.phone);
     if (!phone) throw new HttpError(400, 'Enter a 10-digit mobile number');
+    // every detail of a visitor is compulsory (a legal register)
+    if (!str(e.meet, 80)) throw new HttpError(400, 'Who you are meeting is required');
+    if (!str(e.roomNo, 20)) throw new HttpError(400, 'Room number is required');
+    if (!str(e.purpose, 80)) throw new HttpError(400, 'Purpose is required');
+    if (!str(e.place, 160)) throw new HttpError(400, 'Where you are coming from is required');
     const at = new Date().toISOString(), date = istNow().toISOString().slice(0, 10);
     const id = 'gate-' + crypto.randomBytes(6).toString('hex');
     const g = e.geo && isFinite(e.geo.lat) && isFinite(e.geo.lng) ? { lat: Math.round(e.geo.lat * 1e4) / 1e4, lng: Math.round(e.geo.lng * 1e4) / 1e4 } : null;
@@ -129,7 +136,7 @@ async function site(req, res) {
  * together, and the form may only point at papers inside its own folder. Papers whose form
  * is never sent are removed by the daily sweep.
  */
-const JOIN_MIME = /^(image\/(jpeg|png|webp)|application\/pdf)$/;
+const JOIN_MIME = /^image\/(jpeg|png|webp)$/;
 const JOIN_DOC_MAX = 1.5 * 1024 * 1024;              // 1.5 MB limit to protect storage and bandwidth
 const APP_ID = /^[a-f0-9]{16,32}$/;
 const signupDir = (hostelId, app) => `${hostelId}/signup/${app}/`;
@@ -167,9 +174,9 @@ async function join(req, res) {
 
   if (b.action === 'doc') {
     const size = Number(b.size) || 0;
-    if (size <= 0 || size > JOIN_DOC_MAX) throw new HttpError(400, 'File is too large (max 1.5 MB). Please upload a camera photo or a PDF under 1.5 MB.');
-    if (!JOIN_MIME.test(String(b.mime || ''))) throw new HttpError(400, 'Upload a photo or a PDF');
-    const ext = { 'application/pdf': 'pdf', 'image/png': 'png', 'image/webp': 'webp' }[b.mime] || 'jpg';
+    if (size <= 0 || size > JOIN_DOC_MAX) throw new HttpError(400, 'File is too large (max 1.5 MB). Please upload a normal camera photo.');
+    if (!JOIN_MIME.test(String(b.mime || ''))) throw new HttpError(400, 'Upload a photo (JPG, PNG or WebP); PDFs are not accepted');
+    const ext = { 'image/png': 'png', 'image/webp': 'webp' }[b.mime] || 'jpg';
     const type = str(b.label, 60).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'document';
     const path = `${signupDir(h.id, appId(b.app))}${type}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
     const out = await sb(`/storage/v1/object/upload/sign/docs/${path}`, { method: 'POST', body: {} });
@@ -181,14 +188,20 @@ async function join(req, res) {
     const e = b.entry || {};
     const name = str(e.name, 80);
     if (!name) throw new HttpError(400, 'Name is required');
+    if (!NAME_OK.test(name)) throw new HttpError(400, 'Name can contain letters and spaces only');
+    if (e.guardian && !NAME_OK.test(str(e.guardian, 80))) throw new HttpError(400, 'Guardian name can contain letters and spaces only');
+    // Aadhaar: exactly 12 digits, never starting with 0 or 1 (the form checks this too; this stops a hand-made request)
+    if (str(e.idNo, 40)) { const d = str(e.idNo, 40).replace(/\D/g, ''); if (d.length !== 12 || /^[01]/.test(d)) throw new HttpError(400, 'Aadhaar number must be exactly 12 digits'); }
     const phone = cleanPhone(e.phone);
     if (!phone) throw new HttpError(400, 'Enter a 10-digit mobile number');
-    if (e.email && !isValidEmail(e.email)) throw new HttpError(400, 'Invalid email address');
-    let guardianPhone = null;
-    if (e.guardianPhone) {
-      guardianPhone = cleanPhone(e.guardianPhone);
-      if (!guardianPhone) throw new HttpError(400, 'Enter a 10-digit mobile number for guardian');
-    }
+    // every detail is compulsory
+    if (!e.email || !isValidEmail(e.email)) throw new HttpError(400, 'A valid email address is required');
+    if (!str(e.college, 120)) throw new HttpError(400, 'College / office is required');
+    if (!str(e.idNo, 40)) throw new HttpError(400, 'Aadhaar number is required');
+    if (!str(e.address, 240)) throw new HttpError(400, 'Address is required');
+    if (!str(e.guardian, 80)) throw new HttpError(400, 'Parent / guardian name is required');
+    let guardianPhone = cleanPhone(e.guardianPhone);
+    if (!guardianPhone) throw new HttpError(400, 'Enter a 10-digit mobile number for guardian');
     const app = appId(b.app);
     const at = new Date().toISOString(), date = istNow().toISOString().slice(0, 10);
     const id = 'signup-' + app;
@@ -196,6 +209,8 @@ async function join(req, res) {
     const docs = (Array.isArray(e.docs) ? e.docs : [])
       .filter(d => d && typeof d.path === 'string' && d.path.startsWith(dir) && /^[\w./-]{1,200}$/.test(d.path) && !d.path.includes('..'))
       .slice(0, 8).map(d => ({ type: str(d.type, 60) || 'Document', path: d.path, ts: at }));
+    const needDocs = ((h.settings && h.settings.docs) || {}).required || ['Aadhaar card', 'Passport photo'];
+    if (docs.length < needDocs.length) throw new HttpError(400, 'Please upload every document: ' + needDocs.join(', '));
     const data = {
       status: 'pending', name, phone,
       guardian: str(e.guardian, 80), guardianPhone: guardianPhone || '',
@@ -411,8 +426,10 @@ async function create_payment_order(req, res) {
   if (!resId) throw new HttpError(400, 'Resident identifier (res_id) is required');
 
   // Verify hostel exists and get org_id
-  const [hostel] = await rest('hostels', `?id=eq.${hostelId}&select=id,org_id,name,settings`);
+  const [hostel] = await rest('hostels', `?id=eq.${hostelId}&select=id,org_id,name,settings,modules`);
   if (!hostel) throw new HttpError(404, 'Hostel not found');
+  // online payments are switched on per hostel by the platform admin; without it no gateway order is ever created
+  if (!(hostel.modules && hostel.modules.cashfree === true)) throw new HttpError(403, 'Online payments are not enabled for this hostel');
 
   // Verify resident exists in this hostel
   const resDocs = await rest('docs', `?hostel_id=eq.${hostelId}&kind=eq.res&id=eq.${encodeURIComponent(resId)}&deleted=eq.false&select=*`).catch(() => []);
@@ -1157,50 +1174,43 @@ async function submit_claim(req, res) {
   limit('claim:' + clientIp(req), 20, 60e3);
   const b = await readJson(req);
   const hostelId = uuid(b.hostel_id, 'hostel');
-  const resId = String(b.res_id || '').trim();
-  const utr = String(b.utr || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 30);
+  const resId = String(b.res_id || '').trim().slice(0, 80);
+  const utr = String(b.utr || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 30).toUpperCase();
   const amount = Math.round(Number(b.amount) || 0);
   if (!utr || utr.length < 6) throw new HttpError(400, 'Enter a valid bank UTR / Reference number');
-  if (amount <= 0) throw new HttpError(400, 'Invalid payment amount');
+  if (amount <= 0 || amount > 10000000) throw new HttpError(400, 'Invalid payment amount');
+  if (!resId) throw new HttpError(400, 'This link is not linked to a resident. Please ask the owner for a new link.');
+  // The screenshot is optional. It is a small JPEG the page already shrank; anything else is refused.
+  let proofUrl = null;
+  if (b.proof != null && b.proof !== '') {
+    const p = String(b.proof);
+    if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p) || p.length > 350000) throw new HttpError(400, 'The screenshot could not be accepted. Please choose a normal photo.');
+    proofUrl = p;
+  }
 
   // Verify hostel exists and is active
   const [h] = await rest('hostels', `?id=eq.${hostelId}&select=id,name,status`);
   if (!h || h.status !== 'active') throw new HttpError(404, 'Hostel not found or inactive');
 
-  // Prevent duplicate UTR submission for this hostel
-  const existing = await rest('docs', `?hostel_id=eq.${hostelId}&kind=eq.claim&data->>utr=eq.${encodeURIComponent(utr)}&select=id`);
-  if (existing && existing.length > 0) {
-    return res.status(200).json({ ok: true, duplicate: true, message: 'This UTR was already submitted and is pending verification' });
-  }
+  // The claim is saved on the resident the link belongs to - that resident must exist in this hostel and still live there.
+  const [resDoc] = await rest('docs', `?hostel_id=eq.${hostelId}&kind=eq.res&id=eq.${encodeURIComponent(resId)}&deleted=eq.false&select=data`);
+  if (!resDoc || !resDoc.data || resDoc.data.status === 'left' || resDoc.data.status === 'cancelled') throw new HttpError(404, 'This resident could not be found. Please ask the owner for a new link.');
+  const roomId = resDoc.data.roomId || null, resName = resDoc.data.name || 'Resident';
 
-  // Fetch resident name & room if available
-  let roomId = null, resName = 'Resident';
-  if (resId) {
-    const [resDoc] = await rest('docs', `?hostel_id=eq.${hostelId}&kind=eq.res&id=eq.${encodeURIComponent(resId)}&select=data`);
-    if (resDoc && resDoc.data) {
-      roomId = resDoc.data.roomId || null;
-      resName = resDoc.data.name || resName;
-    }
+  // No duplicates: the same UTR is only taken once in a hostel (a rejected one may be sent again)
+  const existing = await rest('docs', `?hostel_id=eq.${hostelId}&kind=eq.claim&deleted=eq.false&data->>utr=eq.${encodeURIComponent(utr)}&data->>status=neq.rejected&select=id`);
+  if (existing && existing.length > 0) {
+    return res.status(200).json({ ok: true, duplicate: true, message: 'This UTR was already submitted and is waiting for the owner to verify it.' });
   }
 
   const at = new Date().toISOString(), date = istNow().toISOString().slice(0, 10);
   const id = 'claim-' + crypto.randomBytes(6).toString('hex');
   const refType = utr.length === 12 && /^\d+$/.test(utr) ? 'bank_rrn' : 'upi_txn_id';
-  const data = {
-    resId: resId || null,
-    roomId,
-    amount,
-    utr,
-    refType,
-    date,
-    status: 'pending',
-    ts: at,
-    source: 'pay_portal'
-  };
+  const data = { resId, roomId, amount, utr, refType, date, status: 'pending', ts: at, source: 'pay_portal', ...(proofUrl ? { proofUrl } : {}) };
 
-  await insertWithNotice(h.id, { id, kind: 'claim', data, day: date, res_id: resId || null, room_id: roomId }, {
+  await insertWithNotice(h.id, { id, kind: 'claim', data, day: date, res_id: resId, room_id: roomId }, {
     title: 'UPI Payment to Verify',
-    body: `${resName} · ₹${amount.toLocaleString('en-IN')} (UTR: ${utr})`,
+    body: `${resName} · ₹${amount.toLocaleString('en-IN')} (UTR: ${utr})${proofUrl ? ' · screenshot attached' : ''}`,
     link: 'inbox',
     date,
     ts: at

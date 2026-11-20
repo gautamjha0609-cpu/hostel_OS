@@ -46,7 +46,7 @@ function homeFor() {
 /* ===================================================================== shell */
 function navGroups() {
   const c = ctx();
-  if (c.role === 'super' && !c.hostelId) return [['', [['admin', 'Clients & hostels', 'building'], ['admin-users', 'All users', 'users'], ['admin-usage', 'Usage & health', 'chart']]]];
+  if (c.role === 'super' && !c.hostelId) return [['', [['admin', 'Clients & hostels', 'building'], ['admin-pv', 'Police verification', 'shield'], ['admin-users', 'All users', 'users'], ['admin-usage', 'Usage & health', 'chart']]]];
   if (c.role === 'resident') return [['', [['r-home', 'Home', 'home'], ['r-meals', 'Meals', 'utensils'], ['r-clean', 'Room cleaning', 'broom'], ['r-laundry', 'Laundry', 'shirt'], ['r-help', 'Help & notices', 'chat'], ['me', 'Profile', 'user']].filter(x => x[0] !== 'r-laundry' || orgEnabled('laundry')).filter(x => x[0] !== 'r-clean' || orgEnabled('housekeeping')).filter(x => x[0] !== 'r-meals' || orgEnabled('mess'))]];
   if (c.role === 'emitra') return [['', [['emitra', 'Verification queue', 'shield'], ['me', 'Profile', 'user']]]];
   const sec = (title, keys) => [title, keys.filter(k => can(k)).map(k => [k, MOD[k] ? MOD[k].l : k, MOD[k] ? MOD[k].icon : 'circle'])];
@@ -125,11 +125,9 @@ function buildShell() {
       <div class="offline" id="offline" ${Store.online ? 'hidden' : ''}>${esc(t('Offline — changes are saved and will sync'))}</div>
       <header class="top ${cs.length > 1 || (c.key && c.key.startsWith('super:')) ? 'sel' : ''}" id="top">
         <button class="ibtn menu-btn" data-act="drawer" aria-label="${esc(t('Menu'))}">${ico('menu')}</button>
-        <h1 id="ptitle"></h1><span id="outboxBadge" class="badge warn sm" ${Store.outbox && Store.outbox.length ? '' : 'hidden'}>${esc(t('{n} pending', { n: Store.outbox ? Store.outbox.length : 0 }))}</span><span class="sp"></span>
+        <h1 id="ptitle"></h1><span class="sp"></span>
         ${cs.length > 1 || c.key && c.key.startsWith('super:') ? `<select class="hsel" id="ctxSel" aria-label="${esc(t('Switch hostel'))}">${opts}${c.key && c.key.startsWith('super:') ? `<option selected>${esc(c.label)}</option>` : ''}</select>` : ''}
         ${c.hostelId ? `<button class="ibtn hide-s" data-act="palette" aria-label="${esc(t('Search'))}" title="Ctrl+K">${ico('search', 'sm')}</button>` : ''}
-        <button class="ibtn" data-act="theme" aria-label="${esc(t('Appearance'))}" title="${esc(themeLabel())}">${ico(themeIcon(), 'sm')}</button>
-        <button class="ibtn" data-act="lang" aria-label="${esc(t('Language'))}" style="font-weight:700;font-size:13px">${LANG === 'hi' ? 'EN' : 'हि'}</button>
         ${c.hostelId ? `<button class="ibtn" data-act="notifs">${ico('bell', 'sm')}<span class="sr">${esc(t('Notifications'))}</span><span class="dot" id="ndot" hidden></span></button>` : ''}
       </header>
       <div class="bbar" id="bbar" hidden></div>
@@ -149,12 +147,20 @@ function updateChrome() {
   const slot = $('#installSlot'); if (slot && typeof Pwa !== 'undefined') slot.innerHTML = Pwa.button();
   const nd = $('#ndot'); if (nd) { const n = myNotifs().filter(x => !x.read).length; nd.hidden = !n; nd.textContent = n > 9 ? '9+' : n; }
   const off = $('#offline'); if (off) off.hidden = Store.online;
-  const ob = $('#outboxBadge'); if (ob) { const p = Store.outbox ? Store.outbox.length : 0; ob.hidden = !p; ob.textContent = t('{n} pending', { n: p }); }
 }
 
 /* ===================================================================== routing */
 // Clean addresses (/home, /settings/site), not /#/home. Vercel serves index.html for any path without a dot (vercel.json).
-function go(to) { const p = '/' + String(to).replace(/^\/+/, ''); if (location.pathname !== p) history.pushState(null, '', p); route(); }
+/* Going back to a screen puts you where you were on it, not at its top. The position is kept per address
+ * while you scroll; "back" is the browser's back button or a move to the screen above the current one
+ * (Settings > Rent -> Settings). Opening a screen from a list still starts at its top. */
+const scrollMem = {}; let navBack = false;
+window.addEventListener('scroll', () => { if (ui.curPath) scrollMem[ui.curPath] = window.scrollY; }, { passive: true });
+function go(to) {
+  const p = '/' + String(to).replace(/^\/+/, '');
+  if (location.pathname !== p) { navBack = p !== '/' && location.pathname.indexOf(p + '/') === 0; history.pushState(null, '', p); }
+  route();
+}
 function route() {
   const raw = location.pathname.replace(/^\/+|\/+$/g, '').replace(/^index\.html$/, '');
   if (!Store.me) { if (raw === 'setup' && CLOUD) renderSetup(); else renderLogin(); return; }
@@ -162,21 +168,43 @@ function route() {
   const [page, arg = ''] = raw.split('/');
   const p = PAGES[page];
   const allowed = p && (!p.mod || can(p.mod)) && (!p.when || p.when());
-  ui.page = allowed ? page : homeFor(); ui.arg = allowed ? decodeURIComponent(arg) : '';
-  if (!allowed && page && page !== ui.page) { history.replaceState(null, '', '/' + ui.page); }
+  // a platform admin who has not opened a hostel has no hostel screens (Home, Payments...), only the console and Profile
+  const noHostelPage = ctx().role === 'super' && !ctx().hostelId && !/^(admin|me$)/.test(page);
+  const ok = allowed && !noHostelPage;
+  ui.page = ok ? page : homeFor(); ui.arg = ok ? decodeURIComponent(arg) : '';
+  if (!ok && page && page !== ui.page) { history.replaceState(null, '', '/' + ui.page); }
   document.body.classList.remove('drawer');
+  closeModal(true);   // a pop-up from the screen you left must not hang over the new one
+  const back = navBack, want = scrollMem[location.pathname] || 0; navBack = false;
+  ui.curPath = null;   // the jump to the top below must not overwrite the place we are about to restore
   render(true);
+  { const pg = $('#page'); if (pg) { pg.classList.remove('pg-in', 'pg-back'); void pg.offsetWidth; pg.classList.add(back ? 'pg-back' : 'pg-in'); } }   // a short slide, like moving between screens of an app
+  ui.curPath = location.pathname;
+  if (back && want > 0) { const put = () => window.scrollTo(0, want); put(); requestAnimationFrame(put); setTimeout(put, 140); }
 }
 function render(scrollTop) {
   const el = $('#page'); if (!el || !Store.ctx) return;
   const p = PAGES[ui.page]; if (!p) return;
   const active = document.activeElement, qkey = active && active.dataset && active.dataset.q, caret = qkey ? active.selectionStart : 0;
+  // sideways-scrolling strips (tabs, filter chips, wide tables) keep their place when the screen is redrawn
+  const strips = [...el.querySelectorAll('.seg, .chips, .scroll-x')].map(x => x.scrollLeft);
   try { el.innerHTML = p.render(ui.arg); }
   catch (e) { console.error(e); el.innerHTML = `<div class="card">${empty('Something went wrong on this screen', e.message, btn('Go home', 'go', `data-to="${homeFor()}"`))}</div>`; }
   $('#ptitle').textContent = t(typeof p.title === 'function' ? p.title() : p.title);
   document.title = `${t(typeof p.title === 'function' ? p.title() : p.title)} · ${CFG.APP_NAME || 'Sarvlekh'}`;
   Picker.enhance(el);
+  if (typeof hhCountUp === 'function') hhCountUp(el);
+  foldLongLists(el);
+  infoToButton(el);
+  placeInfo(el);
   if (qkey) { const q = $(`[data-q="${qkey}"]`); if (q) { q.focus(); try { q.setSelectionRange(caret, caret); } catch (e) { /* type=search */ } } }
+  const now = [...el.querySelectorAll('.seg, .chips, .scroll-x')];
+  if (!scrollTop && now.length === strips.length) now.forEach((x, i) => { x.scrollLeft = strips[i]; });
+  now.forEach(x => { // keep the selected tab / chip in view without moving the page
+    const on = x.matches('.seg, .chips') && x.querySelector('.on'); if (!on) return;
+    const l = on.offsetLeft - x.offsetLeft, r = l + on.offsetWidth;
+    if (l < x.scrollLeft) x.scrollLeft = Math.max(0, l - 12); else if (r > x.scrollLeft + x.clientWidth) x.scrollLeft = r - x.clientWidth + 12;
+  });
   if (scrollTop) window.scrollTo(0, 0);
   updateChrome();
   setTimeout(attPrompt, 350);
@@ -195,7 +223,7 @@ function attPrompt() {
   const fence = attFence();
   openModal({
     title: 'Mark your attendance',
-    body: `<div style="text-align:center"><div style="font-size:44px">🕘</div>
+    body: `<div style="text-align:center">
       <p style="font-size:16px;margin:6px 0">${esc(t('Hi {n}, mark today\'s attendance before you start work.', { n: (staffById(sid) || {}).name || '' }))}</p>
       ${fence ? `<p class="hint">${esc(t('Your location is checked — you must be within {r} m of the hostel.', { r: fence.radius }))}</p>` : ''}
       <p class="ferr" id="punchmsg" role="alert"></p></div>`,
@@ -228,7 +256,6 @@ function renderLogin(err) {
       <div class="caps" id="caps" role="status">${esc(t('Caps Lock is on.'))}</div>
       <div class="ferr" id="lerr">${esc(err || '')}</div>
       <button class="lbtn" type="submit">${esc(t('Log in'))}</button>
-      <div class="llang"><button type="button" class="btn ghost sm" data-act="lang">${LANG === 'hi' ? 'English' : 'हिन्दी'}</button></div>
     </form>
     ${CLOUD ? '' : `<div class="demo">${group('Demo logins — tap to try', [
       ['9876500001', '9876500001', 'Owner (Sunrise Boys PG)', 'building'],
@@ -320,8 +347,13 @@ PAGES.me = {
     return `<div class="narrow">${head('Profile')}
       <div class="card row nw" style="gap:14px">${avatar(Store.me.full_name)}<div class="body" style="min-width:0"><b style="font-size:18px">${esc(Store.me.full_name)}</b><div class="muted sm">@${esc(Store.me.username)} · ${esc(t(ROLES[c.role] ? ROLES[c.role].l : ''))}</div></div></div>
       ${cs.length > 1 ? group('My profiles', cs.map(x => li({ icon: x.role === 'resident' ? 'user' : x.role === 'super' ? 'key' : 'building', ic: x.key === c.key ? 'ok' : 'mute', t: x.label, end: x.key === c.key ? badge('Current', 'ok') : '', act: x.key === c.key ? '' : 'ctx', attrs: `data-key="${esc(x.key)}"` })).join(''), t('You can use one login for several hostels or roles.')) : ''}
+      ${(() => { const r = c.role === 'resident' && typeof meRes === 'function' ? meRes() : null; if (!r) return ''; const dep = sum(resInvoices(r.id).filter(i => i.type === 'deposit'), i => i.paid || 0), ph = (S().pay || {}).phone;
+        return group('My stay', [
+          li({ icon: 'bed', ic: 'tn0', t: `${t('Room')} ${roomName(r.roomId)}${r.bed ? ' - ' + r.bed : ''}`, d: `${t('Staying since')} ${fmtDate(r.checkIn)}`, chev: false }),
+          li({ icon: 'rupee', ic: 'tn2', t: `${inr(r.rent)} ${t('per month')}`, d: dep ? `${t('Deposit held')}: ${inr(dep)}` : t('No deposit recorded'), chev: false }),
+          ph ? li({ icon: 'phone', ic: 'tn1', t: t('Call the owner'), d: ph, tag: 'a', attrs: `href="tel:${esc(ph)}"`, chev: false }) : ''
+        ].join('')); })()}
       ${group('Preferences', [
-        li({ icon: 'globe', ic: 'info', t: t('Language'), end: LANG === 'hi' ? 'हिन्दी' : 'English', act: 'lang' }),
         li({ icon: dark === 'dark' ? 'moon' : 'sun', ic: 'mute', t: t('Appearance'), end: t(dark === 'dark' ? 'Dark' : dark === 'light' ? 'Light' : 'Automatic'), act: 'theme' }),
         li({ icon: 'download', ic: 'teal', t: t('Install app on this phone'), d: t('Add to home screen for one-tap access'), act: 'install' }),
       ].join(''))}
@@ -337,7 +369,7 @@ A.chpw = () => formModal({
   onSubmit: async v => { if (v.p1.length < 6) return 'Password must be at least 6 characters'; if (v.p1 !== v.p2) return 'Passwords do not match'; await Backend.changePassword(v.p1); toast('Password changed'); },
 });
 A.logout = () => {
-  if (Store.outbox && Store.outbox.length > 0) {
+  if (CLOUD && Store.outbox && Store.outbox.length > 0) {
     openModal({
       title: t('Unsynced Changes Warning'),
       body: `<p>${esc(t('You have {n} offline changes that have not yet synced with the server.', { n: Store.outbox.length }))}</p>
@@ -400,38 +432,27 @@ A.notifs = () => {
   const perm = psupp ? Pwa.getPushPermission() : 'unsupported';
   let pushCtrl = '';
   if (psupp) {
-    if (perm === 'granted') {
-      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('bell', 'sm')} <b>${esc(t('Push notifications'))}</b></span><span class="badge ok">${ico('check', 'xs')} ${esc(t('Active'))}</span></div>`;
-    } else if (perm === 'denied') {
-      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('alert', 'sm')} <b>${esc(t('Push blocked'))}</b></span><button class="btn xs warn" data-act="enablepush">${esc(t('Unblock instructions'))}</button></div>`;
-    } else {
-      pushCtrl = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border-radius:var(--r);margin-bottom:12px"><span>${ico('bell', 'sm')} <b>${esc(t('Push notifications'))}</b></span><button class="btn sm primary" data-act="enablepush">${ico('bell', 'sm')} ${esc(t('Enable'))}</button></div>`;
-    }
+    const row = (icon, tone, title, sub, end) => `<div class="ntf-push ${tone}"><span class="ntf-pi">${ico(icon, 'sm')}</span><span class="ntf-pt"><b>${esc(title)}</b><small>${esc(sub)}</small></span>${end}</div>`;
+    if (perm === 'granted') pushCtrl = row('bell', 'ok', t('Push notifications'), t('You will get alerts on this phone'), `<span class="badge ok">${ico('check', 'xs')} ${esc(t('Active'))}</span>`);
+    else if (perm === 'denied') pushCtrl = row('alert', 'warn', t('Push blocked'), t('Allow notifications in your browser settings'), `<button class="btn xs warn" data-act="enablepush">${esc(t('Unblock instructions'))}</button>`);
+    else pushCtrl = row('bell', 'info', t('Push notifications'), t('Get alerts even when the app is closed'), `<button class="btn sm primary" data-act="enablepush">${esc(t('Enable'))}</button>`);
   }
 
+  // what the notice is about decides its icon and colour
+  const kind = n => { const x = `${n.title} ${n.body || ''}`.toLowerCase(); return /laundry|clothes/.test(x) ? ['shirt', 'tn5'] : /clean|room/.test(x) ? ['broom', 'tn2'] : /pay|rent|due|bill|₹|receipt|refund/.test(x) ? ['rupee', 'tn3'] : /meal|tiffin|food|dinner|lunch|breakfast/.test(x) ? ['utensils', 'tn4'] : /notice|announce/.test(x) ? ['megaphone', 'tn0'] : /visitor|gate/.test(x) ? ['door', 'tn1'] : ['bell', 'tn0']; };
+  const unreadN = list.filter(n => !n.read).length;
   const itemsHtml = list.length
-    ? `<div class="xs muted" style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
-         <span>👆 ${esc(t('Tap or swipe to dismiss notice'))}</span>
-         <span class="muted" id="ntfUnreadCount">${list.filter(n => !n.read).length} ${esc(t('unread'))}</span>
-       </div>
-       <div class="group ntf-list" id="ntfGroup">
-         ${list.map(n => `
-           <div class="ntf-wrap" id="ntf-wrap-${n.id}" data-id="${n.id}" style="position:relative;overflow:hidden;border-bottom:1px solid var(--line);background:var(--bad,#ef4444);transition:max-height 0.25s ease, opacity 0.25s ease, margin 0.25s ease;">
-             <div class="ntf-swipe-bg" style="position:absolute;inset:0;background:var(--bad,#ef4444);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:12px;font-weight:600">
-               <span>${ico('trash', 'xs')} ${esc(t('Dismissed'))}</span>
-               <span>${esc(t('Dismissed'))} ${ico('trash', 'xs')}</span>
+    ? `<div class="ntf-head"><span>${esc(t('Tap to open · swipe to dismiss'))}</span><span class="ntf-un ${unreadN ? '' : 'z'}" id="ntfUnreadCount">${unreadN} ${esc(t('unread'))}</span></div>
+       <div class="ntf-list" id="ntfGroup">
+         ${list.map(n => { const [icn, tone] = kind(n); return `
+           <div class="ntf-wrap" id="ntf-wrap-${n.id}" data-id="${n.id}">
+             <div class="ntf-swipe-bg"><span>${ico('trash', 'xs')} ${esc(t('Dismissed'))}</span><span>${esc(t('Dismissed'))} ${ico('trash', 'xs')}</span></div>
+             <div class="ntf-item ${n.read ? 'read' : 'unread'}" data-id="${n.id}" data-to="${esc(n.link || '')}">
+               <span class="ntf-ic ${tone}">${ico(icn, 'sm')}</span>
+               <span class="ntf-body"><span class="ntf-top"><span class="ntf-t">${esc(n.title)}</span><span class="ntf-time">${esc(ago(n.ts))}</span></span>${n.body ? `<span class="ntf-d">${esc(n.body)}</span>` : ''}</span>
+               <button class="ntf-del-btn" data-id="${n.id}" title="${esc(t('Dismiss'))}" aria-label="${esc(t('Dismiss'))}">${ico('x', 'xs')}</button>
              </div>
-             <div class="ntf-item li" data-id="${n.id}" data-to="${esc(n.link || '')}" style="position:relative;background:var(--surface,var(--bg));touch-action:pan-y;transition:transform 0.15s ease, opacity 0.15s ease;cursor:pointer;-webkit-user-select:none;user-select:none;display:flex;align-items:center;gap:12px;padding:12px 14px">
-               <span class="ic ${n.read ? 'mute' : 'info'}">${ico('bell', 'sm')}</span>
-               <span class="body" style="flex:1;min-width:0">
-                 <span class="t" style="font-weight:${n.read ? '500' : '700'};font-size:14px;color:var(--text)">${esc(n.title)}</span>
-                 <span class="d" style="font-size:12px;color:var(--muted)">${n.body ? esc(n.body) + ' · ' : ''}${ago(n.ts)}</span>
-               </span>
-               ${n.link ? `<span class="xs muted">${ico('chevron-right', 'xs')}</span>` : ''}
-               <button class="ibtn xs muted ntf-del-btn" data-id="${n.id}" title="${esc(t('Dismiss'))}" aria-label="${esc(t('Dismiss'))}" style="padding:4px;margin-left:4px">✕</button>
-             </div>
-           </div>
-         `).join('')}
+           </div>`; }).join('')}
        </div>`
     : empty('No notifications', 'You are all caught up.');
 
@@ -607,7 +628,6 @@ A.mdanger = () => modalDanger && modalDanger();
 A.tab = el => { ui.tab[el.dataset.key] = el.dataset.tab; render(); };
 A.flt = el => { ui.flt[el.dataset.key] = el.dataset.v; render(); };
 A.more = el => { ui.lim[el.dataset.key] = (ui.lim[el.dataset.key] || +el.dataset.per) + +el.dataset.per; render(); };
-A.lang = async () => { setLang(LANG === 'hi' ? 'en' : 'hi'); LS.set('hostelos.lang.local', 1); await ensureLang().catch(() => {}); if (Store.me && CLOUD) Cloud.rest(`profiles?id=eq.${Store.me.id}`, { method: 'PATCH', body: { lang: LANG }, headers: { Prefer: 'return=minimal' } }).catch(() => {}); if (Store.ctx) { buildShell(); render(); } else route(); };
 // Light (default) → Dark → Automatic → Light. "Automatic" follows the phone's own setting.
 const themeNow = () => document.documentElement.dataset.theme || '';
 function themeIcon() { const v = themeNow(); return v === 'dark' ? 'moon' : v === 'light' ? 'sun' : 'contrast'; }
@@ -636,6 +656,7 @@ A.sendbulkemailnotice = async () => {
   const hostelTitle = h.name || 'Hostel';
   let emailCount = 0;
   let noticeCount = 0;
+  const emailJobs = [];
 
   for (const item of list) {
     const r = item.r || (item.x && item.x.r) || resById(item.resId) || residents().find(x => phone10(x.phone) === phone10(item.phone));
@@ -665,22 +686,31 @@ A.sendbulkemailnotice = async () => {
         payLink: payLink(due, `${r.name} ${roomName(r.roomId)}`, { resId: r.id }),
         date: fmtDate(today())
       });
-      sendBrandedEmail({
+      emailJobs.push(sendBrandedEmail({
         to: r.email,
         subject: `${hostelTitle} · ${q.title || t('Fee Reminder')}`,
         html: emailHtml,
         text: item.text,
         resId: r.id,
         hostelId: h.id
-      }).catch(err => console.warn('Email warning:', err.message));
-      emailCount++;
+      }));
     }
   }
 
+  // Count only emails the mail service really accepted, and say plainly what did not go out.
+  const results = await Promise.all(emailJobs);
+  emailCount = results.filter(x => x.delivered).length;
+  const noEmail = list.length - emailJobs.length;
+  const notConfigured = results.some(x => x.reason === 'not_configured');
+  const failed = results.filter(x => !x.delivered && x.reason !== 'demo' && x.reason !== 'not_configured').length;
   toast(t('Published to {n} resident app notices{e} ✓', {
     n: noticeCount,
     e: emailCount ? ` · ${emailCount} emails sent` : ''
   }), 'ok');
+  if (results.some(x => x.reason === 'demo')) toast(t('Demo hostel: notices posted, emails are never sent from the demo'), 'warn');
+  else if (notConfigured) toast(t('Notices posted, but emails were NOT sent: email service is not set up (add RESEND_API_KEY on the server)'), 'bad');
+  else if (failed) toast(t('{n} emails failed to send', { n: failed }), 'bad');
+  if (noEmail > 0 && !notConfigured) toast(t('{n} residents have no email saved - they got the app notice only', { n: noEmail }), 'warn');
 
   // Mark pending reminders/bills in admin inbox as completed
   const inbox = Store.all('ntf').filter(x => x.to === 'admin' && (x.title.toLowerCase().includes('reminder') || x.title.toLowerCase().includes('bill')));
@@ -726,7 +756,7 @@ A.tip = el => {
   tipEl = document.createElement('div');
   tipEl.className = 'tip-pop';
   tipEl.setAttribute('role', 'tooltip');
-  tipEl.innerHTML = tx.innerHTML;
+  tipEl.innerHTML = `<div class="tp-body">${tx.innerHTML}</div>`;
   tipEl._src = el;
   document.body.appendChild(tipEl);
   el.setAttribute('aria-expanded', 'true');
@@ -756,6 +786,8 @@ A.tip = el => {
   tipEl.style.setProperty('--tip-ox', caret + 'px');
   tipEl.style.setProperty('--tip-oy', below ? '0' : '100%');
   tipEl.style.setProperty('--tip-dy', below ? '-4px' : '4px');
+  // enters from the side the "i" is on, so it reads as coming out of the icon rather than appearing
+  tipEl.style.setProperty('--tip-dx', (r.left + r.width / 2 > window.innerWidth / 2 ? 18 : -18) + 'px');
 };
 document.addEventListener('click', e => { if (tipEl && !e.target.closest('.ib') && !e.target.closest('.tip-pop')) tipClose(); }, true);
 window.addEventListener('scroll', tipClose, true);
@@ -767,7 +799,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.closest && e.target.closest('#mform') && e.target.tagName === 'INPUT' && e.target.type !== 'file') { e.preventDefault(); modalSubmit && modalSubmit(); }
 });
 window.addEventListener('scroll', () => { const tp = $('#top'); if (tp) tp.classList.toggle('scrolled', window.scrollY > 4); }, { passive: true });
-window.addEventListener('popstate', route);
+window.addEventListener('popstate', () => { navBack = true; route(); });
 // A link inside the app (<a href="/mess">) changes the page without reloading it.
 document.addEventListener('click', e => {
   const a = e.target.closest && e.target.closest('a[href^="/"]');
@@ -822,11 +854,33 @@ async function boot() {
   const devHost = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
   if ('serviceWorker' in navigator && devHost) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
   else if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    // The new worker takes over at once (skipWaiting), so a page that was already open would keep running old
-    // scripts while fetching new ones. Tell the person instead of letting the two versions mix.
-    const had = !!navigator.serviceWorker.controller; let told = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !told) { told = true; toast(t('A new version is ready.'), 'ok', { label: t('Reload'), run: () => location.reload() }); } });
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    /* Updates apply themselves. A web app that is installed on a phone has no refresh button, so:
+     *  1. it asks for a newer version every 10 minutes and whenever it comes back to the screen;
+     *  2. when the new version has taken over, the app reloads itself at a safe moment - straight away if
+     *     nothing is being typed or saved, otherwise as soon as the form is closed, or the moment the app goes
+     *     to the background (then nobody sees it). It never reloads in the middle of typing, and at most once a minute. */
+    const had = !!navigator.serviceWorker.controller; let waiting = false, reg = null;
+    const safeNow = () => {
+      const mr = $('#modalRoot'); if (mr && mr.innerHTML) return false;                      // a form or sheet is open
+      const a = document.activeElement; if (a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && !/^(checkbox|radio|button|submit|range)$/.test(a.type) && String(a.value || '').length) return false;
+      if (Store.flushing || Store.syncing) return false;                                      // saving right now
+      return true;
+    };
+    const reloadNow = () => {
+      let last = 0; try { last = +sessionStorage.getItem('hostelos.reloadAt') || 0; } catch (e) { /* private mode */ }
+      if (Date.now() - last < 60000) return;
+      try { sessionStorage.setItem('hostelos.reloadAt', String(Date.now())); } catch (e) { /* private mode */ }
+      try { Store.persist && Store.persist(); } catch (e) { /* the outbox is kept on this device anyway */ }
+      if (!document.hidden) toast(t('Updating to the latest version…'), 'ok');
+      setTimeout(() => location.reload(), document.hidden ? 50 : 900);
+    };
+    const tryApply = () => { if (waiting && (document.hidden || safeNow())) { waiting = false; reloadNow(); } };
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) { waiting = true; tryApply(); } });
+    setInterval(tryApply, 3000);
+    const check = () => { if (reg && navigator.onLine) reg.update().catch(() => {}); };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) tryApply(); else { check(); tryApply(); } });
+    setInterval(() => { if (!document.hidden) check(); }, 10 * 60 * 1000);
+    navigator.serviceWorker.register('/sw.js').then(r => { reg = r; }).catch(() => {});
   }
   // Restore session from IDB if missing in localStorage
   if (!Backend.uid()) {
@@ -871,3 +925,101 @@ async function boot() {
   } else route();
   if (typeof Pwa !== 'undefined') Pwa.start();
 }
+
+/* Any list of more than 6 rows shows the first 6 and a "View all (n)" button, so a screen never turns into one very
+ * long scroll. Lists inside pop-ups and the roll call (where every row has to be in reach) are left alone. */
+const FOLD_AT = 6, FOLD_SKIP_PAGES = ['attendance'];
+// A long list with nothing under it folds ("View all"). With more content under it the list scrolls inside itself instead,
+// so the rest of the page stays reachable; it keeps a gutter on both sides to start the page scroll from.
+function hasContentBelow(el) {
+  for (let n = el; n && n.id !== 'page'; n = n.parentElement) {
+    if (n.parentElement && n.parentElement.classList.contains('grid')) continue;
+    for (let s = n.nextElementSibling; s; s = s.nextElementSibling) if (s.offsetHeight > 0 && !s.classList.contains('fold-btn')) return true;
+  }
+  return false;
+}
+function foldLongLists(root) {
+  if (!root || FOLD_SKIP_PAGES.includes(ui.page)) return;
+  root.querySelectorAll('.tbl-wrap').forEach(w => { if (!w.closest('#modalRoot') && w.querySelectorAll('tbody tr').length > 8 && hasContentBelow(w)) w.classList.add('inscroll'); });
+  root.querySelectorAll('.group, .fold-list').forEach(g => {
+    if (g.closest('#modalRoot') || g.dataset.nofold != null || g.classList.contains('nofold') || g.nextElementSibling && g.nextElementSibling.classList.contains('fold-btn')) return;
+    const rows = [...g.children].filter(x => x.classList.contains('li') || x.classList.contains('apv') || x.classList.contains('stk') || x.classList.contains('prc') || x.classList.contains('prow') || x.classList.contains('swp-wrap') || (g.classList.contains('stack') && x.classList.contains('card')));
+    if (rows.length <= FOLD_AT) return;
+    if (hasContentBelow(g)) { g.classList.add('inscroll'); return; }
+    rows.slice(FOLD_AT).forEach(x => x.classList.add('fold-hide'));
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn sm ghost block fold-btn'; b.dataset.act = 'foldgrp'; b.dataset.n = rows.length;
+    b.textContent = t('View all ({n})', { n: rows.length });
+    g.after(b);
+  });
+}
+A.foldgrp = el => {
+  const g = el.previousElementSibling; if (!g) return;
+  const open = g.classList.toggle('unfolded');
+  el.textContent = open ? t('Show less') : t('View all ({n})', { n: el.dataset.n });
+};
+
+/* Explanatory sentences never sit on the screen: a long grey hint under a heading or card becomes the "i" button
+ * (tap to read). Short status lines, field hints inside forms and anything that updates live are left as they are. */
+// Every "i" button sits beside a heading, never floating on its own: the first one on a screen goes next to the screen title,
+// one that follows a section title goes beside that title.
+function placeInfo(root) {
+  root.querySelectorAll('.about').forEach(a => {
+    const w = a.querySelector('.ib-w'); if (!w || a.closest('#modalRoot, .card, .group')) return;
+    const prev = a.previousElementSibling, h2 = root.querySelector('.sec-head h2');
+    const gt = prev && prev.classList.contains('group') && prev.previousElementSibling && prev.previousElementSibling.classList.contains('group-t') ? prev.previousElementSibling : null;
+    const tgt = prev && prev.classList.contains('group-t') ? prev : gt || (h2 && !h2.querySelector('.ib-w') ? h2 : null);
+    if (tgt) { tgt.appendChild(w); a.remove(); }
+  });
+}
+function infoToButton(root) {
+  if (!root) return;
+  root.querySelectorAll('p.hint, div.hint').forEach(h => {
+    if (h.id || h.closest('form, .li, .tool, .ib-w, .tip-pop, label, .ferr, .mgrid, table') || h.dataset.keep != null) return;
+    const txt = (h.textContent || '').trim();
+    if (txt.length < 45 || h.querySelector('a, button, input')) return;
+    const w = document.createElement('div'); w.className = 'about'; w.innerHTML = tip(h.innerHTML);
+    h.replaceWith(w);
+  });
+}
+
+/* Swipe a notification-style card sideways: it follows the finger, and once it is dragged far enough (or flicked) it
+ * flies off, the gap closes, and the card's action (data-swact on the wrapper) runs. Too short a drag springs back. */
+(function () {
+  let st = null;
+  document.addEventListener('pointerdown', e => {
+    const card = e.target.closest && e.target.closest('.swp');
+    if (!card || e.target.closest('button, a, input, select, textarea, label, summary')) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    st = { card, wrap: card.closest('.swp-wrap'), x: e.clientX, y: e.clientY, t: Date.now(), dx: 0, drag: false, id: e.pointerId };
+  });
+  document.addEventListener('pointermove', e => {
+    if (!st || e.pointerId !== st.id) return;
+    const dx = e.clientX - st.x, dy = e.clientY - st.y;
+    if (!st.drag) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.3) { st.drag = true; st.card.style.transition = 'none'; try { st.card.setPointerCapture(e.pointerId); } catch (x) { /* ok */ } }
+      else if (Math.abs(dy) > 10) { st = null; return; }
+      else return;
+    }
+    st.dx = dx; const w = st.card.offsetWidth || 300;
+    st.card.style.transform = 'translateX(' + dx + 'px) rotate(' + (dx / w * 3) + 'deg)';
+    st.card.style.opacity = String(1 - Math.min(0.55, Math.abs(dx) / w));
+    st.wrap.classList.toggle('left', dx < 0); st.wrap.classList.toggle('right', dx > 0);
+  });
+  const end = e => {
+    if (!st || e.pointerId !== st.id) return;
+    const s = st; st = null; if (!s.drag) return;
+    const w = s.card.offsetWidth || 300, v = Math.abs(s.dx) / Math.max(1, Date.now() - s.t);
+    s.card.style.transition = 'transform .22s ease, opacity .22s ease';
+    if (Math.abs(s.dx) > w * 0.38 || (v > 0.6 && Math.abs(s.dx) > 40)) {
+      s.card.style.transform = 'translateX(' + (s.dx > 0 ? '115%' : '-115%') + ')'; s.card.style.opacity = '0';
+      if (navigator.vibrate) try { navigator.vibrate(8); } catch (x) { /* ok */ }
+      setTimeout(() => {
+        s.wrap.style.maxHeight = s.wrap.offsetHeight + 'px'; void s.wrap.offsetHeight; s.wrap.classList.add('gone');
+        setTimeout(() => { const act = s.wrap.dataset.swact, ds = { ...s.wrap.dataset }; s.wrap.remove(); if (A[act]) A[act]({ dataset: ds }); }, 240);
+      }, 170);
+    } else { s.card.style.transform = ''; s.card.style.opacity = ''; s.wrap.classList.remove('left', 'right'); }
+  };
+  document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
+})();
+

@@ -12,6 +12,8 @@ const parse = s => { const [y, m, d] = String(s).slice(0, 10).split('-').map(Num
 const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return iso(d); };
 const diffDays = (a, b) => Math.round((parse(a) - parse(b)) / 864e5);
 const ymOf = s => String(s).slice(0, 7);
+// A short list of months to pick from (a native month picker pops over the screen and shifts it on phones).
+const monthOpts = (cur, n = 18) => { const now = ymOf(today()), out = []; for (let i = 0; i < n; i++) out.push(addMonths(now, -i)); if (cur && !out.includes(cur)) out.push(cur); return out.sort().reverse().map(m => ({ v: m, l: fmtYM(m) })); };
 const addMonths = (ym, n) => { let [y, m] = ym.split('-').map(Number); m += n - 1; y += Math.floor(m / 12); m = ((m % 12) + 12) % 12; return `${y}-${pad(m + 1)}`; };
 const daysIn = ym => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate(); };
 const nowIso = () => new Date().toISOString();
@@ -82,6 +84,7 @@ const IC = {
   home: '<path d="M3 11 12 3l9 8M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
   alert: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/>',
   inbox: '<path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6H3v-6z"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/>',
   bed: '<path d="M3 18V6"/><path d="M3 14h18v4"/><path d="M21 14v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="11" r="1.6"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.5 0 4.5 2 4.5 4.5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
@@ -145,6 +148,7 @@ const IC = {
   skip: '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
   star: '<path d="m12 3 2.8 5.8 6.2.9-4.5 4.4 1.1 6.2L12 17.4 6.4 20.3l1.1-6.2L3 9.7l6.2-.9z"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v12H4z"/><circle cx="12" cy="13" r="3.5"/>',
 };
@@ -153,11 +157,12 @@ const ico = (n, c = '') => `<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden=
 /* ================= feedback ================= */
 function toast(msg, kind = 'ok', action) {
   const el = document.createElement('div');
-  el.className = 'toast ' + kind; el.setAttribute('role', 'status');
-  el.innerHTML = `${ico(kind === 'bad' ? 'x' : 'check', 'sm')}<span>${esc(t(msg))}</span>${action ? `<button>${esc(t(action.label))}</button>` : ''}`;
+  const life = action ? 6000 : Math.min(7000, 3200 + String(msg).length * 28);
+  el.className = 'toast ' + kind; el.setAttribute('role', 'status'); el.style.setProperty('--life', life + 'ms');
+  el.innerHTML = `<span class="toast-ic">${ico(kind === 'bad' ? 'x' : kind === 'warn' ? 'alert' : 'check', 'sm')}</span><span class="toast-t">${esc(t(msg))}</span>${action ? `<button>${esc(t(action.label))}</button>` : ''}<i class="toast-bar"></i>`;
   if (action) el.querySelector('button').onclick = () => { el.remove(); action.run(); };
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), action ? 6000 : 3200);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 220); }, life);
 }
 const haptic = () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) { /* unsupported */ } };
 
@@ -183,13 +188,13 @@ function closeModal(silent) {
 const optVal = o => (typeof o === 'object' ? o.v : o);
 const optLbl = o => (typeof o === 'object' ? o.l : t(o));
 function fieldHtml(f) {
-  if (f.type === 'html') return `<div class="${f.half ? '' : 'full'}">${f.html}</div>`;
-  if (f.type === 'section') return `<div class="full group-t" style="padding:8px 2px 0">${esc(t(f.label))}</div>`;
+  if (f.type === 'html') return `<div class="${f.half ? '' : 'full'}" ${f.key ? `data-fw="${f.key}"` : ''} ${f.hidden ? 'hidden' : ''}>${f.html}</div>`;
+  if (f.type === 'section') return `<div class="full group-t sec-d" style="padding:8px 2px 0" ${f.key ? `data-fw="${f.key}"` : ''} ${f.hidden ? 'hidden' : ''}>${esc(t(f.label))}</div>`;
   const id = 'f_' + f.name, v = f.value ?? '', lbl = esc(t(f.label || ''));
   // `info` (and `hint`, unless hintShow) goes behind an "i" next to the label; hintShow keeps
   // short live text such as a computed preview on screen.
   const info = f.info || (f.hintShow ? '' : f.hint), shown = f.hintShow ? f.hint : '';
-  const wrap = inner => `<div class="${f.full ? 'full' : ''}" data-fw="${f.name}" ${f.hidden ? 'hidden' : ''}>${f.label ? `<label class="f" for="${id}">${lbl}${f.required ? ' *' : ''}${tip(info)}</label>` : ''}${inner}${shown || (!f.label && info) ? `<div class="hint" style="margin-top:4px">${shown || info}</div>` : ''}</div>`;
+  const wrap = inner => `<div class="${f.full ? 'full' : ''}${f.showIf ? ' dep' : ''}" data-fw="${f.name}" ${f.hidden ? 'hidden' : ''}>${f.label ? `<label class="f" for="${id}">${withTip(lbl + (f.required ? ' *' : ''), tip(info))}</label>` : ''}${inner}${shown || (!f.label && info) ? `<div class="hint" style="margin-top:4px">${shown || info}</div>` : ''}</div>`;
   if (f.type === 'select') {
     const opt = o => `<option value="${esc(optVal(o))}" ${String(optVal(o)) === String(v) ? 'selected' : ''}>${esc(optLbl(o))}</option>`;
     // An option may carry {g: 'Block A'}; same-g options are kept together under a heading.
@@ -206,9 +211,20 @@ function fieldHtml(f) {
     return wrap(`<select id="${id}" name="${f.name}">${f.placeholder ? `<option value="">${esc(t(f.placeholder))}</option>` : ''}${body}</select>`);
   }
   if (f.type === 'textarea') return wrap(`<textarea id="${id}" name="${f.name}" maxlength="${f.maxlength || 500}" placeholder="${esc(t(f.placeholder || ''))}">${esc(v)}</textarea>`);
-  if (f.type === 'checkbox') return `<div class="${f.full ? 'full' : ''}" data-fw="${f.name}"><label class="row nw" style="gap:10px;font-weight:600;font-size:15px;min-height:44px"><input type="checkbox" id="${id}" name="${f.name}" ${v ? 'checked' : ''}> <span>${lbl}</span>${tip(f.info || f.hint)}</label></div>`;
+  if (f.type === 'checkbox') return `<div class="${f.full ? 'full' : ''}${f.showIf ? ' dep' : ''}" data-fw="${f.name}" ${f.hidden ? 'hidden' : ''}><label class="row nw fchk" for="${id}"><span class="fchk-t">${lbl}${tip(f.info || f.hint)}</span><span class="sw"><input type="checkbox" id="${id}" name="${f.name}" ${v ? 'checked' : ''}><span></span></span></label></div>`;
+  // The browser's own clock pop-up opens wherever it likes and often runs off a phone screen. A time is
+  // three plain choices instead (hour, minute, AM/PM), drawn by our own picker, which always stays on screen.
+  if (f.type === 'time') {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(v)), H = m ? +m[1] : null, M = m ? +m[2] : null;
+    const mins = [...Array(12)].map((_, i) => i * 5); if (M != null && !mins.includes(M)) { mins.push(M); mins.sort((a, b) => a - b); }
+    const o = (val, lab, on) => `<option value="${val}" ${on ? 'selected' : ''}>${lab}</option>`, p2 = n => String(n).padStart(2, '0');
+    return wrap(`<div class="tpk" id="${id}-w"><input type="hidden" id="${id}" name="${f.name}" value="${esc(v)}">
+      <select data-tp="h" aria-label="${esc(t('Hour'))}"><option value="">--</option>${[...Array(12)].map((_, i) => o(i + 1, p2(i + 1), H != null && (H % 12 || 12) === i + 1)).join('')}</select>
+      <select data-tp="m" aria-label="${esc(t('Minute'))}"><option value="">--</option>${mins.map(x => o(x, p2(x), M === x)).join('')}</select>
+      <select data-tp="a" aria-label="AM/PM">${o('AM', 'AM', H != null && H < 12)}${o('PM', 'PM', H != null && H >= 12)}</select></div>`);
+  }
   if (f.type === 'multi') { const cur = (v || []).map(String); return wrap(`<div class="mchk" id="${id}">${f.options.map(o => `<label><input type="checkbox" name="${f.name}" value="${esc(optVal(o))}" ${cur.includes(String(optVal(o))) ? 'checked' : ''}>${esc(optLbl(o))}</label>`).join('') || `<span class="hint">${esc(t('Nothing to choose yet'))}</span>`}</div>`); }
-  if (f.type === 'file') return wrap(`<input id="${id}" name="${f.name}" type="file" accept="${f.accept || 'image/*,application/pdf'}" ${f.multiple ? 'multiple' : ''} ${f.capture ? 'capture="environment"' : ''}>`);
+  if (f.type === 'file') return wrap(`<input id="${id}" name="${f.name}" type="file" accept="${f.accept || 'image/*'}" ${f.multiple ? 'multiple' : ''} ${f.capture ? 'capture="environment"' : ''}><div class="fview hint" data-fview-for="${id}" style="margin-top:6px"></div>`);
   // Browsers and password managers offer to "helpfully" fill an amount box from saved
   // payment cards, and drop a dark panel over the buttons underneath it. None of these fields
   // is a card number, so every one of them opts out — autocomplete alone is not enough,
@@ -302,7 +318,7 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
     for (const f of fields) {
       if (!f.name || f.type === 'html' || f.type === 'section') continue;
       const w = $(`[data-fw="${f.name}"]`, form); if (w && w.hidden) continue;
-      const v = vals[f.name], L = t(f.label || f.name);
+      const v = vals[f.name], L = t(f.errLabel || f.label || f.name);
       const isFile = f.type === 'file';
       const isPhone = !isFile && (f.type === 'tel' || /phone|mobile/i.test(f.name));
       const isAadhaar = !isFile && (f.name === 'idNo' || f.name === 'aadhaar' || ((f.type === 'text' || !f.type) && /aadhaar/i.test(f.label || '') && !/card|photo|doc|file|upload|paper/i.test(f.label || '')));
@@ -313,6 +329,7 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
         const raw = form.elements[f.name]?.value?.trim?.() ?? '';
         if (raw !== '') {
           if (isNaN(v) || !isFinite(v)) { err.textContent = t('{f} must be a valid number.', { f: L }); form.elements[f.name]?.focus?.(); return; }
+          if (f.int && !Number.isInteger(v)) { err.textContent = t('{f} must be a whole number.', { f: L }); form.elements[f.name]?.focus?.(); return; }
           if (f.min != null && v < f.min) { err.textContent = t('{f} must be at least {n}.', { f: L, n: f.min }); form.elements[f.name]?.focus?.(); return; }
           if (f.max != null && v > f.max) { err.textContent = t('{f} must be at most {n}.', { f: L, n: f.max }); form.elements[f.name]?.focus?.(); return; }
         }
@@ -391,12 +408,18 @@ const Picker = {
     }
   },
 
+  // "Fixed date (same day for everyone)" is one long line in a narrow box. Past 28 characters a trailing
+  // (detail) is split off: the button keeps the name, the list shows the detail small underneath.
+  split(txt) {
+    const x = String(txt || ''), m = x.match(/^(.*?)\s*\((.+)\)\s*$/);
+    return x.length > 28 && m && m[1].length >= 3 ? [m[1], m[2]] : [x, ''];
+  },
   paint(wrap) {
     const sel = $('select', wrap), btn = $('.pk-btn', wrap);
     if (!sel || !btn) return;
     const opt = sel.options[sel.selectedIndex];
     const empty = !opt || opt.value === '';
-    btn.innerHTML = `<span class="v ${empty ? 'ph' : ''}">${esc(opt ? opt.textContent : '')}</span>${ico('chev2', 'sm')}`;
+    btn.innerHTML = `<span class="v ${empty ? 'ph' : ''}">${esc(opt ? this.split(opt.textContent)[0] : '')}</span>${ico('chev2', 'sm')}`;
     wrap.classList.toggle('disabled', sel.disabled);
     btn.disabled = sel.disabled;
   },
@@ -440,7 +463,7 @@ const Picker = {
       if (g && g !== g0) { html += `<div class="pk-group">${esc(g)}</div>`; g0 = g; }
       html += `<button type="button" class="pk-opt" role="option" data-v="${esc(o.value)}"
         aria-selected="${o.selected}" ${o.disabled ? 'disabled' : ''}>
-        <span class="tick">${ico('check', 'sm')}</span><span class="lbl">${esc(o.textContent)}</span></button>`;
+        <span class="tick">${ico('check', 'sm')}</span><span class="lbl">${esc(this.split(o.textContent)[0])}${this.split(o.textContent)[1] ? `<small>${esc(this.split(o.textContent)[1])}</small>` : ''}</span></button>`;
     }
     html += `<div class="pk-none" hidden>${esc(t('No results'))}</div></div>`;
     pop.innerHTML = html;
@@ -531,8 +554,19 @@ const Picker = {
   place(pop, btn) {
     const r = btn.getBoundingClientRect(), gap = 6, edge = 10;
     pop.style.width = Math.max(r.width, 220) + 'px';
-    pop.style.maxHeight = Math.max(160, Math.floor(window.innerHeight - r.bottom - gap - edge)) + 'px';
-    pop.style.top = (r.bottom + gap) + 'px';
+    const below = Math.floor(window.innerHeight - r.bottom - gap - edge), above = Math.floor(r.top - gap - edge);
+    const need = Math.min(pop.scrollHeight, 300);
+    // Under the field when it fits there; otherwise above it, so a field at the bottom of a sheet
+    // (or of a short screen) never has its list cut off by the edge of the screen.
+    if (below < need && above > below) {
+      pop.style.top = 'auto';
+      pop.style.bottom = (window.innerHeight - r.top + gap) + 'px';
+      pop.style.maxHeight = Math.max(140, above) + 'px';
+      pop.classList.add('up');
+    } else {
+      pop.style.maxHeight = Math.max(140, below) + 'px';
+      pop.style.top = (r.bottom + gap) + 'px';
+    }
     pop.style.left = Math.min(Math.max(edge, r.left), Math.max(edge, window.innerWidth - pop.offsetWidth - edge)) + 'px';
   },
 };
@@ -544,6 +578,77 @@ window.addEventListener('scroll', e => {
   if (e.target && e.target.nodeType === 1 && e.target.closest && e.target.closest('.pk-pop')) return;
   Picker.close();
 }, true);
+
+/* ================= suggestions =================
+ * A text box that suggests from a list (ingredients from stock). The browser's own <datalist> list is drawn by
+ * the browser: on Windows/Edge it can land far from the box, unstyled and off the screen. This is our own: a card
+ * that sits right under (or above) the box, filters as you type, opens in full from the small arrow, and works
+ * with the keyboard. Mark a box with data-suggest="<source>" and give the source below. */
+const Suggest = {
+  sources: {}, cur: null, pop: null, idx: -1,
+  items(inp) { const src = this.sources[inp.dataset.suggest]; return src ? src() : []; },
+  matches(inp, all) {
+    const q = String(inp.value || '').trim().toLowerCase(), list = this.items(inp);
+    if (all || !q) return list;
+    return list.filter(x => x.v.toLowerCase().includes(q)).sort((a, b) => (b.v.toLowerCase().startsWith(q) - a.v.toLowerCase().startsWith(q)) || a.v.localeCompare(b.v));
+  },
+  show(inp, all) {
+    this.close(); if (!inp || inp.disabled || inp.readOnly) return;
+    const q = String(inp.value || '').trim(), list = this.matches(inp, all), exact = this.items(inp).some(x => x.v.toLowerCase() === q.toLowerCase());
+    const hl = v => { const i = q ? v.toLowerCase().indexOf(q.toLowerCase()) : -1; return i < 0 || all ? esc(v) : `${esc(v.slice(0, i))}<mark>${esc(v.slice(i, i + q.length))}</mark>${esc(v.slice(i + q.length))}`; };
+    if (!list.length && !q) return;
+    const pop = document.createElement('div'); pop.className = 'sg-pop'; pop.setAttribute('role', 'listbox');
+    pop.innerHTML = list.map((x, i) => `<button type="button" class="sg-opt" role="option" data-i="${i}" data-v="${esc(x.v)}"><span class="sg-n">${hl(x.v)}</span>${x.sub ? `<span class="sg-u">${esc(x.sub)}</span>` : ''}</button>`).join('')
+      + (q && !exact ? `<div class="sg-new">${ico('plus', 'sm')}<span>${esc(t('New item - it will be added to stock'))}: <b>${esc(q)}</b></span></div>` : '');
+    document.body.appendChild(pop);
+    this.pop = pop; this.cur = inp; this.idx = -1;
+    inp.setAttribute('aria-expanded', 'true');
+    this.place();
+    pop.addEventListener('mousedown', e => e.preventDefault());         // keep the focus in the box
+    pop.addEventListener('click', e => { const b = e.target.closest('.sg-opt'); if (b) this.pick(b.dataset.v); });
+  },
+  place() {
+    const pop = this.pop, inp = this.cur; if (!pop || !inp) return;
+    const r = inp.getBoundingClientRect(), gap = 6, edge = 10;
+    const below = Math.floor(window.innerHeight - r.bottom - gap - edge), above = Math.floor(r.top - gap - edge), need = Math.min(pop.scrollHeight, 280);
+    pop.style.width = Math.max(r.width, 200) + 'px';
+    pop.style.left = Math.min(Math.max(edge, r.left), Math.max(edge, window.innerWidth - pop.offsetWidth - edge)) + 'px';
+    if (below < need && above > below) { pop.style.top = 'auto'; pop.style.bottom = (window.innerHeight - r.top + gap) + 'px'; pop.style.maxHeight = Math.max(120, above) + 'px'; pop.classList.add('up'); }
+    else { pop.style.bottom = 'auto'; pop.style.top = (r.bottom + gap) + 'px'; pop.style.maxHeight = Math.max(120, below) + 'px'; }
+  },
+  move(d) {
+    const opts = $$('.sg-opt', this.pop); if (!opts.length) return;
+    this.idx = (this.idx + d + opts.length) % opts.length;
+    opts.forEach((o, i) => o.classList.toggle('cur', i === this.idx));
+    opts[this.idx].scrollIntoView({ block: 'nearest' });
+  },
+  pick(v) {
+    const inp = this.cur; if (!inp) return;
+    inp.value = v; this.close();
+    this.quiet = true;   // our own "input" event below must not open the list again
+    inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true }));
+    this.quiet = false;
+    const next = inp.closest('.ingrow') && inp.closest('.ingrow').querySelector('input[name^="qty_"]'); if (next) next.focus(); else inp.focus();
+  },
+  close() { if (this.pop) this.pop.remove(); if (this.cur) this.cur.removeAttribute('aria-expanded'); this.pop = null; this.cur = null; this.idx = -1; },
+};
+document.addEventListener('input', e => { const i = e.target; if (!Suggest.quiet && i && i.dataset && i.dataset.suggest && document.activeElement === i) Suggest.show(i, false); });
+document.addEventListener('focusin', e => { const i = e.target; if (i && i.dataset && i.dataset.suggest) Suggest.show(i, false); });
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('.sg-btn');
+  if (b) { const inp = b.parentNode.querySelector('[data-suggest]'); if (!inp) return; if (Suggest.cur === inp) Suggest.close(); else { inp.focus(); Suggest.show(inp, true); } return; }
+  if (Suggest.pop && !e.target.closest('.sg-pop') && !(e.target.dataset && e.target.dataset.suggest)) Suggest.close();
+});
+document.addEventListener('keydown', e => {
+  if (!Suggest.pop || e.target !== Suggest.cur) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); Suggest.move(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); Suggest.move(-1); }
+  else if (e.key === 'Enter' && Suggest.idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); const o = $$('.sg-opt', Suggest.pop)[Suggest.idx]; if (o) Suggest.pick(o.dataset.v); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); Suggest.close(); }
+  else if (e.key === 'Tab') Suggest.close();
+}, true);
+window.addEventListener('resize', () => Suggest.close());
+window.addEventListener('scroll', e => { if (Suggest.pop && !(e.target && e.target.nodeType === 1 && e.target.closest && e.target.closest('.sg-pop'))) Suggest.place(); }, true);
 
 /* ================= images & files ================= */
 function fileToDataURL(file) {
@@ -575,7 +680,9 @@ const csv = rows => rows.map(r => r.map(c => { const s = String(c ?? ''); return
 
 /* ================= view builders ================= */
 const badge = (s, k = '') => `<span class="badge ${k}">${esc(t(s))}</span>`;
-const avatar = n => `<span class="av" style="background:hsl(${hue(n)} 55% 30%)">${esc(initials(n))}</span>`;
+// six curated tones (indigo, teal, emerald, amber, rose, violet): the same name always gets the same one
+const tone = k => 'tn' + (hue(k) % 6);
+const avatar = n => `<span class="av ${tone(n)}">${esc(initials(n))}</span>`;
 function kpi(l, v, s, kind, to, icon) {
   const inner = `<div class="l">${icon ? ico(icon, 'sm') : ''}${esc(t(l))}</div><div class="v">${v}</div><div class="s">${s || '&nbsp;'}</div>`;
   return to ? `<button class="kpi ${kind || ''}" data-act="go" data-to="${to}">${inner}</button>` : `<div class="kpi ${kind || ''}">${inner}</div>`;
@@ -583,12 +690,15 @@ function kpi(l, v, s, kind, to, icon) {
 // Explanations live behind a small "i" button instead of sitting on the screen as paragraphs.
 // `html` is trusted markup built by the app (it may hold a link), never user input.
 const tip = html => html ? `<span class="ib-w"><button type="button" class="ib" data-act="tip" aria-label="${esc(t('More info'))}">i</button><span class="ib-tx" hidden>${html}</span></span>` : '';
+// An "i" never drops onto a line of its own: it is bound to the last word of its title (no break between them),
+// so on a narrow phone the pair wraps together and the icon always sits at the end of the text it explains.
+const withTip = (html, tp) => { if (!tp) return html; const x = String(html), i = x.lastIndexOf(' '); return i < 0 ? `<span class="nwj">${x}${tp}</span>` : `${x.slice(0, i)} <span class="nwj">${x.slice(i + 1)}${tp}</span>`; };
 const about = text => `<div class="about">${tip(esc(t(text)))}</div>`;
 const plainLen = h => String(h || '').replace(/<[^>]*>/g, '').length;
 // A short subtitle is a status ("3 visitors inside"); a long one is an explanation → behind "i".
 function head(title, sub, actions = '') {
   const long = sub && plainLen(sub) > 60;
-  return `<div class="sec-head"><div><h2>${esc(t(title))}${long ? tip(sub) : ''}</h2>${sub && !long ? `<p>${sub}</p>` : ''}</div><div class="row">${actions}</div></div>`;
+  return `<div class="sec-head"><div><h2>${withTip(esc(t(title)), long ? tip(sub) : '')}</h2>${sub && !long ? `<p>${sub}</p>` : ''}</div><div class="row">${actions}</div></div>`;
 }
 const btn = (label, act, attrs = '', cls = '', icon = '') => `<button class="btn ${cls}" data-act="${act}" ${attrs}>${icon ? ico(icon, 'sm') : ''}${label ? `<span>${esc(t(label))}</span>` : ''}</button>`;
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
@@ -602,7 +712,7 @@ function li(o) {
     <span class="body"><span class="t ell">${o.raw ? o.t : esc(o.t)}</span>${o.d ? `<span class="d">${o.rawd ? o.d : esc(o.d)}</span>` : ''}</span>
     ${o.end != null || o.act ? `<span class="end">${o.end ?? ''}${o.act && o.chev !== false ? ico('chev', 'chev') : ''}</span>` : ''}</${tag}>`;
 }
-const group = (title, rows, foot) => `${title ? `<div class="group-t">${esc(t(title))}</div>` : ''}<div class="group">${rows || `<div class="li noic"><span class="body muted">${esc(t('Nothing here yet'))}</span></div>`}</div>${foot ? `<div class="group-f">${foot}</div>` : ''}`;
+const group = (title, rows, foot) => `${title ? `<div class="group-t">${withTip(esc(t(title)), foot ? tip(foot) : '')}</div>` : ''}<div class="group">${rows || `<div class="li noic"><span class="body muted">${esc(t('Nothing here yet'))}</span></div>`}</div>${foot && !title ? `<div class="group-f">${foot}</div>` : ''}`;
 function seg(key, list, def) {
   const cur = ui.tab[key] || def;
   return `<div class="seg" role="tablist">${list.map(([k, l, n]) => `<button role="tab" class="${cur === k ? 'on' : ''}" aria-selected="${cur === k}" data-act="tab" data-key="${key}" data-tab="${k}">${esc(t(l))}${n ? `<span class="n">${n}</span>` : ''}</button>`).join('')}</div>`;
@@ -649,9 +759,167 @@ function loadScript(src) {
 // QR code as inline SVG. The library is fetched on first use; the screen redraws once it lands.
 function qrSvg(text, cell = 5) {
   if (typeof qrcode !== 'function') {
-    loadScript('/vendor/qrcode.js').then(() => render()).catch(() => {});
-    return `<div class="qr-loading" style="min-height:160px;display:grid;place-items:center"><span class="spin"></span></div>`;
+    // the QR can sit in a pop-up sheet as well as in the page, so every waiting placeholder is filled in place once the library is here
+    loadScript('/vendor/qrcode.js').then(() => document.querySelectorAll('.qr-loading').forEach(el => { el.outerHTML = qrSvg(el.dataset.t || '', +el.dataset.c || cell); }))
+      .catch(() => document.querySelectorAll('.qr-loading').forEach(el => { el.innerHTML = '<span class="muted sm">QR could not load. Use the pay button instead.</span>'; }));
+    return `<div class="qr-loading" data-t="${esc(text)}" data-c="${cell}" style="min-height:160px;display:grid;place-items:center"><span class="spin"></span></div>`;
   }
   const q = qrcode(0, 'M'); q.addData(text); q.make();
   return q.createSvgTag({ cellSize: cell, margin: 2, scalable: true });
 }
+
+/* Every file picker shows what was picked: a "View" link that opens the file itself in a new tab (so the
+ * person can cross-check the Aadhaar / photo before saving) and a small thumbnail for photos. The links are
+ * temporary browser addresses; they are released the moment the file changes or the form goes away. */
+(function () {
+  const urls = new Map();   // input id -> [object URLs]
+  const free = id => { (urls.get(id) || []).forEach(u => URL.revokeObjectURL(u)); urls.delete(id); };
+  document.addEventListener('change', e => {
+    const inp = e.target; if (!inp || inp.type !== 'file') return;
+    const slot = document.querySelector('[data-fview-for="' + (window.CSS && CSS.escape ? CSS.escape(inp.id) : inp.id) + '"]'); if (!slot) return;
+    free(inp.id); slot.textContent = '';
+    const files = [...(inp.files || [])]; if (!files.length) return;
+    const made = [];
+    for (const f of files) {
+      if (f.size > 15 * 1024 * 1024) { slot.textContent = t('File is too large (max 15 MB).'); inp.value = ''; return; }
+      const u = URL.createObjectURL(f); made.push(u);
+      const row = document.createElement('div'); row.className = 'fchip';
+      row.innerHTML = (/^image\//.test(f.type) ? '<img alt="" src="' + u + '">' : '<span class="fchip-i">' + ico('file') + '</span>')
+        + '<span class="fchip-n"><b></b><small>' + (f.size < 1048576 ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB') + '</small></span>'
+        + '<a class="fchip-b" data-docview data-type="' + esc(f.type) + '" target="_blank" rel="noopener" href="' + u + '" aria-label="' + esc(t('View')) + '" title="' + esc(t('View')) + '">' + ico('eye') + '</a>'
+        + '<button type="button" class="fchip-b" aria-label="' + esc(t('Remove')) + '" title="' + esc(t('Remove')) + '">' + ico('x') + '</button>';
+      row.querySelector('b').textContent = f.name; row.querySelector('a').dataset.name = f.name;
+      row.querySelector('button').onclick = () => { inp.value = ''; inp.dispatchEvent(new Event('change', { bubbles: true })); };
+      slot.appendChild(row);
+    }
+    urls.set(inp.id, made);
+  });
+})();
+
+/* A document opens in a panel on top of whatever is open (a form, a profile) instead of a new browser tab, so nothing is lost. */
+function docView(url, name, mime) {
+  const isImg = /^image\//.test(mime || '') || /^data:image\//i.test(String(url || '')) || /\.(png|jpe?g|webp|gif|bmp|heic)(\?|$)/i.test(String(name || '') + ' ' + String(url || ''));
+  const root = document.createElement('div'); root.className = 'dv'; root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true');
+  const close = () => { root.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  root.innerHTML = '<div class="dv-bg"></div><div class="dv-c"><header><b></b><a class="dv-b" target="_blank" rel="noopener" aria-label="' + esc(t('Open in new tab')) + '">' + ico('link', 'sm') + '</a><button type="button" class="dv-b dv-x" aria-label="' + esc(t('Close')) + '">' + ico('x', 'sm') + '</button></header><div class="dv-v"></div></div>';
+  root.querySelector('b').textContent = name || t('Document');
+  root.querySelector('a.dv-b').href = url;
+  const v = root.querySelector('.dv-v');
+  if (isImg) { const im = document.createElement('img'); im.src = url; im.alt = ''; v.appendChild(im); }
+  else { const fr = document.createElement('iframe'); fr.src = url; fr.title = name || ''; v.appendChild(fr); }
+  root.querySelector('.dv-bg').onclick = close; root.querySelector('.dv-x').onclick = close;
+  document.addEventListener('keydown', onKey); document.body.appendChild(root);
+}
+document.addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a[data-docview]'); if (!a) return;
+  e.preventDefault(); docView(a.href, a.dataset.name, a.dataset.type);
+});
+
+/* One phone-notification style card. The wrapper carries the red "delete" backdrop; app.js moves the card with the finger. */
+function swipeCard({ act, id, icon = 'bell', title, body = '', time = '', pinned = false, actions = '', attrs = '', label = 'Delete', tone = '' }) {
+  return `<div class="swp-wrap" data-swact="${act}" data-id="${esc(id)}" ${attrs}><div class="swp-bg"><span>${ico('trash', 'sm')} ${esc(t(label))}</span><span>${esc(t(label))} ${ico('trash', 'sm')}</span></div>
+    <div class="swp ncard"><span class="nc-ic ${tone}">${ico(icon, 'sm')}</span><div class="nc-body"><div class="nc-top"><b class="nc-t">${pinned ? '' : ''}${esc(title)}</b><span class="nc-time">${esc(time)}</span></div>${body ? `<div class="nc-msg">${esc(body)}</div>` : ''}${actions ? `<div class="nc-acts">${actions}</div>` : ''}</div></div></div>`;
+}
+
+
+/* ================= numbers only =================
+ * A box for a number takes digits (and one decimal point where decimals make sense, and a minus
+ * only where the box allows below zero). No letters, no "e", no symbols - typed or pasted. Phone
+ * boxes take digits only. One place, so every form, in every panel, behaves the same. */
+(() => {
+  const isNum = i => i && i.tagName === 'INPUT' && i.type === 'number';
+  const isDigits = i => i && i.tagName === 'INPUT' && (i.type === 'tel' || (i.inputMode === 'numeric' && i.type !== 'number') || i.hasAttribute('data-digits'));
+  const dotOk = i => i.step === 'any' || /\./.test(i.step || '') || !i.step;
+  const minusOk = i => i.min !== '' && +i.min < 0;
+  document.addEventListener('keydown', e => {
+    const i = e.target; if (e.ctrlKey || e.metaKey || e.altKey || !e.key || e.key.length !== 1) return;
+    if (isNum(i)) { if (/\d/.test(e.key) || (e.key === '.' && dotOk(i) && !String(i.value).includes('.')) || (e.key === '-' && minusOk(i))) return; e.preventDefault(); }
+    else if (isDigits(i)) { if (!/\d/.test(e.key)) e.preventDefault(); }
+  }, true);
+  document.addEventListener('paste', e => {
+    const i = e.target; if (!isNum(i) && !isDigits(i)) return;
+    e.preventDefault();
+    const raw = (e.clipboardData || window.clipboardData).getData('text'), v = isNum(i) ? raw.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1') : raw.replace(/\D/g, '');
+    i.value = v; i.dispatchEvent(new Event('input', { bubbles: true }));
+  }, true);
+  document.addEventListener('input', e => { const i = e.target; if (isDigits(i) && /\D/.test(i.value)) i.value = i.value.replace(/\D/g, ''); }, true);
+})();
+
+
+// Keeps the hidden "HH:MM" value of a time box in step with its three choices.
+document.addEventListener('change', e => {
+  const sel = e.target; if (!sel.dataset || !sel.dataset.tp) return;
+  const box = sel.closest('.tpk'); if (!box) return;
+  const h = $('[data-tp=h]', box).value, m = $('[data-tp=m]', box).value, a = $('[data-tp=a]', box).value, hid = $('input[type=hidden]', box);
+  let val = '';
+  if (h !== '') { const hh = (+h % 12) + (a === 'PM' ? 12 : 0); val = `${String(hh).padStart(2, '0')}:${String(m === '' ? 0 : +m).padStart(2, '0')}`; }
+  hid.value = val; hid.dispatchEvent(new Event('input', { bubbles: true }));
+}, true);
+
+
+/* ================= home hero =================
+ * The same opening card on every panel's Home: a greeting with the person's name, two headline
+ * numbers (the first one in colour), and a strip of three small facts. Each panel passes its own
+ * numbers; the look is only here. cards: [{l, v, s, tone, icon, to, spark}], strip: [{icon, v, l, bar}] */
+const greeting = () => { const hr = new Date().getHours(); return hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening'; };
+function sparkSvg(vals) {
+  const v = (vals || []).map(Number); if (v.length < 2) return '';
+  const mx = Math.max(...v), mn = Math.min(...v), rg = mx - mn || 1;
+  const pts = v.map((x, i) => `${(i / (v.length - 1) * 100).toFixed(1)},${(30 - (x - mn) / rg * 24).toFixed(1)}`).join(' ');
+  return `<svg class="hh-sp" viewBox="0 0 100 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+let hhUid = 0;
+// 7080479 -> ₹70.8L, so a huge change reads at a glance instead of as a silly percentage.
+const hhShort = n => { n = Math.abs(+n || 0); const f = (x, u) => '₹' + (Math.round(x * 10) / 10) + u; return n >= 1e7 ? f(n / 1e7, ' Cr') : n >= 1e5 ? f(n / 1e5, 'L') : n >= 1e3 ? f(n / 1e3, 'K') : '₹' + Math.round(n); };
+// A filled line chart (gradient under the line) that takes the colour of its card.
+function areaSvg(vals, labels) {
+  const v = (vals || []).map(Number); if (v.length < 2) return '';
+  const mx = Math.max(...v, 1), id = 'hha' + (++hhUid);
+  const pts = v.map((x, i) => [i / (v.length - 1) * 100, 36 - (x / mx) * 30]);
+  // smooth curve through the points (Catmull-Rom turned into Beziers)
+  let line = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6], c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    line += ` C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  return `<div class="hh-ch"><svg class="hh-area" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><defs>
+      <linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--sc)" stop-opacity=".42"/><stop offset=".7" stop-color="var(--sc)" stop-opacity=".08"/><stop offset="1" stop-color="var(--sc)" stop-opacity="0"/></linearGradient>
+      <linearGradient id="${id}s" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--sc)" stop-opacity=".35"/><stop offset="1" stop-color="var(--sc)"/></linearGradient></defs>
+    <path d="M0,13 H100 M0,25 H100" stroke="var(--sc)" stroke-opacity=".12" stroke-width="1" stroke-dasharray="2 3" vector-effect="non-scaling-stroke"/>
+    <path d="${line} L100,40 L0,40 Z" fill="url(#${id})"/><path d="${line}" fill="none" stroke="url(#${id}s)" stroke-width="2.6" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+    <i class="hh-dot" style="top:${(last[1] / 40 * 100).toFixed(1)}%"></i>${labels ? `<div class="hh-ax"><span>${esc(labels[0])}</span><span>${esc(labels[1])}</span></div>` : ''}</div>`;
+}
+// Big numbers on the hero count up from zero once, like a dashboard waking up.
+function hhCountUp(root) {
+  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion:reduce)').matches) return;
+  for (const el of root.querySelectorAll('[data-count]')) {
+    if (el.dataset.done) continue; el.dataset.done = '1';
+    const to = +el.dataset.count || 0, t0 = performance.now(), dur = 900;
+    const step = now => { const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3); el.textContent = inr(to * e); if (k < 1) requestAnimationFrame(step); };
+    el.textContent = inr(0); requestAnimationFrame(step);
+  }
+}
+const hhPhoto = () => { try { return (typeof sitePhotoUrl === 'function' && sitePhotoUrl('hero', 1000)) || '/img/home-hero.webp'; } catch (e) { return '/img/home-hero.webp'; } };
+function homeHero({ name, sub, cards = [], strip = [] }) {
+  const card = (c, i) => {
+    const tn = c.tone || (i === 0 ? 'ok' : 'info');
+    const val = c.count != null ? `<span data-count="${c.count}">${c.v}</span>` : c.v;
+    const seg = c.seg ? `<div class="hh-seg"><i class="bad" style="flex:${Math.max(0.0001, c.seg.a)}"></i><i class="warn" style="flex:${Math.max(0.0001, c.seg.b)}"></i></div><div class="hh-lg"><span class="bad">${esc(t(c.seg.la))} <b>${inr(c.seg.a)}</b></span><span class="warn">${esc(t(c.seg.lb))} <b>${inr(c.seg.b)}</b></span></div>` : '';
+    const inner = `<span class="hh-glow"></span><div class="hh-ct"><span class="hh-ci">${ico(c.icon || 'rupee', 'sm')}</span><span class="hh-cl">${esc(t(c.l))}</span></div>
+      <div class="hh-cv${String(c.v).replace(/<[^>]*>/g, '').length > 9 ? ' hh-long' : ''}">${val}</div>
+      ${c.pill ? `<div class="hh-cm"><span class="hh-pill ${c.stone || c.tone || ''}">${c.pill}</span><span class="hh-cs2">${c.s || ''}</span></div>` : `<div class="hh-cs ${c.stone || c.tone || ''}">${c.s || '&nbsp;'}</div>`}
+      ${seg}${c.area ? areaSvg(c.area, c.areaLabels) : ''}${c.bar != null ? `<i class="hh-cb"><u style="width:${Math.max(4, Math.min(100, c.bar))}%"></u></i>` : ''}${c.action || ''}`;
+    return `<div class="hh-c t-${tn}" style="--i:${i}" ${c.to ? `role="button" tabindex="0" data-act="go" data-to="${c.to}"` : ''}>${inner}</div>`;
+  };
+  return `<section class="hh">
+    <div class="hh-top"><img class="hh-art" src="${esc(hhPhoto())}" alt="" decoding="async"><p class="hh-hi">${esc(t(greeting()))},</p><h1 class="hh-name">${esc(name)}</h1><p class="hh-sub">${sub}</p><i class="hh-line"></i></div>
+    ${cards.length ? `<div class="hh-cards">${cards.map(card).join('')}</div>` : ''}
+    ${strip.length ? `<div class="hh-strip">${strip.map(x => `<div class="hh-s"><span class="hh-si">${ico(x.icon, 'sm')}</span><div class="hh-sx"><b>${x.v}</b><small>${esc(t(x.l))}</small>${x.bar != null ? `<i class="hh-sb"><u style="width:${Math.max(0, Math.min(100, x.bar))}%"></u></i>` : ''}</div></div>`).join('')}</div>` : ''}
+  </section>`;
+}
+
+// If the owner's own photo link does not load, the house photo takes its place.
+document.addEventListener('error', e => { const i = e.target; if (i && i.classList && i.classList.contains('hh-art') && !i.dataset.fb) { i.dataset.fb = '1'; i.src = '/img/home-hero.webp'; } }, true);

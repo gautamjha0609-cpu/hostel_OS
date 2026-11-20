@@ -577,7 +577,7 @@ test('public submit_claim endpoint validates UTR, creates claim & admin notifica
       return json(200, [{ id: H1, name: 'Sunrise PG', status: 'active' }]);
     }
     if (u.hostname === 'sb.test' && u.pathname.includes('/rest/v1/docs')) {
-      if ((opt.method || 'GET') === 'GET') return json(200, []);
+      if ((opt.method || 'GET') === 'GET') return json(200, decodeURIComponent(u.search).includes('kind=eq.res') ? [{ data: { name: 'Asha Rao', roomId: 'room-1', status: 'active' } }] : []);
       if (opt.method === 'POST') {
         const body = JSON.parse(opt.body);
         inserted.push(...body);

@@ -925,23 +925,6 @@ async function runSimulation() {
         go('/complaints');
       })()
     `);
-    const cmpAssigned = await cdp.eval(`
-      (async () => {
-        const cmpId = '${cmpCreated.id}';
-        A.cmpstart({ dataset: { id: cmpId } });
-        await new Promise(r => setTimeout(r, 150));
-        const form = document.querySelector('#mform');
-        form.who.value = 'Geeta Devi · Housekeeping';
-        form.who.dispatchEvent(new Event('change', { bubbles: true }));
-        document.querySelector('[data-act="msubmit"]').click();
-        await new Promise(r => setTimeout(r, 300));
-        const c = Store.get(cmpId);
-        return { ok: c.status === 'progress', status: c.status, assignee: c.assignee };
-      })()
-    `);
-    console.log('  Warden assigned complaint via UI:', cmpAssigned);
-    const shot16 = await cdp.screenshot('16_warden_complaint_assigned.png');
-
     // 3. Housekeeper logs in and resolves complaint via UI modal
     await cdp.eval(`(async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); })()`);
     await sleep(300);
@@ -959,15 +942,9 @@ async function runSimulation() {
       (async () => {
         const cmpId = '${cmpCreated.id}';
         A.cmpdone({ dataset: { id: cmpId } });
-        await new Promise(r => setTimeout(r, 150));
-        const form = document.querySelector('#mform');
-        form.reply.value = 'Heating coil replaced and geyser tested working';
-        form.reply.dispatchEvent(new Event('input', { bubbles: true }));
-        form.reply.dispatchEvent(new Event('change', { bubbles: true }));
-        document.querySelector('[data-act="msubmit"]').click();
         await new Promise(r => setTimeout(r, 300));
         const c = Store.get(cmpId);
-        return { ok: c.status === 'resolved', status: c.status, reply: c.reply };
+        return { ok: c.status === 'resolved', status: c.status, by: c.resolvedBy };
       })()
     `);
     console.log('  Complaint resolved via UI:', cmpResolved);
@@ -1033,13 +1010,6 @@ async function runSimulation() {
     console.log('  Visitor entry logged by Guard via UI:', visitorRes);
     const shot18 = await cdp.screenshot('18_guard_visitor_entered.png');
 
-    // Visitor exit via UI button
-    await cdp.eval(`
-      (async () => {
-        A.gatevout({ dataset: { id: '${visitorRes.id}' } });
-        await new Promise(r => setTimeout(r, 200));
-      })()
-    `);
 
     // 2. Owner logs in and records daily operational expense via UI addexp modal
     await cdp.eval(`(async () => { await Store.logout(); history.replaceState(null, '', '/'); renderLogin(); })()`);

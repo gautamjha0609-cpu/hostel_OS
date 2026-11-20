@@ -14,6 +14,9 @@ const SECURITY_HEADERS = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains'
 };
 
+// Same origin as vercel.json: browsers on other sites may not call the API. Override with CORS_ORIGIN.
+const corsOrigin = () => process.env.CORS_ORIGIN || 'https://sarvlekh.in';
+
 function normalizePath(p) {
   let decoded = p;
   try { decoded = decodeURIComponent(p); } catch (_) { }
@@ -55,7 +58,7 @@ const worker = {
     // CORS Preflight
     if (request.method === 'OPTIONS') {
       const corsHeaders = new Headers({
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': corsOrigin(),
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Hostel-Id'
       });
@@ -85,7 +88,7 @@ const worker = {
     if (BLOCKED_PATHS.test(normPath) || BLOCKED_PATHS.test(url.pathname) || url.pathname.includes('..') || normPath.includes('..')) {
       const blockedHeaders = new Headers({
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': corsOrigin()
       });
       applySecurityHeaders(blockedHeaders);
       return new Response(JSON.stringify({ error: 'Not found' }), {
@@ -143,7 +146,7 @@ const worker = {
     } else {
       const errHeaders = new Headers({
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': corsOrigin(),
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Hostel-Id'
       });
@@ -174,7 +177,7 @@ const worker = {
         if (resolved) return;
         resolved = true;
         res.headersSent = true;
-        if (!headers.has('Access-Control-Allow-Origin')) headers.set('Access-Control-Allow-Origin', '*');
+        if (!headers.has('Access-Control-Allow-Origin')) headers.set('Access-Control-Allow-Origin', corsOrigin());
         if (!headers.has('Access-Control-Allow-Methods')) headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         if (!headers.has('Access-Control-Allow-Headers')) headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hostel-Id');
         applySecurityHeaders(headers);
@@ -246,7 +249,7 @@ const worker = {
         .catch((err) => {
           if (resolved) return;
           const errH = new Headers({ 'Content-Type': 'application/json' });
-          if (!errH.has('Access-Control-Allow-Origin')) errH.set('Access-Control-Allow-Origin', '*');
+          if (!errH.has('Access-Control-Allow-Origin')) errH.set('Access-Control-Allow-Origin', corsOrigin());
           if (!errH.has('Access-Control-Allow-Methods')) errH.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
           if (!errH.has('Access-Control-Allow-Headers')) errH.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hostel-Id');
           applySecurityHeaders(errH);

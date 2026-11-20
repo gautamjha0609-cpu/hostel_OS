@@ -10,28 +10,7 @@
   var resIdParam = q.get('res_id') || '';
   var rawPa = q.get('pa') || '', rawPn = q.get('pn') || '', rawAm = parseFloat(q.get('am') || '0'), rawTn = q.get('tn') || '', rawH = q.get('h') || rawPn;
 
-  var hi = (navigator.language || '').toLowerCase().indexOf('hi') === 0;
-  var T = hi ? {
-    pay: 'भुगतान करें',
-    payWithCf: 'Cashfree UPI से सुरक्षित भुगतान करें',
-    openApp: 'UPI ऐप चुनें',
-    scanQr: 'या किसी भी UPI ऐप से यह QR कोड स्कैन करें',
-    verified: 'भुगतान सफलतापूर्वक सत्यापित हो गया!',
-    verifying: 'गेटवे से भुगतान की पुष्टि हो रही है...',
-    wait: 'कृपया प्रतीक्षा करें, यह स्क्रीन बंद न करें',
-    failed: 'भुगतान असफल रहा या रद्द कर दिया गया',
-    retry: 'पुनः प्रयास करें',
-    downloadReceipt: 'रसीद डाउनलोड करें (PDF/Print)',
-    txnRef: 'लेनदेन संदर्भ (Cashfree ID)',
-    utrRef: 'बैंक UTR / RRN',
-    amtPaid: 'भुगतान की गई राशि',
-    date: 'दिनांक',
-    copyUpi: 'UPI ID कॉपी करें',
-    copied: 'कॉपी हो गया',
-    manualHint: 'यदि ऐप न खुले तो नीचे दी गई UPI ID पर भेजें और UTR दर्ज करें।',
-    loading: 'भुगतान विवरण लोड हो रहा है...',
-    alreadyPaid: 'यह बिल पहले ही पूरा चुकाया जा चुका है!'
-  } : {
+  var T = {
     pay: 'Pay',
     payWithCf: 'Pay Securely via Cashfree UPI',
     openApp: 'Select UPI Application',
@@ -50,8 +29,14 @@
     copied: 'Copied',
     manualHint: 'If UPI app does not open, pay to UPI ID below and enter UTR.',
     loading: 'Loading payment details...',
-    alreadyPaid: 'This invoice has already been paid in full!'
+    alreadyPaid: 'This invoice has already been paid in full!',
+    amountToPay: 'Amount to pay', payUpi: 'Pay with UPI app', opensApps: 'Opens GPay, PhonePe, Paytm and more',
+    onComputer: 'Open this page on your phone to pay, or scan the QR with your phone\'s UPI app.', noApp: 'No UPI app opened? Scan the QR or copy the UPI ID.',
+    copyAmount: 'Copy amount', utrTitle: 'Your UTR and screenshot', utrSub: 'Enter the UTR from your UPI app and add the screenshot. The owner checks it and sends your receipt.',
+    utrPh: 'UTR / transaction ID', submitUtr: 'Send', addShot: 'Add payment screenshot', changeShot: 'Change screenshot', shotAdded: 'Screenshot added', viewShot: 'View screenshot', removeShot: 'Remove screenshot', backPay: 'Back to payment', alreadyPaidLink: 'Already paid? Enter UTR', badShot: 'Please choose a photo (up to 15 MB)', badUtr: 'Please enter the UTR from your UPI app', badLink: 'This link is not linked to a resident. Ask the owner for a new link.', sending: 'Sending...', sent: 'Sent to the owner', already: 'Already sent', failedSend: 'Could not send. Please try again.', network: 'Network problem. Please try again.', secure: 'Secure payment', noUpi: 'The owner has not added a UPI ID yet.', forWho: 'for'
   };
+  var isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || ((navigator.maxTouchPoints || 0) > 1 && /Macintosh/i.test(navigator.userAgent || ''));
+  var placeholder = function (v) { return !v || v === 'Resident' || v === 'Hostel / PG Property'; };
 
   var esc = function (s) {
     return String(s || '').replace(/[&<>"']/g, function (c) {
@@ -71,6 +56,7 @@
     orderId: orderIdParam,
     sessionId: null,
     amount: rawAm,
+    step: 'pay', shot: null, utr: '',
     status: 'INITIAL', // 'INITIAL', 'LOADING', 'CHECKOUT', 'POLLING', 'SUCCESS', 'FAILED'
     pollTimer: null,
     pollCount: 0,
@@ -290,9 +276,9 @@
 
   function render() {
     var info = state.info;
-    var hostelName = info?.hostel?.name || rawH || 'Sarvlekh PG';
-    var residentName = info?.resident?.name || rawPn || 'Resident';
-    var invTitle = info?.invoice?.title || rawTn || 'Hostel Rent';
+    var hostelName = (!placeholder(info?.hostel?.name) && info.hostel.name) || rawH || 'Sarvlekh PG';
+    var residentName = (!placeholder(info?.resident?.name) && info.resident.name) || '';
+    var invTitle = (info?.invoice?.title && info.invoice.title !== 'Rent Invoice' && info.invoice.title) || rawTn || info?.invoice?.title || 'Hostel Rent';
     var amt = state.amount || rawAm;
 
     // 1. Success state
@@ -300,7 +286,7 @@
       var res = state.paymentResult || {};
       box.innerHTML =
         '<div class="card" style="text-align:center;padding:28px 16px">' +
-        '<div style="font-size:48px;line-height:1;margin-bottom:12px">✅</div>' +
+        '<div style="margin-bottom:12px"><svg viewBox="0 0 24 24" style="width:52px;height:52px;color:#1a8f3c;display:block;margin:0 auto" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
         '<h2 style="color:#28a745;margin-bottom:4px">' + esc(T.verified) + '</h2>' +
         '<p class="muted" style="margin-top:0">' + esc(hostelName) + '</p>' +
         '<div class="hero" style="margin:20px 0;background:#f0fff4;border:1px solid #b7eb8f;border-radius:12px;padding:16px">' +
@@ -351,15 +337,15 @@
         '<h2 style="margin:8px 0 2px">' + esc(hostelName) + '</h2>' +
         '<div class="muted sm">' + esc(residentName) + ' · ' + esc(invTitle) + '</div>' +
         '<div class="big" style="margin:16px 0 4px;font-weight:700">' + inr(amt) + '</div>' +
-        '<div class="badge ok" style="margin-bottom:16px">🔒 Cashfree Official UPI Gateway</div>' +
+        '<div class="badge ok" style="margin-bottom:16px">Cashfree Official UPI Gateway</div>' +
         '</div>' +
 
         '<div class="upi-apps" style="display:flex;flex-direction:column;gap:10px;margin-top:14px">' +
-        (phonepeUri ? '<a class="btn block" style="background:#5f259f;color:#fff" href="' + esc(phonepeUri) + '">💜 PhonePe से Pay करें</a>' : '') +
-        (gpayUri ? '<a class="btn block" style="background:#1a73e8;color:#fff" href="' + esc(gpayUri) + '">🔵 Google Pay से Pay करें</a>' : '') +
-        (paytmUri ? '<a class="btn block" style="background:#00b9f5;color:#fff" href="' + esc(paytmUri) + '">🔷 Paytm UPI से Pay करें</a>' : '') +
-        (bhimUri ? '<a class="btn block" style="background:#005a9c;color:#fff" href="' + esc(bhimUri) + '">🇮🇳 BHIM UPI से Pay करें</a>' : '') +
-        '<a class="btn primary block" href="' + esc(genericUri) + '">📱 किसी भी UPI ऐप से Pay करें</a>' +
+        (phonepeUri ? '<a class="btn block" style="background:#5f259f;color:#fff" href="' + esc(phonepeUri) + '">Pay with PhonePe</a>' : '') +
+        (gpayUri ? '<a class="btn block" style="background:#1a73e8;color:#fff" href="' + esc(gpayUri) + '">Pay with Google Pay</a>' : '') +
+        (paytmUri ? '<a class="btn block" style="background:#00b9f5;color:#fff" href="' + esc(paytmUri) + '">Pay with Paytm</a>' : '') +
+        (bhimUri ? '<a class="btn block" style="background:#005a9c;color:#fff" href="' + esc(bhimUri) + '">Pay with BHIM UPI</a>' : '') +
+        '<a class="btn primary block" href="' + esc(genericUri) + '">Pay with any UPI app</a>' +
         '</div>' +
 
         (qrSvg ?
@@ -379,7 +365,7 @@
           '</div>') +
 
         '<div class="row" style="justify-content:center;margin-top:14px">' +
-        '<button class="btn sm' + (state.pollingStopped ? ' primary' : '') + '" id="btn-manual-refresh">🔄 Check Status Now</button>' +
+        '<button class="btn sm' + (state.pollingStopped ? ' primary' : '') + '" id="btn-manual-refresh">Check Status Now</button>' +
         '</div>' +
         '</div>';
 
@@ -394,7 +380,7 @@
             setTimeout(function () {
               if (btnRefresh) {
                 btnRefresh.disabled = false;
-                btnRefresh.textContent = '🔄 Check Status Now';
+                btnRefresh.textContent = 'Check Status Now';
               }
             }, 3000);
           }
@@ -407,7 +393,7 @@
     if (amt <= 0 || (info?.invoice && Number(info.invoice.total) > 0 && Number(info.invoice.balance || 0) <= 0)) {
       box.innerHTML =
         '<div class="card" style="text-align:center;padding:28px 16px">' +
-        '<div style="font-size:48px;line-height:1;margin-bottom:12px">✅</div>' +
+        '<div style="margin-bottom:12px"><svg viewBox="0 0 24 24" style="width:52px;height:52px;color:#1a8f3c;display:block;margin:0 auto" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
         '<h2 style="color:#28a745;margin-bottom:4px">' + esc(T.alreadyPaid) + '</h2>' +
         '<p class="muted" style="margin-top:0">' + esc(hostelName) + '</p>' +
         '<div class="hero" style="margin:20px 0;background:#f0fff4;border:1px solid #b7eb8f;border-radius:12px;padding:16px">' +
@@ -422,44 +408,55 @@
     // 5. Initial state (Pre-checkout review & "Pay Now")
     var upiId = info?.settlement?.upi_id || rawPa || '';
     var payeeName = info?.settlement?.payee_name || rawPn || hostelName;
-    var genericUri = upiId ? ('upi://pay?pa=' + encodeURIComponent(upiId) + '&pn=' + encodeURIComponent(payeeName) + '&am=' + encodeURIComponent(amt.toFixed(2)) + '&cu=INR&tn=' + encodeURIComponent((invTitle || 'PG Rent').slice(0, 50))) : '';
+    var genericUri = upiId ? ('upi://pay?pa=' + encodeURIComponent(upiId) + '&pn=' + encodeURIComponent(payeeName) + '&am=' + encodeURIComponent(amt.toFixed(2)) + '&cu=INR&tn=' + encodeURIComponent((rawTn || invTitle || 'PG Rent').slice(0, 50))) : '';
     var qrSvg = genericUri ? renderQrSvg(genericUri) : '';
 
-    box.innerHTML =
-      '<img class="logo" src="icons/icon.svg" alt="" width="96" height="96">' +
-      '<h1>' + esc(hostelName) + '</h1>' +
-      '<p class="sub">' + esc(residentName) + (info?.resident?.room ? ' · Room ' + esc(info.resident.room) : '') + '</p>' +
+    var who = [residentName, info?.resident?.room ? 'Room ' + info.resident.room : ''].filter(Boolean).join(' · ');
+    var upiOk = !!upiId;
+    // Where the person is: paying (QR + Pay Now), or has paid and is sending the proof (UTR + screenshot).
+    // After Pay Now takes them to their UPI app, coming back to this page lands them on the proof step.
+    var flagKey = 'pay-went-' + (resIdParam || '') + '-' + amt;
+    var wentAt = 0; try { wentAt = +localStorage.getItem(flagKey) || 0; } catch (e) { /* private mode */ }
+    if (state.step === 'pay' && wentAt && Date.now() - wentAt < 45 * 60 * 1000 && hostelIdParam) state.step = 'proof';
+    var proofStep = state.step === 'proof' && !!hostelIdParam;
 
-      '<div class="hero" style="text-align:center;margin:16px 0">' +
-      '<div class="muted sm">' + esc(invTitle) + '</div>' +
-      '<div class="big" style="margin:8px 0;font-weight:700">' + inr(amt) + '</div>' +
-      (info?.invoice?.total && info.invoice.total > amt ?
-        '<div class="muted sm">Total ' + inr(info.invoice.total) + ' · Paid ' + inr(info.invoice.paid) + '</div>' : '') +
-      (upiId ?
-        '<div class="upi-apps" style="display:flex;flex-direction:column;gap:8px;margin-top:14px">' +
-        '<a class="btn primary block" style="padding:12px;font-size:15px;background:#5f259f;color:#fff" href="' + esc(genericUri) + '">📱 किसी भी UPI ऐप से Pay करें (PhonePe / GPay / Paytm)</a>' +
-        '</div>' : '') +
-      '</div>' +
+    var proofHtml = hostelIdParam ?
+      '<section class="pq-utr"><b>' + esc(T.utrTitle) + '</b><span>' + esc(T.utrSub) + '</span>' +
+      '<form id="form-utr"><input type="text" id="inp-utr" inputmode="text" autocomplete="off" placeholder="' + esc(T.utrPh) + '" maxlength="30" value="' + esc(state.utr) + '" required>' +
+      (state.shot
+        ? '<div class="pq-shot"><img src="' + state.shot + '" alt=""><span>' + esc(T.shotAdded) + '</span>' +
+          '<button type="button" class="pq-ib" id="ss-eye" aria-label="' + esc(T.viewShot) + '"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.9"/></svg></button>' +
+          '<button type="button" class="pq-ib" id="ss-del" aria-label="' + esc(T.removeShot) + '"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>'
+        : '<label class="pq-file" id="ss-lab"><input type="file" id="inp-ss" accept="image/*"><span id="ss-txt">' + esc(T.addShot) + '</span></label>') +
+      '<button type="submit" class="pp-send pq-send" id="btn-sub-utr">' + esc(T.submitUtr) + '</button></form>' +
+      '<div id="utr-msg" class="pp-msg"></div></section>' : '';
 
-      (qrSvg ?
-        '<div style="text-align:center;margin-top:16px;border-top:1px solid #e5e5ea;padding-top:16px">' +
-        '<p class="hint" style="margin-bottom:8px"><b>' + esc(T.scanQr) + '</b></p>' +
-        '<div class="qr" style="display:inline-block;padding:8px;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.08)">' + qrSvg + '</div>' +
-        '<div class="sm muted" style="margin-top:8px"><b>' + esc(payeeName) + '</b> · ' + esc(upiId) + '</div>' +
-        '<button class="btn sm" id="btn-cp-upi" style="margin-top:6px">' + esc(T.copyUpi) + '</button>' +
-        '</div>' : '') +
+    box.innerHTML = proofStep
+      ? '<div class="pq"><p class="pq-host">' + esc(hostelName) + '</p><h1 class="pq-h">Payment proof</h1><div class="pq-amt">' + inr(amt) + '</div>' + (who ? '<p class="pq-to">' + esc(who) + '</p>' : '') + proofHtml +
+        '<button type="button" class="pq-link" id="pp-back">' + esc(T.backPay) + '</button></div>'
+      : '<div class="pq">' +
+        '<p class="pq-host">' + esc(hostelName) + '</p>' +
+        (upiOk && qrSvg ? '<div class="pq-qr"><div class="pq-frame">' + qrSvg + '</div></div>' : '<div class="pp-warn">' + esc(T.noUpi) + '</div>') +
+        '<h1 class="pq-h">Payment</h1>' +
+        '<div class="pq-amt">' + inr(amt) + '</div>' +
+        (who ? '<p class="pq-to">' + esc(who) + '</p>' : '') +
+        (upiOk ? (isMobile ? '<a class="pq-btn" id="pp-open" href="' + esc(genericUri) + '">Pay Now</a>' : '<button type="button" class="pq-btn" id="pp-open">Pay Now</button>') + '<p class="pp-fb" id="pp-fb" hidden></p>' : '') +
+        (upiOk ? '<button type="button" class="pq-copy" id="btn-cp-upi">' + esc(upiId) + ' <b>' + esc(T.copyUpi) + '</b></button>' : '') +
+        (hostelIdParam ? '<button type="button" class="pq-link" id="pp-paid">' + esc(T.alreadyPaidLink) + '</button>' : '') +
+        '</div>';
 
-      (hostelIdParam ?
-        '<div class="card" style="margin-top:16px;text-align:left;padding:16px;background:#f9f9fb;border-radius:12px;border:1px solid #e5e5ea">' +
-        '<div style="font-weight:600;font-size:14px;margin-bottom:4px">भुगतान के बाद UTR नंबर डालें (Submit UTR)</div>' +
-        '<div class="sm muted" style="margin-bottom:12px">UPI से पेमेंट करने के बाद 12-digit UTR नंबर यहाँ डालें। ओनर इसे चेक करके रसीद जारी करेंगे।</div>' +
-        '<form id="form-utr" style="display:flex;gap:8px;flex-wrap:wrap">' +
-        '<input type="text" id="inp-utr" placeholder="12-digit UTR (उदा: 432109876543)" maxlength="30" style="flex:1;min-width:180px;padding:10px 12px;border:1px solid #ccc;border-radius:8px;font-size:14px" required>' +
-        '<button type="submit" class="btn primary" id="btn-sub-utr" style="padding:10px 16px;white-space:nowrap">Submit UTR</button>' +
-        '</form>' +
-        '<div id="utr-msg" style="margin-top:8px;font-size:13px"></div>' +
-        '</div>' : '');
-
+    var toStep = function (st) { state.step = st; render(); window.scrollTo(0, 0); };
+    var openBtn = document.getElementById('pp-open');
+    if (openBtn) openBtn.onclick = function () {
+      var fb = document.getElementById('pp-fb'); if (!fb) return;
+      if (!isMobile) { fb.textContent = T.onComputer; fb.hidden = false; return; }
+      // remember that this person went to pay: when they come back, the page asks for the UTR and the screenshot
+      try { localStorage.setItem(flagKey, String(Date.now())); } catch (e) { /* private mode */ }
+      // if no UPI app took the link, the page is still in front a moment later: say what to do instead
+      setTimeout(function () { if (document.visibilityState === 'visible') { fb.textContent = T.noApp; fb.hidden = false; } }, 1800);
+    };
+    var btnPaid = document.getElementById('pp-paid'); if (btnPaid) btnPaid.onclick = function () { toStep('proof'); };
+    var btnBack = document.getElementById('pp-back'); if (btnBack) btnBack.onclick = function () { try { localStorage.removeItem(flagKey); } catch (e) { /* private mode */ } toStep('pay'); };
     var btnCp = document.getElementById('btn-cp-upi');
     if (btnCp) {
       btnCp.onclick = function () {
@@ -470,40 +467,83 @@
       };
     }
 
+    // the screenshot is shrunk here before it is sent, so it stays small for everybody
+    function shrink(file) {
+      return new Promise(function (resolve, reject) {
+        if (!/^image\//.test(file.type) || file.size > 15 * 1024 * 1024) { reject(new Error(T.badShot)); return; }
+        var img = new Image(), url = URL.createObjectURL(file);
+        img.onload = function () {
+          var s = Math.min(1, 900 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(img.width * s)); c.height = Math.max(1, Math.round(img.height * s));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+          resolve(c.toDataURL('image/jpeg', 0.6));
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); reject(new Error(T.badShot)); };
+        img.src = url;
+      });
+    }
+    var inpUtr = document.getElementById('inp-utr'); if (inpUtr) inpUtr.oninput = function () { state.utr = inpUtr.value; };
+    var inpSs = document.getElementById('inp-ss');
+    if (inpSs) inpSs.onchange = function () {
+      var f = inpSs.files && inpSs.files[0], msg = document.getElementById('utr-msg');
+      if (!f) return;
+      shrink(f).then(function (d) { state.shot = d; render(); })
+        .catch(function (e) { if (msg) msg.innerHTML = '<span style="color:#d93025">' + esc(e.message) + '</span>'; inpSs.value = ''; });
+    };
+    var eye = document.getElementById('ss-eye');
+    if (eye) eye.onclick = function () {
+      // the picture, full screen; a tap anywhere (or Esc) closes it
+      var ov = document.createElement('div'); ov.className = 'pq-view'; ov.setAttribute('role', 'dialog');
+      ov.innerHTML = '<img src="' + state.shot + '" alt=""><button type="button" aria-label="Close">&times;</button>';
+      var off = function () { ov.remove(); document.removeEventListener('keydown', onKey); };
+      var onKey = function (e) { if (e.key === 'Escape') off(); };
+      ov.onclick = off; document.addEventListener('keydown', onKey); document.body.appendChild(ov);
+    };
+    var del = document.getElementById('ss-del'); if (del) del.onclick = function () { state.shot = null; render(); };
+
     var formUtr = document.getElementById('form-utr');
     if (formUtr) {
+      var sending = false;
       formUtr.onsubmit = async function (e) {
         e.preventDefault();
+        if (sending) return;
         var inp = document.getElementById('inp-utr'), msg = document.getElementById('utr-msg'), btn = document.getElementById('btn-sub-utr');
         if (!inp || !btn) return;
-        var utrVal = inp.value.trim().replace(/[^a-zA-Z0-9]/g, '');
-        if (utrVal.length < 6) { msg.innerHTML = '<span style="color:#d93025">Please enter a valid 12-digit UTR number</span>'; return; }
-        btn.disabled = true; btn.textContent = 'Submitting...';
+        var utrVal = inp.value.trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (utrVal.length < 6) { msg.innerHTML = '<span style="color:#d93025">' + esc(T.badUtr) + '</span>'; return; }
+        var resId = state.info?.resident?.id || resIdParam, hostelId = state.info?.hostel?.id || hostelIdParam;
+        if (!resId || !hostelId) { msg.innerHTML = '<span style="color:#d93025">' + esc(T.badLink) + '</span>'; return; }
+        sending = true; btn.disabled = true; btn.textContent = T.sending;
         try {
           var r = await fetch('/api/public?sub=submit_claim', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              hostel_id: state.info?.hostel?.id || hostelIdParam,
-              res_id: state.info?.resident?.id || resIdParam,
-              amount: amt,
-              utr: utrVal
-            })
+            body: JSON.stringify({ hostel_id: hostelId, res_id: resId, amount: amt, utr: utrVal, proof: state.shot || undefined })
           });
-          var j = await r.json();
+          var j = await r.json().catch(function () { return {}; });
           if (j && j.ok) {
-            formUtr.parentElement.innerHTML = '<div style="text-align:center;padding:12px;background:#f0fff4;border:1px solid #b7eb8f;border-radius:8px"><div style="font-size:24px;margin-bottom:4px">✅</div><b style="color:#28a745">UTR Submitted Successfully!</b><div class="sm muted" style="margin-top:4px">UTR: <code>' + esc(utrVal) + '</code> for ' + inr(amt) + '<br>The hostel owner will verify and approve your receipt.</div></div>';
+            try { localStorage.removeItem(flagKey); } catch (e2) { /* private mode */ }
+            var done = j.duplicate ? T.already : T.sent;
+            formUtr.parentElement.innerHTML = '<div class="pq-done"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><b>' + esc(done) + '</b><span>UTR ' + esc(utrVal) + ' · ' + inr(amt) + '</span></div>';
+            var back2 = document.getElementById('pp-back'); if (back2) back2.remove();
           } else {
-            msg.innerHTML = '<span style="color:#d93025">' + esc(j.error || 'Could not submit UTR') + '</span>';
-            btn.disabled = false; btn.textContent = 'Submit UTR';
+            msg.innerHTML = '<span style="color:#d93025">' + esc((j && j.error) || T.failedSend) + '</span>';
+            sending = false; btn.disabled = false; btn.textContent = T.submitUtr;
           }
         } catch (err) {
-          msg.innerHTML = '<span style="color:#d93025">Network error. Try again.</span>';
-          btn.disabled = false; btn.textContent = 'Submit UTR';
+          msg.innerHTML = '<span style="color:#d93025">' + esc(T.network) + '</span>';
+          sending = false; btn.disabled = false; btn.textContent = T.submitUtr;
         }
       };
     }
   }
+
+  // back from the UPI app: show the proof step (UTR + screenshot) instead of the QR and Pay Now
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || state.step !== 'pay' || !hostelIdParam) return;
+    var at = 0; try { at = +localStorage.getItem('pay-went-' + (resIdParam || '') + '-' + (state.amount || rawAm)) || 0; } catch (e) { /* private mode */ }
+    if (at && Date.now() - at > 2500 && Date.now() - at < 45 * 60 * 1000 && state.status === 'INITIAL') { state.step = 'proof'; render(); window.scrollTo(0, 0); }
+  });
 
   fetchPayInfo();
 })();

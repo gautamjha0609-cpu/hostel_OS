@@ -34,3 +34,8 @@ supabase/cleanup/
 artifacts/
 pnpm-lock.yaml
 supabase/.temp/
+
+# Local tooling and QA spreadsheets
+.claude/
+Sarvlekh_QA_Report_*.xlsx
+.p_*.js

@@ -12,7 +12,7 @@ const CFG = window.HOSTELOS_CONFIG || {};
 const CLOUD = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY);
 const EMAIL_DOMAIN = CFG.AUTH_EMAIL_DOMAIN || 'login.hostelos.app';
 // Old day-wise logs are not downloaded on first load (still kept in the database).
-const ARCHIVE_KINDS = ['gate', 'skip', 'tiffin', 'hkt', 'hkf', 'served', 'ntf', 'log', 'laundry', 'leave', 'rinfo'];
+const ARCHIVE_KINDS = ['gate', 'bmail', 'skip', 'tiffin', 'hkt', 'hkf', 'served', 'ntf', 'log', 'laundry', 'leave', 'rinfo'];
 const ARCHIVE_DAYS = 120;
 // Name the columns instead of select=*: the app never uses the rest, and the SaaS billing
 // columns on orgs are not granted to ordinary members at all, so select=* would be refused.
@@ -817,13 +817,13 @@ const Files = {
     const hostelId = (Store.ctx || {}).hostelId;
     if (!hostelId) throw new AppError('Open a hostel first');
     if (!/^[\w-]{1,64}$/.test(String(ownerId || ''))) throw new AppError('Save the record first');
-    const pdf = !!file && file.type === 'application/pdf';
-    if (!file || !(pdf || /^image\//.test(file.type))) throw new AppError('Upload a photo or a PDF');
+    if (!file || !/^image\//.test(file.type)) throw new AppError('Upload a photo (JPG, PNG, WebP or HEIC). PDFs are not accepted.');
     // Photo tuning: Passport photos only need 400px at q=0.65 (~25 KB). Documents need 1200px at q=0.68 (~75 KB).
     const isPhoto = /photo|avatar|face/i.test(type);
-    const f = pdf ? file : await compressImage(file, isPhoto ? 400 : 1200, isPhoto ? 0.65 : 0.68);
-    if (f.size > DOC_MAX) throw new AppError(pdf ? 'PDF is too large (max 1.5 MB). Take a photo with your camera instead.' : 'Photo is too large (max 1.5 MB)');
-    const ext = { 'application/pdf': 'pdf', 'image/webp': 'webp', 'image/png': 'png' }[f.type] || 'jpg';
+    const f = await compressImage(file, isPhoto ? 360 : 1100, 0.62);
+    if (!/^image\/(jpeg|webp|png)$/.test(f.type)) throw new AppError('This photo format cannot be read on this device. Please use a normal JPG or PNG photo.');
+    if (f.size > DOC_MAX) throw new AppError('Photo is too large even after compression. Please take a closer, plainer photo.');
+    const ext = { 'image/webp': 'webp', 'image/png': 'png' }[f.type] || 'jpg';
     const rand = Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
     const path = `${hostelId}/${kind}/${ownerId}/${slug(type).replace(/\./g, '-')}-${rand}.${ext}`;
     await this.put(path, f);
@@ -844,7 +844,7 @@ const Files = {
     const msg = String(d.message || d.error || '');
     if (r.status === 413 || /too large|size/i.test(msg)) throw new AppError('File is too large (max 1.5 MB)');
     if (r.status === 403 || /security|unauthori/i.test(msg)) throw new AppError('Only the owner or manager can upload documents');
-    if (r.status === 415 || /mime/i.test(msg)) throw new AppError('Upload a photo or a PDF');
+    if (r.status === 415 || /mime/i.test(msg)) throw new AppError('Upload a photo (JPG, PNG or WebP).');
     throw new AppError(`Upload failed (${r.status}). Please try again.`);
   },
 

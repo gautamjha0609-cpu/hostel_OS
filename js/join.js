@@ -22,7 +22,7 @@
     name: 'पूरा नाम', phone: 'मोबाइल नंबर (WhatsApp)', email: 'ईमेल', college: 'कॉलेज / ऑफिस',
     idNo: 'आधार / ID नंबर', address: 'स्थायी पता', lang: 'भाषा',
     guardianSec: 'परिवार / अभिभावक', guardian: 'अभिभावक का नाम', guardianPhone: 'अभिभावक का मोबाइल',
-    docsSec: 'दस्तावेज़', docsHint: 'फ़ोटो या PDF (अधिकतम 1.5 MB)। साफ़ कैमरा फ़ोटो अपलोड करें। सीधे हॉस्टल के सुरक्षित फ़ोल्डर में जाते हैं।',
+    docsSec: 'दस्तावेज़', docsHint: 'सिर्फ़ फ़ोटो (अपने आप छोटी हो जाती है)। साफ़ कैमरा फ़ोटो अपलोड करें। सीधे हॉस्टल के सुरक्षित फ़ोल्डर में जाते हैं।',
     docsLater: 'अभी यहाँ अपलोड नहीं हो सकता। ये दस्तावेज़ साथ लेकर आइए — हॉस्टल पहुँचने पर ले लिए जाएँगे:',
     pvSec: 'पुलिस वेरिफिकेशन', pvHint: 'किरायेदार का पुलिस वेरिफिकेशन कानूनन ज़रूरी है। आप इसे अभी खुद कर सकते हैं, या हॉस्टल बाद में कर देगा।',
     pvOpen: 'पुलिस पोर्टल खोलें', pvCopy: 'अपनी जानकारी कॉपी करें', pvCopied: 'कॉपी हो गया — पोर्टल पर पेस्ट करें',
@@ -40,7 +40,7 @@
     name: 'Full name', phone: 'Mobile number (WhatsApp)', email: 'Email', college: 'College / office',
     idNo: 'Aadhaar / ID number', address: 'Permanent address', lang: 'Language',
     guardianSec: 'Parent / guardian', guardian: 'Parent or guardian name', guardianPhone: 'Their mobile number',
-    docsSec: 'Documents', docsHint: 'Photo or PDF (max 1.5 MB). Clear camera photos recommended. Stored in the hostel’s private folder.',
+    docsSec: 'Documents', docsHint: 'Photos only (shrunk automatically to save space). Clear camera photos recommended. Stored in the hostel’s private folder.',
     docsLater: 'These cannot be uploaded here yet. Please bring them with you — the hostel will take them when you arrive:',
     pvSec: 'Police verification', pvHint: 'Police verification of tenants is required by law. You can do it yourself now, or leave it and the hostel will do it for you.',
     pvOpen: 'Open the police portal', pvCopy: 'Copy my details', pvCopied: 'Copied — paste it into the portal',
@@ -98,20 +98,20 @@
       });
   };
   var shell = function (inner) {
-    box.innerHTML = '<img class="logo" src="icons/icon.svg" alt="" width="104" height="88"><h1>' + esc(NAME || T.title) + '</h1><p class="sub">' + esc(T.sub) + '</p>' + inner;
+    box.innerHTML = '<img class="logo" src="icons/icon.svg" alt="" width="96" height="96"><h1>' + esc(NAME || T.title) + '</h1><p class="sub">' + esc(T.sub) + '</p>' + inner;
   };
-  var fail = function (msg) { shell('<div class="card"><div class="empty"><b>⚠️</b>' + esc(msg) + '</div></div>'); };
+  var fail = function (msg) { shell('<div class="card"><div class="empty">' + esc(msg) + '</div></div>'); };
   var val = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
 
   // Same budget as an upload from the app (compressImage in core.js, which this page does not
   // load): 1200 px reads an Aadhaar number, 400 px is plenty for a face. WebP where the phone
-  // can write it, JPEG where it cannot (Safari hands back a PNG instead). PDFs max 1.5 MB.
+  // can write it, JPEG where it cannot (Safari hands back a PNG instead). Photos only.
   var DOC_MAX = 1.5 * 1024 * 1024;
   function compress(file, max, q) {
     q = q || 0.68;
     return new Promise(function (res) {
       if (!file) return res(null);
-      if (!/^image\//.test(file.type)) return res(file.type === 'application/pdf' && file.size <= DOC_MAX ? file : null);
+      if (!/^image\//.test(file.type)) return res(null);
       var url = URL.createObjectURL(file), im = new Image();
       im.onload = function () {
         var k = Math.min(1, max / Math.max(im.width, im.height)), c = document.createElement('canvas');
@@ -137,8 +137,8 @@
 
   function form(info) {
     var docRows = (info.upload ? (info.docs || []) : []).map(function (d, i) {
-      return '<div class="full"><label class="f" for="j_doc' + i + '">' + esc(d) + '</label>' +
-        '<input id="j_doc' + i + '" type="file" accept="image/*,application/pdf" data-label="' + esc(d) + '"></div>';
+      return '<div class="full"><label class="f" for="j_doc' + i + '">' + esc(d) + ' *</label>' +
+        '<input id="j_doc' + i + '" type="file" accept="image/*" data-label="' + esc(d) + '"><div class="hint" id="j_docv' + i + '" style="margin-top:4px"></div></div>';
     }).join('');
     var portal = PORTALS[PV.state] || NATIONAL;
 
@@ -146,14 +146,14 @@
       sec(T.you) +
       fld('j_name', T.name + ' *', 'type="text" maxlength="80" required') +
       fld('j_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
-      fld('j_email', T.email, 'type="email" maxlength="120"') +
-      fld('j_college', T.college, 'type="text" maxlength="120"') +
-      fld('j_idno', T.idNo, 'type="text" inputmode="numeric" maxlength="12" placeholder="12-digit Aadhaar" pattern="[0-9]{12}"') +
-      fld('j_address', T.address, 'type="text" maxlength="240"') +
+      fld('j_email', T.email + ' *', 'type="email" maxlength="120" required') +
+      fld('j_college', T.college + ' *', 'type="text" maxlength="120" required') +
+      fld('j_idno', T.idNo + ' *', 'type="text" inputmode="numeric" maxlength="12" placeholder="12-digit Aadhaar" pattern="[0-9]{12}" required') +
+      fld('j_address', T.address + ' *', 'type="text" maxlength="240" required') +
       '<div class="full"><label class="f" for="j_lang">' + esc(T.lang) + '</label><select id="j_lang"><option value="en">English</option><option value="hi"' + (hi ? ' selected' : '') + '>हिन्दी</option></select></div>' +
       sec(T.guardianSec) +
-      fld('j_guardian', T.guardian, 'type="text" maxlength="80"') +
-      fld('j_gphone', T.guardianPhone, 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}"') +
+      fld('j_guardian', T.guardian + ' *', 'type="text" maxlength="80" required') +
+      fld('j_gphone', T.guardianPhone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
       ((info.docs || []).length
         ? sec(T.docsSec) + (info.upload
           ? '<div class="full"><div class="hint">' + esc(T.docsHint) + '</div></div>' + docRows
@@ -186,10 +186,43 @@
       } else if (el.id === 'j_idno') {
         el.value = el.value.replace(/\D/g, '').slice(0, 12);
       } else if (el.id === 'j_name' || el.id === 'j_guardian') {
-        try { el.value = el.value.replace(/[^\p{L}\p{M}\s.\-']/gu, '').slice(0, 80); }
+        try { el.value = el.value.replace(/[^\p{L}\p{M}\s.\-']/gu, '').replace(/\s{2,}/g, ' ').slice(0, 80); }
         catch (_) { el.value = el.value.replace(/[^a-zA-Z\s.\-']/g, '').slice(0, 80); }
       }
     };
+    // the picked file opens in a panel on this page (no new browser tab, nothing typed is lost)
+    function joinDocView(url, name, mime) {
+      var root = document.createElement('div'); root.className = 'dv';
+      root.innerHTML = '<div class="dv-bg"></div><div class="dv-c"><header><b></b><button type="button" class="dv-b dv-x" aria-label="' + (hi ? 'बंद करें' : 'Close') + '"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header><div class="dv-v"></div></div>';
+      root.querySelector('b').textContent = name;
+      var v = root.querySelector('.dv-v'), el = document.createElement(/^image\//.test(mime) ? 'img' : 'iframe'); el.src = url; v.appendChild(el);
+      var close = function () { root.remove(); };
+      root.querySelector('.dv-bg').onclick = close; root.querySelector('.dv-x').onclick = close;
+      document.body.appendChild(root);
+    }
+    // let the applicant look at what they picked before it is sent (cross-check the Aadhaar / photo)
+    [].forEach.call(jf.querySelectorAll('input[type=file]'), function (inp) {
+      var note = document.getElementById(inp.id.replace('j_doc', 'j_docv')), last = null;
+      inp.addEventListener('change', function () {
+        if (last) { URL.revokeObjectURL(last); last = null; }
+        var f = inp.files && inp.files[0];
+        if (!f) { note.textContent = ''; return; }
+        if (f.size > 15 * 1024 * 1024) { note.textContent = hi ? 'फ़ाइल बहुत बड़ी है (15 MB तक)।' : 'File is too large (max 15 MB).'; inp.value = ''; return; }
+        last = URL.createObjectURL(f);
+        note.innerHTML = '';
+        var kb = f.size < 1048576 ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB';
+        var svg = function (d) { return '<svg class="i" viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>'; };
+        var row = document.createElement('div'); row.className = 'fchip';
+        row.innerHTML = (/^image\//.test(f.type) ? '<img alt="" src="' + last + '">' : '<span class="fchip-i">' + svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>') + '</span>')
+          + '<span class="fchip-n"><b></b><small>' + kb + '</small></span>'
+          + '<a class="fchip-b" data-docview target="_blank" rel="noopener" href="' + last + '" aria-label="' + (hi ? 'देखें' : 'View') + '">' + svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>') + '</a>'
+          + '<button type="button" class="fchip-b" aria-label="' + (hi ? 'हटाएँ' : 'Remove') + '">' + svg('<path d="M6 6l12 12M18 6L6 18"/>') + '</button>';
+        row.querySelector('b').textContent = f.name;
+        row.querySelector('a').onclick = function (e) { e.preventDefault(); joinDocView(last, f.name, f.type); };
+        row.querySelector('button').onclick = function () { inp.value = ''; inp.dispatchEvent(new Event('change')); };
+        note.appendChild(row);
+      });
+    });
     jf.addEventListener('input', function (e) { sanitizeJoin(e.target); });
     jf.addEventListener('paste', function (e) { setTimeout(function () { sanitizeJoin(e.target); }, 0); });
 
@@ -218,9 +251,18 @@
         return;
       }
       var gphone = val('j_gphone') ? cleanPhone(val('j_gphone')) : '';
+      if (!val('j_email') || !val('j_college') || !val('j_idno') || !val('j_address') || !val('j_guardian') || !val('j_gphone')) {
+        err.textContent = hi ? 'सभी जानकारी भरना ज़रूरी है (ईमेल, कॉलेज/ऑफिस, आधार, पता, अभिभावक का नाम और मोबाइल)।' : 'Every field is compulsory: email, college / office, Aadhaar, address, guardian name and mobile.';
+        return;
+      }
       if (val('j_gphone') && !gphone) { err.textContent = T.needG; return; }
+      var missingDocs = [].filter.call(document.querySelectorAll('#jf input[type=file]'), function (el) { return !(el.files && el.files[0]); }).map(function (el) { return el.dataset.label || 'Document'; });
+      if (missingDocs.length) {
+        err.textContent = (hi ? 'ये दस्तावेज़ अपलोड करना ज़रूरी है: ' : 'Please upload every document: ') + missingDocs.join(', ');
+        return;
+      }
       var rawId = val('j_idno');
-      if (rawId && rawId.replace(/\D/g, '').length !== 12) {
+      if (rawId && rawId.replace(/\D/g, '').length !== 12 || /^[01]/.test(rawId)) {
         err.textContent = hi ? 'आधार नंबर ठीक 12 अंकों का होना चाहिए।' : 'Aadhaar number must be exactly 12 numeric digits.';
         return;
       }
@@ -253,22 +295,25 @@
     });
     if (picks.length) go.textContent = T.uploading;
     var chain = Promise.resolve([]);
+    FAILED = [];
     picks.forEach(function (p) {
       chain = chain.then(function (acc) {
         var isPhoto = /photo|avatar|face/i.test(p.label);
-        return compress(p.file, isPhoto ? 400 : 1200, isPhoto ? 0.65 : 0.68).then(function (blob) {
-          if (!blob) return acc;
+        return compress(p.file, isPhoto ? 360 : 1100, 0.62).then(function (blob) {
+          if (!blob) { FAILED.push(p.label); return acc; }
           var mime = blob.type || 'image/jpeg';
           return api({ action: 'doc', app: APP, label: p.label, mime: mime, size: blob.size })
             .then(function (s) {
               return fetch(s.url, { method: 'PUT', headers: { 'Content-Type': mime, 'x-upsert': 'false', apikey: CFG.SUPABASE_ANON_KEY }, body: blob })
-                .then(function (r) { if (r.ok) acc.push({ type: p.label, path: s.path }); return acc; });
+                .then(function (r) { if (r.ok) acc.push({ type: p.label, path: s.path }); else FAILED.push(p.label); return acc; });
             })
-            .catch(function () { return acc; });
+            .catch(function () { FAILED.push(p.label); return acc; });
         });
       });
     });
     return chain.then(function (docs) {
+      // documents are compulsory, so one that did not upload stops the submission (no half-registered applicant)
+      if (FAILED.length) throw new Error((hi ? 'ये दस्तावेज़ अपलोड नहीं हो सके, दोबारा कोशिश करें: ' : 'These documents could not be uploaded - please try again: ') + FAILED.join(', '));
       entry.docs = docs;
       go.textContent = T.sending;
       return api({ action: 'submit', app: APP, entry: entry });
@@ -282,9 +327,11 @@
       return Promise.resolve();
     } catch (e) { return Promise.reject(e); }
   }
+  var FAILED = [];
   function finish(entry) {
-    shell('<div class="card" style="text-align:center"><div style="font-size:44px">✅</div>' +
-      '<h2 style="margin:6px 0">' + esc(T.done) + '</h2>' +
+    var warn = FAILED.length ? '<p class="hint" style="color:#b45309;margin-top:8px">' + esc((hi ? 'ये दस्तावेज़ अपलोड नहीं हो सके, कृपया हॉस्टल को दोबारा दें: ' : 'These documents could not be uploaded - please give them to the hostel again: ') + FAILED.join(', ')) + '</p>' : '';
+    shell('<div class="card" style="text-align:center"><svg viewBox="0 0 24 24" style="width:56px;height:56px;color:#1a8f3c;display:block;margin:0 auto" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '<h2 style="margin:6px 0">' + esc(T.done) + '</h2>' + warn +
       '<p><b style="font-size:20px">' + esc(entry.name) + '</b><br><span class="muted">' + esc(entry.phone) + '</span></p>' +
       '<p class="hint" style="margin-top:10px">' + esc(T.doneSub) + '</p></div>');
   }

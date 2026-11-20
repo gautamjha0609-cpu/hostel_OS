@@ -21,12 +21,15 @@ const MODULES = [
   { k: 'notices', l: 'Notices', icon: 'megaphone' },
   { k: 'landing', l: 'Public page', icon: 'globe' },
   { k: 'reports', l: 'Reports', icon: 'chart' },
-  { k: 'automation', l: 'WhatsApp Cloud Automation', icon: 'bot' },
+  { k: 'automation', l: 'Automation', icon: 'bot' },
   { k: 'inquiries', l: 'Inquiries', icon: 'chat' },
-  { k: 'emitra', l: 'E-Mitra Queue', icon: 'shield' },
+  { k: 'emitra', l: 'Police verification', icon: 'shield' },
   { k: 'settings', l: 'Settings', icon: 'settings', core: true },
 ];
 const MOD = Object.fromEntries(MODULES.map(m => [m.k, m]));
+// Opt-in modules are the other way round: OFF unless the platform admin switches them ON for that one hostel (modules.key === true).
+// Online payments (the Cashfree gateway) is one: a hostel that has not been set up for it sees none of it.
+const OPT_IN_MODULES = ['cashfree', 'pvPlatform'];
 // Modules the super admin can switch off per client. Core modules are always on.
 const OPTIONAL_MODULES = MODULES.filter(m => !m.core).map(m => m.k).concat(['residentApp']);
 // Some modules cannot stand alone: the kitchen works out what to cook from the mess menu, and
@@ -36,11 +39,12 @@ const OPTIONAL_MODULES = MODULES.filter(m => !m.core).map(m => m.k).concat(['res
 const MOD_DEPS = { kitchen: ['mess'], inquiries: ['landing'] };
 const modNeeds = k => MOD_DEPS[k] || [];
 const modNeededBy = k => Object.keys(MOD_DEPS).filter(x => MOD_DEPS[x].includes(k));
-const modLabel = k => t(k === 'residentApp' ? 'Resident app' : (MOD[k] || {}).l || k);
+const modLabel = k => t(k === 'residentApp' ? 'Resident app' : k === 'cashfree' ? 'Online payments (Cashfree)' : k === 'pvPlatform' ? 'Police verification done by Sarvlekh team' : k === 'automation' ? 'WhatsApp bulk automation' : (MOD[k] || {}).l || k);
 // Pure: takes a modules map ({laundry:false} = off, missing = on) and returns the corrected
 // map plus the other switches it had to move, so the console can say what else changed.
 function applyModSwitch(modules, key, on) {
   const out = { ...(modules || {}) }, changed = [];
+  if (OPT_IN_MODULES.includes(key)) { if (on) out[key] = true; else delete out[key]; return { modules: out, changed }; }
   const isOn = k => out[k] !== false;
   const set = (k, v) => {
     if (isOn(k) === v) return false;
@@ -104,6 +108,7 @@ const isResident = () => ctx().role === 'resident';
 // do not pay for is off in all their hostels), and the per-hostel switch turns it off in one
 // PG only. Missing key = on, so an untouched hostel inherits everything.
 function orgEnabled(mod) {
+  if (OPT_IN_MODULES.includes(mod)) { const h0 = Store.hostel(); const o0 = Store.org(); return !!(h0 && h0.modules && h0.modules[mod] === true) && !(o0 && o0.modules && o0.modules[mod] === false); }
   if (MOD[mod] && MOD[mod].core) return true;
   const o = Store.org(); if (o && o.modules && o.modules[mod] === false) return false;
   const h = Store.hostel(); if (h && h.modules && h.modules[mod] === false) return false;
@@ -251,7 +256,7 @@ const BUSINESS_TEMPLATES = {
 };
 
 const DEFAULT_SETTINGS = {
-  pay: { upiId: '', payee: '', phone: '', bank: '', note: '', provider: 'direct_upi' },
+  pay: { upiId: '', payee: '', phone: '', bank: '', note: '', provider: 'direct_upi', email: '' },
   rent: {
     model: 'calendar_monthly', // 'calendar_monthly' | 'joining_date' | 'custom'
     day: 1,
@@ -302,6 +307,7 @@ const DEFAULT_SETTINGS = {
     { k: 'dinner', l: 'Dinner', time: '20:30', cutoff: '17:00', prev: false, tCutoff: '16:00', tPrev: false },
   ],
   mess: {
+    plates: false,   // show "Mark plates served" and "Guests" on the cooking plan (off unless the hostel counts plates)
     billing: 'included', // 'included' | 'compulsory' | 'optional' | 'per_meal'
     monthlyFee: 2500,
     mealRates: { breakfast: 40, lunch: 70, snacks: 30, dinner: 70 },
@@ -321,6 +327,8 @@ const DEFAULT_SETTINGS = {
   checkout: {
     noticeDaysRequired: 30,
     shortfallPenalty: true,
+    shortfallMode: 'rent',   // 'rent' = rent of the missing days | 'per_day' = shortfallAmount per missing day | 'flat' = shortfallAmount once
+    shortfallAmount: 0,
     requireApproval: false,
     scanRole: 'both', // 'both' | 'staff_only' | 'resident_only'
     roomInspection: true,
@@ -339,14 +347,19 @@ const DEFAULT_SETTINGS = {
     lang: 'en',
     tpl: {},
     remind: { on: true, days: [1, 5, 10] },
-    monthly: { on: true, fallbackDay: 10 },
+    // channel: how the monthly bill goes out in bulk - 'whatsapp' | 'email' | 'both' | 'off' (set by the platform admin).
+    // A single message (a reminder, an admission) is always sent one at a time by the owner, whatever this says.
+    monthly: { on: true, fallbackDay: 10, template: '', language: 'en', channel: 'whatsapp' },
     gw: { on: false, kind: '' },
     mode: 'click_to_chat', // 'click_to_chat' | 'official_api'
   },
   expenseCats: ['Groceries', 'Vegetables & milk', 'Gas', 'Electricity bill', 'Water', 'Internet', 'Salary', 'Maintenance', 'Cleaning supplies', 'Rent', 'Other'],
   departments: ['Kitchen', 'Housekeeping', 'Laundry', 'Security', 'Maintenance', 'Office', 'Warden', 'Accounts', 'E-Mitra'],
   units: ['kg', 'g', 'L', 'ml', 'pcs', 'pkt', 'dozen'],
-  auto: { rent: true, late: true, hk: true, missed: true, stock: true, lowstock: true, meter: true, checkout: true },
+  // Things handed to a resident with the bed (mattress, keys...). Each hostel can switch the checklist off
+  // and edit the list; what was given is ticked at check-in and checked again at checkout.
+  accessories: { on: true, items: ['Mattress', 'Pillow', 'Bed sheet', 'Room key', 'Almirah key', 'Study table', 'Chair', 'Fan / light working'] },
+  auto: { rent: true, hk: true, missed: true, stock: true, lowstock: true, meter: true, checkout: true },
   // markBy: who may mark a room cleaned — 'staff' (the assigned housekeeper), 'admin'
   // (owner/manager), 'guard' (supervisor on duty), 'resident' (someone living in that room).
   hk: { missedAfter: '19:00', markBy: ['staff', 'admin'] },
@@ -584,6 +597,8 @@ function pvSet(resId, patch) {
  * bed and the rent, and admits it — only then does a resident exist.
  */
 const joinOn = () => (S().join || {}).on !== false;
+const accOn = () => (S().accessories || {}).on !== false && accItems().length > 0;
+const accItems = () => ((S().accessories || {}).items || []).filter(Boolean);
 const joinKey = () => (S().join || {}).key || '';
 // 24 url-safe random characters: the secret in a printed QR (self check-in and visitor entry).
 const newQrKey = () => { const a = new Uint8Array(18); crypto.getRandomValues(a); return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
@@ -598,13 +613,13 @@ const pendingSignups = () => signups().filter(x => x.status !== 'admitted' && x.
 
 // Turning an application into a resident. Everything the applicant typed is carried over;
 // everything about money and the bed comes from the owner, here and nowhere else.
-function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = today(), food = true }) {
+function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = today(), food = true, accessories = null }) {
   const a = Store.get(signupId); if (!a) throw new AppError('Application not found');
   if (a.status === 'admitted') throw new AppError('This application is already admitted');
   const r = checkIn({
     name: a.name, phone: a.phone, guardian: a.guardian, guardianPhone: a.guardianPhone,
     email: a.email, idNo: a.idNo, address: a.address, college: a.college, lang: a.lang,
-    roomId, bed, rent, deposit, checkIn: from, food,
+    roomId, bed, rent, deposit, checkIn: from, food, accessories,
   });
   // the papers they uploaded move with them, so nobody re-asks for an Aadhaar already on file
   if ((a.docs || []).length) Store.patch(r.id, { docs: a.docs.map(d => ({ ...d })) });
@@ -616,6 +631,7 @@ function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = tod
     });
   }
   Store.patch(signupId, { status: 'admitted', resId: r.id, admittedOn: today(), admittedBy: Store.me && Store.me.full_name });
+  try { checkAndAutoSendAgreement(r.id); } catch (e) { /* the owner can still send it by hand from the resident page */ }
   alog('signup', t('{n} admitted from a self check-in', { n: a.name }));
   return r;
 }
@@ -742,7 +758,11 @@ function imgUrl(raw, width = 1600) {
 // What the owner typed is kept as typed, so they can see and re-copy their own link later.
 const sitePhotoRaw = k => { const p = siteCfg().photos || {}; return String(p[k] || p[SITE_PHOTO_OLD[k]] || '').trim(); };
 const sitePhotoUrl = (k, w) => imgUrl(sitePhotoRaw(k), w);
-const sitePhotos = () => SITE_PHOTOS.map(([k]) => sitePhotoUrl(k)).filter(Boolean);
+// Extra gallery pictures are further slots g7, g8 ... (links, like the others). One more can always be added, up to the limit.
+const SITE_GALLERY_MAX = 24;
+const siteGalleryKeys = () => { const p = siteCfg().photos || {}, extra = Object.keys(p).filter(k => /^g(\d+)$/.test(k) && +k.slice(1) > 6 && String(p[k] || '').trim()).sort((a, b) => +a.slice(1) - +b.slice(1)); return ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', ...extra]; };
+const siteNextPhotoKey = () => { const p = siteCfg().photos || {}; for (let n = 7; n <= SITE_GALLERY_MAX; n++) if (!String(p['g' + n] || '').trim()) return 'g' + n; return null; };
+const sitePhotos = () => [...SITE_PHOTOS.map(([k]) => k).filter(k => !/^g\d+$/.test(k)), ...siteGalleryKeys()].map(k => sitePhotoUrl(k)).filter(Boolean);
 
 const siteCfg = () => S().site;
 const siteLive = () => orgEnabled('landing') && siteCfg().on === true;
@@ -1013,7 +1033,7 @@ function recordAdvance({ resId, amount, months, mode = 'cash', ref = '', date = 
   if (!(months >= 1)) throw new AppError('How many months is this payment for?');
   if (!(amount > 0)) throw new AppError('Enter an amount');
   const plan = advPlan(resId, months);
-  const graceDays = S().rent.graceDays;
+  const graceDays = rentDueDays();
   for (const row of plan.rows) {
     if (row.exists) continue;
     const d = rentDue(row.ym);
@@ -1073,6 +1093,10 @@ function payLink(amount, note, extra = {}) {
   });
   return `${baseUrl()}pay.html?${q}`;
 }
+// The pay link for one resident and one invoice, with the note the owner will see in the bank statement.
+function payLinkFor(r, amount, inv) {
+  return payLink(amount, `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim(), { resId: r.id, invId: inv ? inv.id : undefined });
+}
 function upiPayUrl(resId, amount) {
   const r = resId ? resById(resId) : null;
   const note = r ? `Rent - ${r.name}` : 'PG dues';
@@ -1092,7 +1116,7 @@ const WA_TPL = {
     receipt: 'Hello {name},\n\nWe have received your payment. Thank you.\n\nAmount: *{amount}* ({mode})\nDate: {date}\nReceipt no: {no}\nBalance due: {balance}\n\nRegards,\n{hostel}',
     laundryIn: 'Hello {name},\n\nWe have received *{pcs} clothes* for laundry on {date}.\nFree pieces left this month: {free}{charge}\n\nRegards,\n{hostel}',
     laundryDone: 'Hello {name},\n\nYour laundry ({pcs} clothes) is ready. Please collect it from the laundry desk.\n\nRegards,\n{hostel}',
-    checkout: 'Hello {name},\n\nYour checkout from *{hostel}* is complete. Thank you for staying with us.\n\nSecurity deposit: {deposit}\nDeductions: {deduct}\n*Refund: {refund}*\n\nWe wish you all the best.\n\nRegards,\n{hostel}',
+    checkout: 'Hello {name},\n\nYour checkout from *{hostel}* is complete. Thank you for staying with us.\n\nSecurity deposit: {deposit}\n{feeLine}Deductions (dues, damages, notice): {deduct}\n*Refund: {refund}*\n\nWe wish you all the best.\n\nRegards,\n{hostel}',
     staffWelcome: 'Hello {name},\n\nYour login for {hostel} is ready.\n\nApp: {link}\nUser ID: *{username}*\nPassword: *{password}*\n\nPlease change your password after you log in for the first time.',
     password: 'Hello {name},\n\nYour password has been changed.\n\nApp: {link}\nUser ID: *{username}*\nNew password: *{password}*\n\nPlease change it after you log in.',
   },
@@ -1103,11 +1127,59 @@ const WA_TPL = {
     receipt: 'नमस्ते {name},\n\nआपका भुगतान मिल गया है। धन्यवाद।\n\nराशि: *{amount}* ({mode})\nतारीख: {date}\nरसीद नंबर: {no}\nबाकी: {balance}\n\nधन्यवाद,\n{hostel}',
     laundryIn: 'नमस्ते {name},\n\n{date} को लॉन्ड्री के लिए *{pcs} कपड़े* मिले हैं।\nइस महीने फ्री बचे: {free}{charge}\n\nधन्यवाद,\n{hostel}',
     laundryDone: 'नमस्ते {name},\n\nआपकी लॉन्ड्री ({pcs} कपड़े) तैयार है। कृपया लॉन्ड्री डेस्क से ले जाएँ।\n\nधन्यवाद,\n{hostel}',
-    checkout: 'नमस्ते {name},\n\n*{hostel}* से आपका चेकआउट पूरा हो गया है। हमारे साथ रहने के लिए धन्यवाद।\n\nसिक्योरिटी डिपॉज़िट: {deposit}\nकटौती: {deduct}\n*वापसी: {refund}*\n\nआपके उज्ज्वल भविष्य की शुभकामनाएँ।\n\nधन्यवाद,\n{hostel}',
+    checkout: 'नमस्ते {name},\n\n*{hostel}* से आपका चेकआउट पूरा हो गया है। हमारे साथ रहने के लिए धन्यवाद।\n\nसिक्योरिटी डिपॉज़िट: {deposit}\n{feeLine}कटौती (बकाया, नुकसान, नोटिस): {deduct}\n*वापसी: {refund}*\n\nआपके उज्ज्वल भविष्य की शुभकामनाएँ।\n\nधन्यवाद,\n{hostel}',
     staffWelcome: 'नमस्ते {name},\n\n{hostel} के लिए आपका लॉगिन तैयार है।\n\nऐप: {link}\nयूज़र ID: *{username}*\nपासवर्ड: *{password}*\n\nपहली बार लॉगिन करने के बाद कृपया अपना पासवर्ड बदल लें।',
     password: 'नमस्ते {name},\n\nआपका पासवर्ड बदल दिया गया है।\n\nऐप: {link}\nयूज़र ID: *{username}*\nनया पासवर्ड: *{password}*\n\nलॉगिन के बाद कृपया इसे बदल लें।',
   },
 };
+/* Checkout message. {feeLine} is the non-refundable fee line (empty when there is none). A hostel that
+ * customised this template before the fee existed has no {feeLine}, so the fee then goes into Deductions
+ * and the three numbers still add up: deposit - deductions = refund. */
+/* ===================================================================== exit report (PDF to the owner)
+ * Everything about a resident who has left, in one document, e-mailed to the owner the moment the
+ * checkout is saved. It is also the copy that outlives the resident's data, which the server
+ * removes 60 days after checkout (see purgeLeftResidents in api/admin.js). */
+const ownerEmail = () => { const e = String((S().pay || {}).email || '').trim(); return isValidEmail(e) ? e : ''; };
+function checkoutReportData(dep) {
+  const r = resById(dep.resId) || {}, h = Store.hostel() || {}, room = r.roomId ? roomById(r.roomId) : null;
+  const invs = resInvoices(r.id), pays = resPays(r.id).slice().reverse();
+  const rows = [[t('Deposit paid'), dep.deposit || 0]];
+  if (dep.nonRefundable > 0) rows.push([t('Non-refundable fee'), dep.nonRefundable, 'bad']);
+  if (dep.deductions > 0) rows.push([t('Deductions (damages etc.)'), dep.deductions, 'bad']);
+  if (dep.settled > 0) rows.push([t('Dues cleared from deposit'), dep.settled]);
+  return {
+    hostel: { name: h.name || '', address: h.address || '' }, generatedOn: fmtDate(today()),
+    resident: { name: r.name, phone: r.phone, email: r.email, guardian: r.guardian, guardianPhone: r.guardianPhone, college: r.college, address: r.address,
+      idMasked: r.idNo ? maskAadhaar(r.idNo) : '', room: room ? room.no : '', bed: r.bed || '', checkIn: r.checkIn ? fmtDate(r.checkIn) : '', left: dep.date ? fmtDate(dep.date) : '', rent: r.rent },
+    settlement: { rows, refund: dep.refund || 0, balancePayable: dep.balancePayable || 0, status: dep.status },
+    invoices: invs.slice(0, 500).map(i => ({ date: i.date ? fmtShort(i.date) : '', title: i.title || i.type || t('Bill'), amount: i.amount || 0, paid: i.paid || 0, balance: invBal(i) })),
+    payments: pays.slice(0, 500).map(p => ({ date: p.date ? fmtShort(p.date) : '', no: p.no || '', mode: p.mode || '', ref: p.ref || '', amount: p.amount || 0 })),
+    totals: { billed: sum(invs, i => i.amount || 0), paid: sum(invs, i => i.paid || 0), waived: sum(invs, i => i.waived || 0), due: sum(invs, invBal) },
+    docs: (r.docs || []).map(d => d.type + (d.name ? ' - ' + d.name : '')).slice(0, 40),
+    pv: r.pv && r.pv.status && r.pv.status !== 'none' ? { status: r.pv.status, refNo: r.pv.refNo || '' } : null,
+  };
+}
+// Sends it, and remembers that it went (the 60-day data removal only touches residents whose report was sent).
+async function sendCheckoutReport(depId) {
+  const dep = Store.get(depId);
+  if (!dep) return { ok: false, reason: 'missing' };
+  if (isDemoHostel() || typeof Backend === 'undefined' || !Backend.admin) return { ok: false, reason: 'demo' };
+  const to = ownerEmail();
+  if (!to) return { ok: false, reason: 'no_owner_email' };
+  try {
+    const r = await Backend.admin('send_checkout_report', { to, hostel_id: (Store.ctx && Store.ctx.hostelId) || null, report: checkoutReportData(dep) });
+    if (r && r.delivered) { Store.patch(depId, { reportEmailedAt: nowIso(), reportTo: to }); return { ok: true, delivered: true, to }; }
+    return { ok: false, reason: (r && r.status) || 'not_sent' };
+  } catch (e) { return { ok: false, reason: e.message || 'failed' }; }
+}
+
+function checkoutMessage(dep, r) {
+  const lang = waLang(r), custom = (S().wa.tpl || {})[S().wa.lang || 'en'] || {};
+  const fee = round2(+dep.nonRefundable || 0), hasLine = !custom.checkout || custom.checkout.includes('{feeLine}');
+  const stmt = dep.settlement || {}, credit = round2(+stmt.credit || 0), deposit = round2((+dep.deposit || 0) + credit);
+  const deduct = Math.max(0, round2(deposit - (+dep.refund || 0) - (hasLine ? fee : 0)));
+  return tpl('checkout', { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, deposit: rs(deposit), feeLine: fee > 0 && hasLine ? `${t('Non-refundable fee')}: ${rs(fee)}\n` : '', deduct: rs(deduct), refund: rs(+dep.refund || 0) }, lang);
+}
 const WA_KEYS = { welcome: 'Welcome + login (check-in)', bill: 'Bill with UPI pay link', reminder: 'Due reminder', receipt: 'Payment receipt', laundryIn: 'Laundry received', laundryDone: 'Laundry ready', checkout: 'Checkout & refund', staffWelcome: 'Staff login', password: 'New password' };
 function waLang(r) { const l = S().wa.lang; return l === 'auto' ? (r && r.lang) || LANG : l; }
 function tpl(key, vars, lang) {
@@ -1123,13 +1195,15 @@ const waUrl = (phone, text) => `https://wa.me/${phone10(phone).length === 10 ? '
 // The demo hostel is for showing and testing: nothing is ever sent from it, whatever is connected.
 const isDemoHostel = () => !!((Store.hostel() || {}).settings || {}).demo;
 const WaGw = {
-  on: () => typeof CLOUD !== 'undefined' && CLOUD && !isDemoHostel() && orgEnabled('automation'),
+  // Automatic WhatsApp needs three things at once: a live hostel, the platform admin's switch, AND a connected gateway (Meta keys).
+  // Without the gateway there is nothing to send with, so no screen may offer it.
+  on: () => typeof CLOUD !== 'undefined' && CLOUD && !isDemoHostel() && orgEnabled('automation') && !!((S().wa || {}).gw && S().wa.gw.on),
   async send(list, onProgress) {
     const out = [];
     for (let i = 0; i < list.length; i += 5) {
       const chunk = list.slice(i, i + 5);
       try {
-        const r = await Cloud.waApi('send', { hostel_id: Store.ctx.hostelId, messages: chunk.map(m => ({ phone: phone10(m.phone), text: m.text })) });
+        const r = await Cloud.waApi('send', { hostel_id: Store.ctx.hostelId, messages: chunk.map(m => (m.template ? { phone: phone10(m.phone), template: m.template } : { phone: phone10(m.phone), text: m.text })) });
         out.push(...r.results);
       } catch (e) { out.push(...chunk.map(() => ({ ok: false, error: e.message }))); }
       if (onProgress) onProgress(out.length, list.length);
@@ -1157,7 +1231,7 @@ function renderWaQueue() {
   const done = q.i >= q.list.length, m = q.list[Math.min(q.i, q.list.length - 1)];
   const isBulk = q.list.length > 1;
   const body = done
-    ? `<div class="empty"><b>${esc(t('All sent'))} 🎉</b>${esc(t('{n} messages', { n: q.list.length }))}</div>`
+    ? `<div class="empty"><b>${esc(t('All sent'))} </b>${esc(t('{n} messages', { n: q.list.length }))}</div>`
     : `
       ${isBulk ? `
         <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg, rgba(37,99,235,0.08), rgba(59,130,246,0.04));border:1px solid rgba(37,99,235,0.22);padding:14px;border-radius:12px">
@@ -1188,7 +1262,16 @@ function renderWaQueue() {
   });
 }
 
-function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill', headline = 'Payment Notice', recipientName = 'Resident', bodyLines = '', amountDue = 0, payLink = '', date = '' }) {
+// The server draws the premium mail from these fields (api/_email.js). The HTML below is the plain
+// fallback, and the key that lets sendBrandedEmail find the fields again.
+const BRAND_ARGS = new Map();
+function renderBrandedEmailHtml(args) {
+  const html = renderBrandedEmailPlain(args || {});
+  if (BRAND_ARGS.size > 40) BRAND_ARGS.delete(BRAND_ARGS.keys().next().value);
+  BRAND_ARGS.set(html, args || {});
+  return html;
+}
+function renderBrandedEmailPlain({ hostelName = 'Hostel', title = 'Notice & Bill', headline = 'Payment Notice', recipientName = 'Resident', bodyLines = '', amountDue = 0, payLink = '', date = '', intro = '', summaryLabel = 'Notice & Statement Summary' }) {
   const safeLines = esc(bodyLines).replace(/\n/g, '<br>');
   const year = new Date().getFullYear();
   return `<!DOCTYPE html>
@@ -1203,7 +1286,7 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
     <!-- Header Banner -->
     <div style="background:linear-gradient(135deg, #1e3a8a 0%, #2563eb 60%, #3b82f6 100%);padding:28px 24px 24px;text-align:center;color:#ffffff">
       <div style="display:inline-block;background:rgba(255,255,255,0.22);backdrop-filter:blur(4px);padding:5px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#ffffff;margin-bottom:10px">
-        🏨 ${esc(title.toUpperCase())}
+        ${esc(title.toUpperCase())}
       </div>
       <h1 style="margin:0;font-size:24px;font-weight:800;letter-spacing:-0.02em;color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.1)">${esc(hostelName)}</h1>
       <div style="margin-top:6px;font-size:13.5px;color:#dbeafe">${date ? esc(date) : ''} · Official Communication</div>
@@ -1215,7 +1298,7 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
         Hello ${esc(recipientName)},
       </div>
       <div style="font-size:14.5px;line-height:1.6;color:#334155;margin-bottom:20px">
-        Please find your latest notice and stay billing details below for <b>${esc(hostelName)}</b>:
+        ${intro ? esc(intro) : `Please find your latest notice and stay billing details below for <b>${esc(hostelName)}</b>:`}
       </div>
 
       ${amountDue > 0 ? `
@@ -1229,7 +1312,7 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
 
       <!-- Detailed Breakdown -->
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:22px">
-        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#64748b;margin-bottom:8px">Notice & Statement Summary</div>
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#64748b;margin-bottom:8px">${esc(summaryLabel)}</div>
         <div style="font-size:13.5px;line-height:1.65;color:#1e293b;font-family:monospace">
           ${safeLines}
         </div>
@@ -1239,7 +1322,7 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
       <!-- Pay Button -->
       <div style="text-align:center;margin:24px 0 20px">
         <a href="${payLink}" style="display:inline-block;background:#2563eb;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;padding:13px 32px;border-radius:10px;box-shadow:0 4px 14px rgba(37,99,235,0.35);letter-spacing:0.02em">
-          💳 Pay Online / UPI Now →
+          Pay Online / UPI Now →
         </a>
         <div style="font-size:12px;color:#64748b;margin-top:8px">Zero hassle instant payment verification & receipt</div>
       </div>
@@ -1260,28 +1343,122 @@ function renderBrandedEmailHtml({ hostelName = 'Hostel', title = 'Notice & Bill'
 </html>`;
 }
 
+// Returns { ok, delivered, reason }. `delivered` is true ONLY when the mail provider accepted the message —
+// never a made-up success (the old version reported "sent" even when nothing left the server).
 async function sendBrandedEmail({ to, subject, html, text, resId, hostelId, replyTo }) {
-  if (!to || !isValidEmail(to)) return false;
-  const h = (typeof Store !== 'undefined' && Store.hostel) ? (Store.hostel() || {}) : {};
-  const hostelName = h.name || '';
-  if (typeof Backend !== 'undefined' && Backend.admin) {
-    return Backend.admin('send_resident_email', {
-      to,
-      subject,
-      html,
-      text,
-      hostel_name: hostelName,
-      reply_to: replyTo || undefined,
-      res_id: resId || null,
-      hostel_id: hostelId || (Store.ctx && Store.ctx.hostelId) || null
-    }).catch(err => {
-      console.warn('Backend send_resident_email fallback:', err.message);
-      return { ok: true, offline: true };
-    });
+  if (!to || !isValidEmail(to)) return { ok: false, delivered: false, reason: 'invalid_email' };
+  if (isDemoHostel()) return { ok: true, delivered: false, reason: 'demo' };
+  if (typeof Backend === 'undefined' || !Backend.admin) return { ok: false, delivered: false, reason: 'offline' };
+  try {
+    const r = await Backend.admin('send_resident_email', { to, subject, html, brand: BRAND_ARGS.get(html) || undefined, text, res_id: resId || null, hostel_id: hostelId || (Store.ctx && Store.ctx.hostelId) || null, hostel_name: hostelName(), reply_to: replyTo || undefined });
+    return { ok: !!(r && r.ok), delivered: !!(r && r.delivered), reason: (r && r.status) || '' };
+  } catch (err) {
+    return { ok: false, delivered: false, reason: err.message || 'failed' };
   }
-  return { ok: true };
 }
 
+/* ===================================================================== bulk e-mail (the only bulk channel)
+ * "Send to all" is one e-mail per resident, sent in one go, and it is remembered: a resident who already got this
+ * kind of mail today is skipped, so a second tap can never send twice. WhatsApp stays one resident at a time.
+ * A row of kind 'bmail' per resident per kind per day is the memory (ok = the mail service took it; noEmail = the
+ * resident has no e-mail, so only the in-app notice went). */
+// The demo hostel and the offline demo mode have no mail server: the flow runs, nothing is really sent.
+function mailIsSimulated() { return isDemoHostel() || (typeof CLOUD !== 'undefined' && !CLOUD); }
+// The memory is ONE row per kind per day holding the list of residents already handled (not a row per resident):
+// a 100-resident hostel writes 1 row a day instead of 100, and a check is one lookup.
+const bmailDocId = (kind, key = today()) => `bmd-${kind}-${key}`;
+const bmailDay = (kind, key = today()) => Store.get(bmailDocId(kind, key)) || { mailed: [], appOnly: [] };
+const bmailDone = (kind, resId, key = today()) => { const d = bmailDay(kind, key); return (d.mailed || []).includes(resId) || (d.appOnly || []).includes(resId); };
+function bmailSave(kind, key, mailed, appOnly, failed = {}) {
+  if (!mailed.length && !appOnly.length && !Object.keys(failed).length) return;
+  const d = bmailDay(kind, key), at = { ...(d.at || {}) }, fail = { ...(d.fail || {}) }, now = nowIso();
+  for (const id of mailed) { at[id] = now; delete fail[id]; }
+  for (const id of appOnly) { at[id] = at[id] || now; }
+  for (const id of Object.keys(failed)) fail[id] = failed[id];
+  Store.put('bmail', { id: bmailDocId(kind, key), kind, date: today(), mailed: [...new Set([...(d.mailed || []), ...mailed])], appOnly: [...new Set([...(d.appOnly || []), ...appOnly])], at, fail, ts: now });
+}
+// ok / none (nothing saved) / bad (saved, but not an address)
+const emailState = r => { const e = String((r && r.email) || '').trim(); return !e ? 'none' : isValidEmail(e) ? 'ok' : 'bad'; };
+const BMAIL = {
+  bill: { title: 'Your bill', head: 'Your bill is ready', intro: 'Here is what is due at {h}. You can pay with any UPI app using the button below.' },
+  reminder: { title: 'Payment reminder', head: 'A gentle reminder', intro: 'This is a gentle reminder from {h}. The following is still pending.' },
+};
+function bulkMailPlan(kind = 'bill', opts = {}) {
+  const ym = ymOf(today());
+  let list = kind === 'reminder' ? dueList(true).filter(x => x.due > 0)
+    // a bill mail is about this month's bill: everyone who owes something, plus anyone whose bill is not complete yet (so it can be shown as pending)
+    : activeRes().map(r => ({ r, due: resDue(r.id), od: resOverdue(r.id) })).filter(x => x.due > 0 || !isBillingComplete(x.r.id, ym).complete);
+  if (opts.only) list = list.filter(x => opts.only.has(x.r.id));
+  const day = bmailDay(kind), out = { kind, total: list.length, todo: [], done: [], noEmail: [], blocked: [], emailed: 0, appOnly: 0, at: day.ts || '', day };
+  for (const x of list) {
+    if ((day.mailed || []).includes(x.r.id)) { out.done.push(x); out.emailed++; continue; }
+    if ((day.appOnly || []).includes(x.r.id)) { out.done.push(x); out.appOnly++; continue; }
+    if (kind === 'bill') {
+      const c = isBillingComplete(x.r.id, ym);
+      if (!c.complete) { out.blocked.push({ ...x, reason: c.reason || '', why: /electricity/i.test(c.reason || '') ? 'reading' : /invoice/i.test(c.reason || '') ? 'bill' : /rent/i.test(c.reason || '') ? 'rent' : 'other' }); continue; }
+      if (!(x.due > 0)) continue;   // complete and nothing to pay: nothing to send
+    }
+    if (emailState(x.r) === 'ok') out.todo.push(x); else out.noEmail.push(x);
+  }
+  return out;
+}
+const bmailLines = r => openInv(r.id).map(i => `${i.title}: ${rs(invBal(i))}`).join('\n');
+async function sendBulkMail(kind = 'bill', opts = {}) {
+  const plan = bulkMailPlan(kind, opts), cfg = BMAIL[kind] || BMAIL.bill, h = Store.hostel() || {}, demo = mailIsSimulated();
+  const everyone = [...plan.todo, ...plan.noEmail];
+  if (!everyone.length) return { status: plan.done.length ? 'already' : 'nobody', plan, sent: 0, failed: 0, noEmail: 0 };
+  let sent = 0, failed = 0, reason = '';
+  const mailedIds = [], appIds = [], failedMap = {};
+  const items = plan.todo.map(x => ({ x, item: { to: x.r.email, subject: `${h.name || 'Hostel'} · ${t(cfg.title)}`, text: billMessage(x.r, kind === 'reminder' ? 'reminder' : 'bill').text, res_id: x.r.id,
+    brand: { hostelName: h.name || 'Hostel', title: t(cfg.title), headline: t(cfg.head), recipientName: x.r.name, intro: t(cfg.intro, { h: h.name || 'your hostel' }), bodyLines: bmailLines(x.r), amountDue: x.due, payLink: payLinkFor(x.r, x.due, undefined), date: fmtDate(today()) } } }));
+  const replyTo = (S().pay || {}).email || undefined;
+  try {
+    // 25 to a request: one login check and one rate-limit hit for 25 mails, and the mail service takes them as one batch
+    for (let i = 0; i < items.length; i += 25) {
+      const chunk = items.slice(i, i + 25);
+      let res = [];
+      if (demo || typeof Backend === 'undefined' || !Backend.admin) res = chunk.map(() => ({ delivered: true, demo: true }));
+      else {
+        try { const r = await Backend.admin('send_bulk_emails', { hostel_id: (Store.ctx && Store.ctx.hostelId) || h.id, hostel_name: h.name, reply_to: replyTo, items: chunk.map(c => c.item) }); res = (r && r.results) || []; }
+        catch (e) { res = chunk.map(() => ({ delivered: false, reason: e.message || 'failed' })); }
+      }
+      chunk.forEach((c, k) => { const o = res[k] || {}; if (o.delivered) { sent++; mailedIds.push(c.x.r.id); } else { failed++; const why = o.status === 'not_configured' ? 'not_configured' : o.reason || 'failed'; failedMap[c.x.r.id] = String(why).slice(0, 80); reason = reason || why; } });
+    }
+  } finally {
+    // the in-app notice goes to everyone who was mailed, and to those with no e-mail (they get only this); remembered in ONE row
+    for (const x of plan.noEmail) appIds.push(x.r.id);
+    for (const c of items) if (mailedIds.includes(c.x.r.id)) notify({ to: 'res', resId: c.x.r.id, title: t(cfg.title), body: c.item.text, category: 'fee', link: 'r-home' });
+    for (const x of plan.noEmail) notify({ to: 'res', resId: x.r.id, title: t(cfg.title), body: billMessage(x.r, kind === 'reminder' ? 'reminder' : 'bill').text, category: 'fee', link: 'r-home' });
+    bmailSave(kind, today(), mailedIds, appIds, failedMap);
+  }
+  return { status: 'sent', plan, sent, failed, reason, noEmail: plan.noEmail.length, demo };
+}
+// A notice to everyone, by e-mail, once per notice (the notice is already in every resident's app).
+async function sendNoticeMail(n) {
+  const kind = 'notice', h = Store.hostel() || {}, demo = mailIsSimulated(), day = bmailDay(kind, n.id);
+  const list = activeRes().filter(r => r.email && isValidEmail(r.email) && !(day.mailed || []).includes(r.id));
+  if (!list.length) return { status: 'already', sent: 0, failed: 0 };
+  let sent = 0, failed = 0; const ids = [];
+  for (let i = 0; i < list.length; i += 25) {
+    const chunk = list.slice(i, i + 25), items = chunk.map(r => ({ to: r.email, subject: `${h.name || 'Hostel'} · ${n.title}`, text: n.body || '', res_id: r.id, brand: { hostelName: h.name || 'Hostel', title: t('Notice'), headline: n.title, recipientName: r.name, intro: n.body || '', bodyLines: '', date: fmtDate(today()) } }));
+    let res; if (demo || typeof Backend === 'undefined' || !Backend.admin) res = chunk.map(() => ({ delivered: true }));
+    else { try { res = ((await Backend.admin('send_bulk_emails', { hostel_id: (Store.ctx && Store.ctx.hostelId) || h.id, hostel_name: h.name, reply_to: (S().pay || {}).email || undefined, items })) || {}).results || []; } catch (e) { res = []; } }
+    chunk.forEach((r, k) => { if ((res[k] || {}).delivered) { sent++; ids.push(r.id); } else failed++; });
+  }
+  bmailSave(kind, n.id, ids, []);
+  return { status: 'sent', sent, failed, demo };
+}
+// What "Create missing bills" would make for this month (rent, mess, extra charges), without making anything.
+function billsToCreate(ym = ymOf(today())) {
+  const prev = runMonthlyBillingBatch({ ym, options: { previewOnly: true } }), out = { people: [], rent: 0, mess: 0, charges: 0, count: 0 };
+  for (const x of prev.residents) {
+    if (!x.invoices.length) continue;
+    const kinds = x.invoices.map(id => (String(id).startsWith('inv-mess-') ? 'mess' : String(id).startsWith('inv-chg-') ? 'charges' : 'rent'));
+    kinds.forEach(k => { out[k]++; out.count++; });
+    out.people.push({ resId: x.resId, name: x.name, roomNo: x.roomNo, kinds });
+  }
+  return out;
+}
 // Bill text for a resident: every open invoice + total + UPI pay link.
 function billMessage(r, kind = 'bill', invs) {
   const open = invs || openInv(r.id), total = sum(open, invBal), lang = waLang(r);
@@ -1330,6 +1507,28 @@ function attRoll(date, pk) {
   const list = activeRes().filter(r => activeOn(r, date)).sort(by('name'));
   const absentList = list.filter(r => attAbsentOn(r.id, date, pk));
   return { list, absentList, total: list.length, absent: absentList.length, present: list.length - absentList.length };
+}
+/* Taking a roll call: one small record per day + roll call (ids of residents already called), so the
+ * list can be split into "waiting to be called" and "already called". Days before today that have no
+ * record (taken the old way, absences only) show everybody as already called. */
+const rcallId = (d, pk) => `rcall-${d}-${pk}`;
+const rcallDone = (d, pk) => new Set((Store.get(rcallId(d, pk)) || {}).ids || []);
+function rcallMark(resId, date, pk, absent) {
+  attSet(resId, date, pk, absent);
+  const doc = Store.get(rcallId(date, pk)) || { id: rcallId(date, pk), date, pk, ids: [] };
+  if (!doc.ids.includes(resId)) Store.put('rcall', { ...doc, ids: [...doc.ids, resId], at: nowIso(), by: (Store.me && Store.me.full_name) || '' });
+}
+function rcallUndo(resId, date, pk) {
+  attSet(resId, date, pk, false);
+  const doc = Store.get(rcallId(date, pk)); if (!doc) return;
+  Store.put('rcall', { ...doc, ids: doc.ids.filter(x => x !== resId) });
+}
+function attRollCall(date, pk) {
+  const base = attRoll(date, pk), done = rcallDone(date, pk);
+  const legacy = date < today() && !Store.get(rcallId(date, pk));
+  const called = base.list.filter(r => legacy || done.has(r.id));
+  const waiting = base.list.filter(r => !called.includes(r));
+  return { ...base, called, waiting, legacy };
 }
 // One resident's month. Days after today do not count as present yet.
 function attMonth(resId, ym) {
@@ -1611,7 +1810,7 @@ function calcDepositAmount({ monthlyRent = 0, bedDeposit = 0, depositSettings } 
       total = round2(rent * (cfg.rentMultiplier || 1));
       break;
     case 'per_bed':
-      total = bedDeposit || cfg.fixedAmount || 0;
+      total = bedDeposit || cfg.fixedAmount || rent || 0;
       break;
     case 'custom':
     default:
@@ -1628,6 +1827,13 @@ function calcDepositAmount({ monthlyRent = 0, bedDeposit = 0, depositSettings } 
   };
 }
 
+// What the check-in form starts the deposit box with, from the hostel's deposit rule (the owner can still change it).
+// room.deposit (per bed) is read only when the rule is "room / bed specific".
+// A rent bill is due this many days after its bill date. One setting (Rent & billing); graceDays only
+// stands in for hostels saved before that.
+const rentDueDays = () => { const r = S().rent || {}; return +r.dueDays || +r.graceDays || 5; };
+const depositFor = (rent, room) => calcDepositAmount({ monthlyRent: rent, bedDeposit: (S().deposit || {}).mode === 'per_bed' && room ? +room.deposit || 0 : 0 }).total;
+const DEPOSIT_RULE_LABEL = { rent_multiple: 'Multiple of monthly rent', fixed: 'Fixed amount', custom: 'Entered at check-in', per_bed: 'Room / bed specific' };
 function calcLateFee({ invoice, todayDate = today(), lateSettings } = {}) {
   const cfg = lateSettings || S().lateFee || (S().rent && {
     on: S().rent.lateOn,
@@ -1689,11 +1895,15 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
   deductions = round2(Math.max(0, +deductions || 0));
 
   const depPaid = round2(sum(resInvoices(resId).filter(i => i.type === 'deposit'), i => i.paid || 0));
+  // The non-refundable fee was fixed for this resident at check-in (r.depositFee), so a later change of the
+  // hostel setting never alters an old resident. It is part of the deposit and is kept first.
+  const nonRefundable = Math.min(depPaid, round2(Math.max(0, +r.depositFee || 0)));
+  const refundableDeposit = round2(depPaid - nonRefundable);
   const unpaidInvs = openInv(resId).filter(i => i.type !== 'deposit');
   let dues = round2(sum(unpaidInvs, invBal));
 
   // Notice period shortfall check
-  const requiredNoticeDays = +checkoutCfg.noticeDaysRequired || 30;
+  const requiredNoticeDays = checkoutCfg.noticeDaysRequired != null && !isNaN(+checkoutCfg.noticeDaysRequired) ? +checkoutCfg.noticeDaysRequired : 30;
   let noticeDaysGiven = 0;
   let shortfallDays = 0;
   let shortfallFee = 0;
@@ -1715,6 +1925,10 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     const ym = ymOf(checkoutDate);
     const dailyRate = round2((r.rent || 0) / daysIn(ym));
     shortfallFee = round2(dailyRate * shortfallDays);
+    // the owner can set the fee instead of "rent for the missing days": a fixed amount per missing day, or one flat amount
+    const amt = Math.max(0, +checkoutCfg.shortfallAmount || 0);
+    if (checkoutCfg.shortfallMode === 'per_day') shortfallFee = round2(amt * shortfallDays);
+    else if (checkoutCfg.shortfallMode === 'flat') shortfallFee = shortfallDays > 0 ? round2(amt) : 0;
   }
 
   // Calculate final electricity consumption if reading is provided
@@ -1730,7 +1944,8 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
       const occ = meterOccupants(r.roomId, prevDate, checkoutDate);
       const partial = occ.some(o => o[1] < 1);
       const rate = S().elec.rate;
-      const shares = splitElectricity(r.roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, checkoutDate));
+      const exitDim = daysIn(ymOf(checkoutDate)), exitExtra = +checkoutDate.slice(8, 10) === exitDim ? {} : { [resId]: 1 / exitDim };
+      const shares = splitElectricity(r.roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, checkoutDate), exitExtra);
       const sShare = shares.find(x => x.resId === resId);
       if (sShare) {
         elecShare = {
@@ -1752,7 +1967,7 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     }
   }
 
-  const availableDepositAndCredit = round2(depPaid + (r.credit || 0));
+  const availableDepositAndCredit = round2(refundableDeposit + (r.credit || 0));
   const totalLiabilities = round2(dues + deductions + shortfallFee);
 
   if (deductions > availableDepositAndCredit) {
@@ -1777,6 +1992,9 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     shortfallDays,
     shortfallFee,
     depositPaid: depPaid,
+    depositRule: r.depositRule || null,
+    nonRefundable,
+    refundableDeposit,
     credit: r.credit || 0,
     availableDepositAndCredit,
     unpaidDues: dues,
@@ -1806,14 +2024,16 @@ function checkIn(o) {
   const room = roomById(o.roomId); if (!room) throw new Error('Choose a room');
   const bed = bedsOf(room).find(b => b.id === o.bed);
   if (!bed || bed.status !== 'vac') throw new Error('That bed is not vacant any more');
-  const name = String(o.name || '').trim();
+  const name = String(o.name || '').replace(/\s+/g, ' ').trim();
   if (!name) throw new Error('Resident name is required');
   const phone = phone10(o.phone);
   if (!phone || phone.length !== 10) throw new Error('Enter a valid 10-digit mobile number');
+  // the form checked this, but admitting a QR applicant, importing, or any other caller did not
+  if (allResidents().some(x => x.status !== 'left' && x.status !== 'cancelled' && phone10(x.phone) === phone)) throw new Error('A resident with this mobile number already exists');
   const id = o.id || uid('res-');
   const rent = o.rent === '' || o.rent == null || isNaN(o.rent) ? +room.rent || 0 : Math.max(0, +o.rent || 0);
   const deposit = Math.max(0, +o.deposit || 0);
-  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '', billingPolicy: o.billingPolicy || null });
+  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, depositFee: deposit > 0 ? Math.min(deposit, round2(Math.max(0, +(S().deposit || {}).nonRefundable || 0))) : 0, depositRule: (S().deposit || {}).mode || 'custom', checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '', billingPolicy: o.billingPolicy || null, accessories: Array.isArray(o.accessories) && o.accessories.length ? { given: o.accessories.slice(), at: o.checkIn || today(), returned: null, missing: [] } : null });
   setBed(room.id, bed.id, { status: 'occ', resId: r.id });
   const ym = ymOf(r.checkIn);
   const rPolicy = (o.billingPolicy) || S(null, r.id).rent || {};
@@ -2192,10 +2412,13 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
   // 1. Process meter reading if provided in opts
   let elecShare = null;
   const reading = opts.reading != null ? opts.reading : opts.meterNow;
+
   if (reading !== undefined && reading !== null && reading !== '' && !isNaN(reading) && orgEnabled('electricity') && r.roomId) {
     const last = lastMeter(r.roomId);
     const p = last ? last.curr : 0;
     const curr = +reading;
+    // a lower reading used to be skipped silently and the resident left without their electricity bill
+    if (curr < p) throw new AppError(`Reading cannot be less than previous (${p})`);
     if (curr > p) {
       try {
         const m = addReading({
@@ -2204,6 +2427,7 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
           date,
           status: 'billed',
           isManual: true,
+          exitResId: resId,
           note: `Checkout reading (${r.name})`
         });
         const s = (m.shares || []).find(x => x.resId === resId);
@@ -2290,7 +2514,13 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
     };
   }
 
-  Store.patch(resId, { status: 'left', left: date, credit: 0, exitNote: note });
+  // Accessories: what was handed over vs. what came back (opts.accReturned = array of returned item names)
+  let accPatch = {};
+  if (r.accessories && Array.isArray(r.accessories.given) && Array.isArray(opts.accReturned)) {
+    const missing = r.accessories.given.filter(x => !opts.accReturned.includes(x));
+    accPatch = { accessories: { ...r.accessories, returned: opts.accReturned.slice(), missing, returnedOn: date } };
+  }
+  Store.patch(resId, { status: 'left', left: date, credit: 0, exitNote: note, ...accPatch });
   setBed(r.roomId, r.bed, { status: 'vac', resId: null });
   if (typeof reconcileBeds === 'function') reconcileBeds();
   const dep = Store.put('dep', {
@@ -2298,6 +2528,8 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
     roomId: r.roomId,
     date,
     deposit: depPaid,
+    nonRefundable: stmt.nonRefundable,
+    depositRule: r.depositRule || null,
     settled: settle,
     deductions,
     refund,
@@ -2360,7 +2592,16 @@ function calcElectricityCost(units, elecSettings) {
 }
 
 // Split a room's units between the residents living there, honouring free units.
-function splitElectricity(roomId, units, rate, resIds, weights, scale = 1) {
+// The monthly meter charge (Settings > Electricity) was only used with slab pricing; with a flat rate it was saved and never billed.
+// Now it is added in both: shared by days stayed, and only for the days the stretch covers (scale is the part of a month).
+function splitElectricity(roomId, units, rate, resIds, weights, scale = 1, extra = null) {
+  const parts = splitElectricityCore(roomId, units, rate, resIds, weights, scale, extra), e = S().elec;
+  const fixed = e.pricing === 'slab' ? 0 : round2((+e.fixedCharge || 0) * scale);
+  if (!parts.length || !(fixed > 0)) return parts;
+  const w = resIds.map((_, i) => (weights && weights[i] != null ? Math.max(0, Math.min(1, weights[i])) : 1)), tw = w.reduce((a, b) => a + b, 0) || resIds.length;
+  return parts.map((p, i) => ({ ...p, amount: p.amount + Math.round(fixed * w[i] / tw) }));
+}
+function splitElectricityCore(roomId, units, rate, resIds, weights, scale = 1, extra = null) {
   const e = S().elec, n = resIds.length; if (!n) return [];
   const w = resIds.map((_, i) => (weights && weights[i] != null ? Math.max(0, Math.min(1, weights[i])) : 1));
   const tw = w.reduce((a, b) => a + b, 0) || n;
@@ -2371,7 +2612,7 @@ function splitElectricity(roomId, units, rate, resIds, weights, scale = 1) {
     return resIds.map((id, i) => { const f = w[i] / tw, b = billable * f; return { resId: id, units: round2(units * f), free: round2(Math.min(units, freePool) * f), billable: round2(b), amount: costForUnits(b), days: weights ? round2(w[i]) : undefined }; });
   }
   return resIds.map((id, i) => {
-    const share = units * w[i] / tw, free = freePool * w[i], billable = Math.max(0, share - free);
+    const share = units * w[i] / tw, free = freePool * w[i] + ((extra && extra[id]) || 0) * e.freeUnits, billable = Math.max(0, share - free);
     return { resId: id, units: round2(share), free: round2(Math.min(share, free)), billable: round2(billable), amount: costForUnits(billable), days: weights ? round2(w[i]) : undefined };
   });
 }
@@ -2381,6 +2622,12 @@ function splitElectricity(roomId, units, rate, resIds, weights, scale = 1) {
 // twice. Without a start date (the room's first reading) it is a full month.
 function freeMonths(from, to) {
   if (!from) return 1;
+  // Each month counts as its real length (28, 29, 30 or 31 days): a day is 1 / that many of the month's free units.
+  // A reading dated on the LAST day of a month covers that whole day: the stretch that ends there includes it, and the next
+  // stretch starts the day after. Otherwise a resident who stayed the full month would be credited one day short.
+  const lastDay = d => { const x = String(d).slice(0, 10); return x === iso(new Date(+x.slice(0, 4), +x.slice(5, 7), 0)); };
+  if (lastDay(from)) from = addDays(String(from).slice(0, 10), 1);
+  if (lastDay(to)) to = addDays(String(to).slice(0, 10), 1);
   let cur = String(from).slice(0, 10), total = 0;
   for (let i = 0; i < 240 && diffDays(to, cur) > 0; i++) {
     const y = +cur.slice(0, 4), m = +cur.slice(5, 7);
@@ -2389,6 +2636,14 @@ function freeMonths(from, to) {
     total += diffDays(end, cur) / dim; cur = end;
   }
   return total;
+}
+// The day someone leaves still counts as a day they stayed (the day they arrive does too), so on the stretch that ends with their
+// exit they also earn that one day of free units - unless the reading is on the last day of a month, which freeMonths already counts.
+function exitDayFree(date, resIds, leavingNow = false) {
+  const d = String(date).slice(0, 10), y = +d.slice(0, 4), m = +d.slice(5, 7), dim = new Date(y, m, 0).getDate();
+  if (+d.slice(8, 10) === dim) return {};
+  const out = {}; for (const id of resIds) { const r = resById(id); if (leavingNow || (r && r.status === 'left' && String(r.left || '').slice(0, 10) === d)) out[id] = 1 / dim; }
+  return out;
 }
 // Who shared the room between two readings, and for what part of that time. Includes people
 // who checked out during the period, so their units are not left on the roommates' bills.
@@ -2437,12 +2692,15 @@ function meterOccupants(roomId, from, to) {
 
   return roomRes.map(x => [x.r.id, x.d / span]);
 }
-function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo = null, ...rest }) {
+function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo = null, exitResId = null, ...rest }) {
   const room = roomById(roomId); if (!room) throw new Error('Choose a room');
   if (rest.status === 'review') {
     const pending = pendingMeter(roomId);
     if (pending) throw new Error(t('A reading for this room is already under review'));
   }
+  // one unusual reading may be waiting for the owner at a time; a second one would be computed from the same
+  // starting point and bill the same units twice once both are approved
+  if (!rest.isReplacement && pendingMeter(roomId)) throw new Error(t('A reading for room {r} is already waiting for your approval. Approve or reject it first.', { r: room.no }));
   const last = lastMeter(roomId);
   if (last && date < last.date && !rest.isReplacement) {
     throw new Error(t('Reading date ({date}) cannot be earlier than previous reading date ({prevDate})', { date, prevDate: last.date }));
@@ -2457,7 +2715,7 @@ function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo =
   const prevDate = last ? last.date : null;
   const occ = meterOccupants(roomId, prevDate, date);
   const partial = occ.some(o => o[1] < 1);
-  const shares = splitElectricity(roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, date));
+  const shares = splitElectricity(roomId, units, rate, occ.map(o => o[0]), partial ? occ.map(o => o[1]) : null, freeMonths(prevDate, date), { ...exitDayFree(date, occ.map(o => o[0])), ...(exitResId ? exitDayFree(date, [exitResId], true) : {}) });
   const avg = last ? last.units : null, span = last ? Math.max(1, diffDays(date, last.date)) : null;
   // A reading taken mid-month covers only a few days, so compare units per day, not per reading —
   // otherwise the full month that follows a check-in reading always looks "unusual" and sits unbilled.
@@ -2467,7 +2725,7 @@ function addReading({ roomId, curr, date = today(), prev, qrCode = null, photo =
   const isManual = rest.isManual !== undefined ? rest.isManual : (!qrCode && !photo);
   const capturedBy = rest.capturedBy || (Store.me && Store.me.full_name) || ctx().role || 'staff';
   const status = rest.status || (odd ? 'review' : 'billed');
-  const m = Store.put('meter', { roomId, date, prevDate, prev: p, curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), qrCode, photo, isManual, capturedBy, ts: nowIso(), ...rest, status });
+  const m = Store.put('meter', { roomId, date, prevDate, prev: p, curr, units, span, rate, freeUnits: S().elec.freeUnits, freeMode: S().elec.freeMode, shares, total: sum(shares, s => s.amount), period: ymOf(date), qrCode, photo, photoUrl: rest.photoUrl || null, isManual, capturedBy, ts: nowIso(), ...rest, status });
   if (status === 'review') {
     if (odd) notify({ to: 'admin', title: t('Unusual electricity reading'), body: `${room.no}: ${units} ${t('units')} (${t('last')} ${avg})` });
   } else {
@@ -2555,6 +2813,21 @@ function replaceMeter({ roomId, finalOldReading, startingNewReading = 0, newSeri
  * reading then carries on from it. Returns null only when the electricity module is off, or the
  * room was already read today. A room with no reading yet takes this one as its starting point.
  */
+/* The rule for every "meter reading now" box: it can never be lower than the room's last reading.
+ * The only way past it is a meter that was replaced or reset: then the OLD meter's final reading is
+ * needed too (never lower than the last reading), and the number typed is the NEW meter's reading.
+ * Returns the message to show, or null when the reading is fine. Nothing is saved here. */
+function meterReadingProblem(roomId, reading, { reset = false, oldFinal = null, canReset = true } = {}) {
+  if (!orgEnabled('electricity') || !roomId) return null;
+  if (reading === '' || reading == null || isNaN(reading)) return null;      // "required" is checked by the form
+  const last = lastMeter(roomId);
+  if (!last || +reading >= last.curr) return null;
+  if (!canReset) return t('Reading ({r}) is lower than the last reading ({p}). Readings only go up. If the meter was replaced, record it first in Electricity > Replace or reset meter.', { r: num(+reading), p: num(last.curr) });
+  if (!reset) return t('Reading ({r}) is lower than the last reading ({p}). Readings only go up. If the meter was replaced or reset, tick "Meter was replaced or reset".', { r: num(+reading), p: num(last.curr) });
+  if (oldFinal === '' || oldFinal == null || isNaN(oldFinal)) return t('Enter the old meter\'s final reading');
+  if (+oldFinal < last.curr) return t('The old meter\'s final reading ({f}) cannot be lower than the last reading ({p})', { f: num(+oldFinal), p: num(last.curr) });
+  return null;
+}
 function moveReading(roomId, curr, date = today()) {
   if (!orgEnabled('electricity')) return null;
   if (curr === '' || curr == null || isNaN(curr)) throw new Error(t('Enter the meter reading'));
@@ -3071,9 +3344,9 @@ const PaymentGateway = {
       return upiPayUrl(resId, amount);
     }
     if (provider === 'cashfree') {
-      return `${appUrl()}/pay.html?inv_id=${encodeURIComponent(invoiceId)}&hostel_id=${encodeURIComponent(hostelId || h.id || '')}&res_id=${encodeURIComponent(resId || '')}&am=${encodeURIComponent(amount)}`;
+      return `${baseUrl()}pay.html?inv_id=${encodeURIComponent(invoiceId)}&hostel_id=${encodeURIComponent(hostelId || h.id || '')}&res_id=${encodeURIComponent(resId || '')}&am=${encodeURIComponent(amount)}${p.upiId ? `&pa=${encodeURIComponent(p.upiId)}&pn=${encodeURIComponent(p.payee || h.name || '')}` : ''}`;
     }
-    return `${appUrl()}/pay/${invoiceId}?provider=${provider}&amt=${amount}`;
+    return `${baseUrl()}pay/${invoiceId}?provider=${provider}&amt=${amount}`;
   },
   verifyWebhookSignature({ payload, signature, secret, timestamp = '', provider = 'cashfree' }) {
     if (!secret || !signature) return false;
@@ -3107,10 +3380,38 @@ function composeMonthlyBillingMessage({ resident, name = '', hostelName = '', pe
   return msg;
 }
 
+/* Extra charges (Wi-Fi, AC, parking...). scope: 'all', 'rooms' (chosen rooms) or 'residents' (chosen
+ * residents). Charges saved earlier with scope 'room' + roomId keep working as they did. */
+function chargeApplies(chg, r) {
+  if (chg.scope === 'rooms') return (chg.roomIds || []).includes(r.roomId);
+  if (chg.scope === 'residents') return (chg.resIds || []).includes(r.id);
+  if (chg.scope === 'room' && chg.roomId) return chg.roomId === r.roomId;
+  return true;
+}
+// A one-time charge is billed by the owner pressing "Bill now": once per resident, never twice.
+function billChargeNow(chg, date = today()) {
+  if (!chg || chg.frequency !== 'onetime') throw new AppError('Only a one-time charge is billed this way');
+  let created = 0, skipped = 0;
+  for (const r of activeRes()) {
+    if (!chargeApplies(chg, r)) continue;
+    const id = `inv-chg-${chg.id}-${r.id}`;
+    if (Store.get(id)) { skipped++; continue; }
+    addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'charge', period: ymOf(date), title: chg.name, amount: round2(chg.amount), date, due: addDays(date, rentDueDays()) });
+    created++;
+  }
+  return { created, skipped };
+}
+// What the active monthly charges add to every resident's bill, and how many are for chosen people only.
+function chargesSummary(list = S().charges || []) {
+  const on = list.filter(c => c.active), monthly = on.filter(c => c.frequency === 'monthly');
+  return { active: on.length, monthly: monthly.length, onetime: on.length - monthly.length, everyone: round2(sum(monthly.filter(c => !c.scope || c.scope === 'all'), c => +c.amount || 0)), chosen: monthly.filter(c => c.scope && c.scope !== 'all').length };
+}
 function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
   const h = Store.hostel();
   if (!h) throw new AppError('No active hostel selected');
   const settings = S();
+  // The three "Add ... to the monthly bill" switches in Settings > Rent & billing (missing = on).
+  const inc = settings.rent || {};
   const monthStart = `${ym}-01`;
   const monthEnd = `${ym}-${pad(daysIn(ym))}`;
   const excludeSet = new Set(options.excludeResIds || []);
@@ -3175,7 +3476,7 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
       rentCycleId = `inv-rent-${r.id}-${ym}`;
       rentPeriod = ym;
       invDate = rentDue(ym);
-      dueDate = addDays(invDate, settings.rent.dueDays || settings.rent.graceDays || 5);
+      dueDate = addDays(invDate, rentDueDays());
     }
 
     if (rentCycleId && r.rent > 0) {
@@ -3209,10 +3510,10 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
 
     // 2. Electricity bill
     const elecInvs = resInvoices(r.id).filter(i => i.type === 'electricity' && i.period === ym);
-    resSummary.elecAmount = sum(elecInvs, i => i.amount || 0);
+    resSummary.elecAmount = inc.includeElec === false ? 0 : sum(elecInvs, i => i.amount || 0);
 
     // 3. Mess bill
-    if (settings.mess && (settings.mess.billing === 'compulsory' || (settings.mess.billing === 'optional' && r.food !== false))) {
+    if (inc.includeMess !== false && settings.mess && (settings.mess.billing === 'compulsory' || (settings.mess.billing === 'optional' && r.food !== false))) {
       const messFee = settings.mess.monthlyFee || 2500;
       const messInvId = `inv-mess-${r.id}-${ym}`;
       if (!Store.get(messInvId)) {
@@ -3242,11 +3543,11 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
     }
 
     // 4. Recurring additional charges
-    if (Array.isArray(settings.charges) && settings.charges.length) {
+    if (inc.includeCharges !== false && Array.isArray(settings.charges) && settings.charges.length) {
       for (const chg of settings.charges) {
         if (!chg.active || chg.frequency !== 'monthly') continue;
         if (chg.effectiveDate && chg.effectiveDate > monthEnd) continue;
-        if (chg.scope === 'room' && chg.roomId && chg.roomId !== r.roomId) continue;
+        if (!chargeApplies(chg, r)) continue;
         const chgInvId = `inv-chg-${chg.id}-${r.id}-${ym}`;
         if (!Store.get(chgInvId)) {
           if (!options.previewOnly) {
@@ -3315,7 +3616,7 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
     }
   }
 
-  alog('monthly_billing_batch', `Monthly billing run: ${results.invoicesCreated} created, ${results.invoicesSkipped} skipped, ${results.messages.length} reminders ready`, {
+  if (!options.previewOnly) alog('monthly_billing_batch', `Monthly billing run: ${results.invoicesCreated} created, ${results.invoicesSkipped} skipped, ${results.messages.length} reminders ready`, {
     batchId: results.batchId,
     ym,
     invoicesCreated: results.invoicesCreated,
@@ -3388,28 +3689,137 @@ function cutoffAt(date, mealK, kind = 'skip') {
 const beforeCutoff = (date, mealK, kind) => new Date() < cutoffAt(date, mealK, kind);
 const skipId = (resId, date, mealK) => `skip-${resId}-${date}-${mealK}`;
 const tiffinId = (resId, date, mealK) => `tif-${resId}-${date}-${mealK}`;
+// Meals-off leave: at most 60 days at a time and never two overlapping leaves (a 400-day leave or a doubled one
+// silently switched the cook's head-count off). Returns the problem as text, or '' when it is fine.
+const MAX_LEAVE_DAYS = 60;
+function leaveProblem(resId, from, to, exceptId = '') {
+  if (!from || !to) return 'Choose both dates';
+  if (to < from) return 'End date is before start date';
+  if (diffDays(to, from) + 1 > MAX_LEAVE_DAYS) return t('Leave can be at most {n} days at a time. For longer, check out or ask the owner.', { n: MAX_LEAVE_DAYS });
+  if (Store.all('leave').some(l => l.resId === resId && l.id !== exceptId && l.from <= to && l.to >= from)) return t('There is already a leave on some of these days');
+  return '';
+}
 function onLeave(resId, date) { return Store.all('leave').some(l => l.resId === resId && l.from <= date && l.to >= date); }
 function toggleSkip(resId, date, mealK, force) {
   const id = skipId(resId, date, mealK), cur = Store.get(id);
   if (!isAdmin() && !beforeCutoff(date, mealK, 'skip')) throw new Error(t('Cut-off time passed for {m}', { m: mealName(mealK) }));
-  if (cur && force !== true) { Store.remove(id); return false; }
-  if (!cur) { Store.put('skip', { id, resId, date, meal: mealK, ts: nowIso() }); const tf = Store.get(tiffinId(resId, date, mealK)); if (tf) Store.remove(tf.id); }
-  return true;
+  const want = force === true ? true : !skippedOn(resId, date, mealK), dflt = skipPlanWants(resId, date, mealK);
+  // a dated row exists only where the day differs from the weekly plan: a skip the plan does not have, or an "off" for a plan skip
+  if (want === dflt) { if (cur) Store.remove(id); }
+  else Store.put('skip', want ? { id, resId, date, meal: mealK, ts: nowIso() } : { id, resId, date, meal: mealK, status: 'off', ts: nowIso() });
+  // skipping means no food at all, so a tiffin for that meal goes with it (a plan tiffin is ignored while the skip stands)
+  if (want) { const tf = Store.get(tiffinId(resId, date, mealK)); if (tf) Store.remove(tf.id); }
+  return want;
+}
+// The resident writes ONE short line about how they want their tiffin packed ("3 roti, dry sabzi, no curd");
+// every tiffin they order afterwards carries it, so the cook never has to ask. Stored as a template row of
+// the 'tiffin' kind (residents may write that kind) with no date, so it never counts as an order.
+const TIF_NOTE_MAX = 60;
+const tifNoteId = resId => `tifnote-${resId}`;
+const tifNoteOf = resId => (Store.get(tifNoteId(resId)) || {}).note || '';
+function setTifNote(resId, note) {
+  const r = resById(resId); if (!r) throw new AppError('Resident not found');
+  const n = String(note || '').replace(/\s+/g, ' ').trim().slice(0, TIF_NOTE_MAX);
+  return Store.put('tiffin', { id: tifNoteId(resId), resId, roomId: r.roomId, date: '', meal: 'note', status: 'template', note: n });
+}
+/* Weekly meal plan: the resident ticks, once, which meals they want packed as a TIFFIN and which they will
+ * SKIP, on which weekdays (e.g. tiffin Mon-Fri lunch, skip Sat-Sun dinner). From then on those days happen by
+ * themselves every week until the plan is changed. One template row of the 'tiffin' kind (no date, so it is never
+ * an order) holds both: plan = tiffin, skipPlan = skip.
+ *   tiffin -> eats, but packed: counted in the plates AND listed for the cook to pack.
+ *   skip   -> eats nothing at the hostel: not counted, and no tiffin either.
+ *   both   -> cannot be on the same meal and day: skip wins (the editor never lets both be ticked).
+ * A single day can still be changed until that meal's cut-off: that writes a dated row which differs from the plan
+ * (an extra tiffin / skip, or an "off" that cancels the plan for that day) and exists only where it differs.
+ * After the cut-off nothing changes, so what the plan says is what the kitchen cooks. */
+const TIF_PLAN_DAYS = [1, 2, 3, 4, 5, 6, 0];
+const tifPlanId = resId => `tifplan-${resId}`;
+const tifPlanOf = resId => { const p = Store.get(tifPlanId(resId)); return p && (p.plan || p.skipPlan) ? p : null; };
+const planHas = (plan, date, mealK) => (((plan || {})[parse(date).getDay()]) || []).includes(mealK);
+const tifPlanWants = (resId, date, mealK) => { const p = tifPlanOf(resId); return !!p && date >= (p.from || '') && planHas(p.plan, date, mealK); };
+const skipPlanWants = (resId, date, mealK) => { const p = tifPlanOf(resId); return !!p && S().mess.skip !== false && date >= (p.from || '') && planHas(p.skipPlan, date, mealK); };
+// Is this meal skipped for this resident on this date? (one answer for the resident, the cook, the owner and the manager)
+function skippedOn(resId, date, mealK) {
+  const rec = Store.get(skipId(resId, date, mealK));
+  if (rec) return rec.status !== 'off';
+  return skipPlanWants(resId, date, mealK);
+}
+// Does this resident get a tiffin for this meal on this date?
+function tiffinOn(resId, date, mealK) {
+  if (S().mess.tiffin === false) return false;
+  const r = resById(resId); if (!r || r.food === false || !activeOn(r, date)) return false;
+  if (onLeave(resId, date) || skippedOn(resId, date, mealK)) return false;
+  const rec = Store.get(tiffinId(resId, date, mealK));
+  if (rec) return rec.status !== 'off';
+  return tifPlanWants(resId, date, mealK);
+}
+// The tiffin row for a day: the saved one, or one made up from the plan (saved the moment the cook marks it packed).
+const tifRecOf = (resId, date, mealK) => Store.get(tiffinId(resId, date, mealK)) || { id: tiffinId(resId, date, mealK), resId, roomId: (resById(resId) || {}).roomId, date, meal: mealK, note: tifNoteOf(resId), status: 'requested', fromPlan: true };
+const tiffinsOnDate = date => meals().flatMap(m => headcount(date, m.k).tiffins);
+// Everyone skipping something on a date, plan or one-off: [{resId, roomId, meal}]
+const skipsOnDate = date => meals().flatMap(m => residents().filter(r => r.food !== false && activeOn(r, date) && !onLeave(r.id, date) && skippedOn(r.id, date, m.k)).map(r => ({ resId: r.id, roomId: r.roomId, meal: m.k, date })));
+function ensureTifRec(resId, date, mealK) { const x = tifRecOf(resId, date, mealK); return x.fromPlan ? Store.put('tiffin', { id: x.id, resId, roomId: x.roomId, date, meal: mealK, note: x.note, status: 'requested', ts: nowIso() }) : x; }
+// Saves the weekly plan. plan / skipPlan: {weekday: [mealKeys]}. Pass undefined to keep what is saved.
+function setTifPlan(resId, plan, skipPlan) {
+  const r = resById(resId); if (!r) throw new AppError('Resident not found');
+  const old = tifPlanOf(resId);
+  const clean = src => { const o = {}; for (const d of TIF_PLAN_DAYS) { const ms = [...new Set(((src || {})[d] || []).filter(k => meals().some(m => m.k === k)))]; if (ms.length) o[d] = ms; } return o; };
+  const newTif = clean(plan === undefined ? (old || {}).plan : plan), newSkip = clean(skipPlan === undefined ? (old || {}).skipPlan : skipPlan);
+  for (const d of Object.keys(newSkip)) if (newTif[d]) { newTif[d] = newTif[d].filter(k => !newSkip[d].includes(k)); if (!newTif[d].length) delete newTif[d]; }   // skip wins
+  // a meal whose cut-off has already passed keeps what it was; a new plan cannot reach back into it
+  for (const d of [today(), addDays(today(), 1), addDays(today(), 2)]) for (const m of meals()) {
+    if (!beforeCutoff(d, m.k, 'tiffin')) {
+      const id = tiffinId(resId, d, m.k);
+      if (!Store.get(id)) { const was = !!old && tifPlanWants(resId, d, m.k), will = planHas(newTif, d, m.k); if (was !== will) Store.put('tiffin', { id, resId, roomId: r.roomId, date: d, meal: m.k, note: tifNoteOf(resId), status: was ? 'requested' : 'off', ts: nowIso() }); }
+    }
+    if (!beforeCutoff(d, m.k, 'skip')) {
+      const id = skipId(resId, d, m.k);
+      if (!Store.get(id)) { const was = !!old && skipPlanWants(resId, d, m.k), will = planHas(newSkip, d, m.k); if (was !== will) Store.put('skip', was ? { id, resId, date: d, meal: m.k, ts: nowIso() } : { id, resId, date: d, meal: m.k, status: 'off', ts: nowIso() }); }
+    }
+  }
+  return Store.put('tiffin', { id: tifPlanId(resId), resId, roomId: r.roomId, date: '', meal: 'plan', status: 'template', plan: newTif, skipPlan: newSkip, from: today(), ts: nowIso() });
+}
+// "Mon-Fri" / "Mon, Wed, Sat" from a list of weekday numbers (Monday first)
+function tifDaysText(days) {
+  const idx = TIF_PLAN_DAYS.map((d, i) => (days.includes(d) ? i : -1)).filter(i => i >= 0), out = [];
+  for (let i = 0; i < idx.length;) { let j = i; while (j + 1 < idx.length && idx[j + 1] === idx[j] + 1) j++; const nm = k => DAYS()[TIF_PLAN_DAYS[idx[k]]]; out.push(j - i >= 2 ? `${nm(i)}-${nm(j)}` : idx.slice(i, j + 1).map((_, k) => nm(i + k)).join(', ')); i = j + 1; }
+  return days.length === 7 ? t('Every day') : out.join(', ');
+}
+// "Lunch: Mon-Fri · Dinner: Sat" for one kind of plan ('plan' = tiffin, 'skipPlan' = skip)
+function tifPlanText(resId, kind = 'plan') {
+  const p = tifPlanOf(resId); if (!p || !p[kind]) return '';
+  return meals().map(m => { const ds = TIF_PLAN_DAYS.filter(d => (p[kind][d] || []).includes(m.k)); return ds.length ? `${mealName(m.k)}: ${tifDaysText(ds)}` : ''; }).filter(Boolean).join(' · ');
+}
+// The one place that undoes a skip for a single day (so a tiffin can go on, or the resident changes their mind)
+function clearSkipDay(resId, date, mealK) {
+  const id = skipId(resId, date, mealK), cur = Store.get(id);
+  if (skipPlanWants(resId, date, mealK)) Store.put('skip', { id, resId, date, meal: mealK, status: 'off', ts: nowIso() });
+  else if (cur) Store.remove(id);
 }
 function toggleTiffin(resId, date, mealK, note = '') {
-  const id = tiffinId(resId, date, mealK), cur = Store.get(id);
+  const id = tiffinId(resId, date, mealK), cur = Store.get(id), r = resById(resId);
+  note = note || tifNoteOf(resId);
   if (!isAdmin() && !beforeCutoff(date, mealK, 'tiffin')) throw new Error(t('Cut-off time passed for {m}', { m: mealName(mealK) }));
-  if (cur) { Store.remove(id); return false; }
-  Store.put('tiffin', { id, resId, roomId: (resById(resId) || {}).roomId, date, meal: mealK, note, status: 'requested', ts: nowIso() });
-  const sk = Store.get(skipId(resId, date, mealK)); if (sk) Store.remove(sk.id);
-  return true;
+  const want = !tiffinOn(resId, date, mealK), dflt = tifPlanWants(resId, date, mealK);
+  // a tiffin on a skipped meal means "I am eating after all": that is only allowed while the skip could still be changed
+  if (want && skippedOn(resId, date, mealK) && !isAdmin() && !beforeCutoff(date, mealK, 'skip')) throw new Error(t('Cut-off time passed for {m}', { m: mealName(mealK) }));
+  // keep a dated row only where the day differs from the plan; otherwise the plan (or nothing) already says it
+  if (want === dflt) { if (cur) Store.remove(id); }
+  else Store.put('tiffin', { id, resId, roomId: (r || {}).roomId, date, meal: mealK, note, status: want ? 'requested' : 'off', ts: nowIso() });
+  if (want && skippedOn(resId, date, mealK)) clearSkipDay(resId, date, mealK);
+  return want;
+}
+// Tiffins packed and meals skipped in one month (plans included), for the monthly report
+function monthMealStats(ym) {
+  let tiffins = 0, skips = 0; const end = ym === ymOf(today()) ? today() : `${ym}-31`;
+  for (let d = `${ym}-01`; d <= end && ymOf(d) === ym; d = addDays(d, 1)) for (const m of meals()) { const hc = headcount(d, m.k); tiffins += hc.tiffin; skips += hc.skip; }
+  return { tiffins, skips };
 }
 function headcount(date, mealK) {
   const eligible = residents().filter(r => r.food !== false && activeOn(r, date));
   let leave = 0, skip = 0;
-  const skips = new Set(Store.all('skip').filter(s => s.date === date && s.meal === mealK).map(s => s.resId));
-  for (const r of eligible) { if (onLeave(r.id, date)) leave++; else if (skips.has(r.id)) skip++; }
-  const tiffins = Store.all('tiffin').filter(x => x.date === date && x.meal === mealK && !skips.has(x.resId));
+  for (const r of eligible) { if (onLeave(r.id, date)) leave++; else if (skippedOn(r.id, date, mealK)) skip++; }
+  const tiffins = eligible.filter(r => tiffinOn(r.id, date, mealK)).map(r => tifRecOf(r.id, date, mealK));
   const guests = sum(Store.all('guestmeal').filter(g => g.date === date && g.meal === mealK), g => g.count);
   const eat = eligible.length - leave - skip + guests;
   const served = Store.get(`served-${date}-${mealK}`);
@@ -3522,6 +3932,7 @@ const moveStock = (itemId, qty, type, date = today(), ref = '', note = '', id) =
 // A physical count: books the difference between what the ledger says and what is on the shelf.
 function countTo(itemId, counted, type = 'count', note = '', id) {
   const it = itemById(itemId); if (!it) return null;
+  if (!isFinite(+counted) || +counted < 0) throw new Error(t('The counted quantity cannot be negative'));
   return postMove(itemId, toM(counted) - stockM(it), type, { id, ref: 'count', note });
 }
 // Movements of one item inside a period, for the reports.
@@ -3589,6 +4000,14 @@ function createPR({ items: list, note = '' }) {
 function receivePR(prId, rows, { vendor = '', mode = 'cash', date = today() } = {}) {
   const pr = Store.get(prId); if (!pr) throw new Error('Not found');
   if (pr.status === 'received') return pr;     // pressed twice, or sent again after a bad connection: it is already in the books
+  // a negative quantity or price used to be accepted: stock went below zero and the expense disappeared
+  for (const x of pr.items) {
+    const r = rows[x.itemId] || {};
+    const q = r.qty === undefined || r.qty === '' ? 0 : +r.qty, p = r.rate === undefined || r.rate === '' ? 0 : +r.rate;
+    if (!isFinite(q) || !isFinite(p) || q < 0 || p < 0) throw new Error(t('Received quantity and rate cannot be negative'));
+    if (q > 100000 || p > 1000000) throw new Error(t('Check the received quantity and rate - the number is too large'));
+  }
+  if (!pr.items.some(x => +((rows[x.itemId] || {}).qty) > 0)) throw new Error(t('Enter the quantity received for at least one item'));
   pr.items = pr.items.map(x => { const r = rows[x.itemId] || {}; return { ...x, recvQty: +r.qty || 0, rate: +r.rate || 0 }; });
   for (const x of pr.items) if (x.recvQty > 0) { postMove(x.itemId, toM(x.recvQty), 'receive', { id: `mv-rcv-${pr.id}-${x.itemId}`, date, ref: pr.id }); Store.patch(x.itemId, { rate: x.rate || (itemById(x.itemId) || {}).rate }); }
   pr.status = 'received'; pr.receivedOn = date; pr.vendor = vendor; pr.mode = mode; pr.total = prTotal(pr); pr.receivedBy = Store.me && Store.me.full_name;
@@ -3728,16 +4147,17 @@ function staffSalarySummary(s, currentYM = ymOf(today())) {
 /* ===================================================================== automation */
 const RULES = [
   { k: 'rent', l: 'Monthly rent bills', d: 'Creates every resident\'s rent bill on the rent day. Credit is adjusted automatically.' },
-  { k: 'late', l: 'Late fee', d: 'Adds the late fee once when rent stays unpaid after the grace days.' },
   { k: 'meter', l: 'Meter reading reminder', d: 'Reminds you on the reading day which rooms still need a meter reading.' },
   { k: 'hk', l: 'Cleaning tasks', d: 'Creates today\'s and tomorrow\'s cleaning tasks from schedules and tells each staff member.' },
   { k: 'missed', l: 'Missed cleaning alert', d: 'Marks tasks missed after the cut-off time and alerts you.' },
-  { k: 'stock', l: 'Daily stock usage', d: 'Deducts yesterday\'s estimated kitchen usage from stock using the menu and real headcount.' },
-  { k: 'lowstock', l: 'Low stock alert', d: 'Tells the cook and you when an item will run out within 2 days.' },
+  { k: 'stock', kitchen: true, l: 'Daily stock usage', d: 'Deducts yesterday\'s estimated kitchen usage from stock using the menu and real headcount.' },
+  { k: 'lowstock', kitchen: true, l: 'Low stock alert', d: 'Tells the cook and you when an item will run out within 2 days.' },
   { k: 'checkout', l: 'Checkout reminder', d: 'Reminds you a day before a resident\'s planned checkout.' },
 ];
 // Bills, late fees and reminders are the hostel's business, never one block's: a wing filter
 // in the header must not decide who gets charged this month.
+// Rules a hostel can actually use: the kitchen ones only exist where the kitchen module is on.
+const visibleRules = () => RULES.filter(r => !r.kitchen || orgEnabled('kitchen'));
 function runAutomation(force) { return withAllBlocks(() => runAutomationAll(force)); }
 function runAutomationAll(force) {
   if (!Store.ctx || !Store.ctx.hostelId) return 0;
@@ -3773,13 +4193,15 @@ function runAutomationAll(force) {
         if (d0 >= rentDue(ym)) {
           if (r.checkIn > rentDue(ym)) continue;
           const id = `inv-rent-${r.id}-${ym}`; if (Store.get(id)) continue;
-          addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}`, amount: r.rent, date: rentDue(ym), due: addDays(rentDue(ym), S().rent.graceDays) }); acts++;
+          addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}`, amount: r.rent, date: rentDue(ym), due: addDays(rentDue(ym), rentDueDays()) }); acts++;
         }
       }
     }
     if (acts) alog('rent', t('{n} rent bills created', { n: acts }));
   }
-  if (admin && A.late && S().rent.lateOn) {
+  // The late fee follows the hostel's own policy (Settings > Deposits & late fee): switched on there, it is added
+  // to the bill by itself and shows in the resident's bill breakdown. It is not an automation rule any more.
+  if (admin && S().rent.lateOn && (S().lateFee || {}).on !== false) {
     let n = 0;
     for (const i of invoices()) if (i.type === 'rent' && invBal(i) > 0 && i.due < d0 && !Store.get(`inv-late-${i.id}`)) {
       const r = resById(i.resId); if (!r || r.status === 'left') continue;
@@ -3841,7 +4263,7 @@ function remindersDue() {
   for (const x of dueList(true)) {
     const old = openInv(x.r.id).filter(i => i.due && i.due < d0).sort(by('due'))[0]; if (!old) continue;
     const late = diffDays(d0, old.due), st = stages.filter(s => late >= s).pop(); if (st == null) continue;
-    const logId = `log-rem-${old.id}-${st}`; if (Store.get(logId)) continue;
+    const logId = `log-rem-${old.id}-${st}`; if (Store.get(logId) || bmailDone('reminder', x.r.id)) continue;
     out.push({ r: x.r, due: x.due, logId, stage: st });
   }
   return out;
@@ -3856,7 +4278,7 @@ function monthlyBillsDue() {
   const d0 = today(), ym = ymOf(d0), fb = +m.fallbackDay || 10, out = [];
   for (const r of activeRes()) {
     if (!phone10(r.phone) || !Store.get(`inv-rent-${r.id}-${ym}`)) continue;
-    const logId = `log-mbill-${r.id}-${ym}`; if (Store.get(logId)) continue;
+    const logId = `log-mbill-${r.id}-${ym}`; if (Store.get(logId) || bmailDone('bill', r.id)) continue;
     const invs = resInvoices(r.id).filter(i => i.period === ym && (i.type === 'rent' || i.type === 'electricity') && invBal(i) > 0);
     if (!invs.length) continue;
     const read = !orgEnabled('electricity') || meters().some(x => x.roomId === r.roomId && !x.opening && ymOf(x.date) === ym);
@@ -3865,16 +4287,155 @@ function monthlyBillsDue() {
   }
   return out;
 }
-const monthlyBillMsgs = list => list.map(x => ({ phone: x.r.phone, text: billMessage(x.r, 'bill', x.invs).text, label: `${x.r.name} · ${inr(x.due)}`, x }));
+/* Meta only lets a business start a chat with a PRE-APPROVED template, so on the Cloud API the
+ * monthly bill goes out as one (wa.monthly.template, created in Meta Business Manager). Body
+ * variables, in order: {{1}} first name, {{2}} hostel, {{3}} total due, {{4}} pay link. Template
+ * variables cannot hold line breaks, so the bill lines stay in the app and the pay link carries
+ * the detail. Without a template name the plain text is sent (works only inside Meta's 24-hour
+ * window) and anything that fails is handed back to the owner for one-tap sending. */
+function monthlyBillTemplate(r, invs) {
+  const m = S().wa.monthly || {}, name = String(m.template || '').trim(); if (!name) return null;
+  const b = billMessage(r, 'bill', invs), p = v => ({ type: 'text', text: String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 500) || '-' });
+  const hostel = (Store.hostel() || {}).name || '';
+  const link = (b.text.match(/https?:\/\/\S+/) || [''])[0];
+  return { name, language: { code: m.language || 'en' }, components: [{ type: 'body', parameters: [p(r.name.split(' ')[0]), p(hostel), p(rs(b.total)), p(link)] }] };
+}
+// Month-by-month bill breakdown for one resident: rent, electricity, late fee, laundry, penalty and the rest.
+function billBreakdown(resId, months = 4) {
+  const invs = resInvoices(resId).filter(i => i.type !== 'deposit' && i.status !== 'void');
+  const yms = [...new Set(invs.map(i => String(i.period && /^\d{4}-\d{2}$/.test(i.period) ? i.period : ymOf(i.date || today()))))].sort().reverse().slice(0, months);
+  return yms.map(ym => {
+    const rows = invs.filter(i => String(i.period && /^\d{4}-\d{2}$/.test(i.period) ? i.period : ymOf(i.date || today())) === ym);
+    const pick = ty => sum(rows.filter(i => i.type === ty), i => i.amount);
+    const known = ['rent', 'electricity', 'late', 'laundry', 'penalty'];
+    const other = sum(rows.filter(i => !known.includes(i.type)), i => i.amount);
+    return { ym, rent: pick('rent'), electricity: pick('electricity'), late: pick('late'), laundry: pick('laundry'), penalty: pick('penalty'), other, total: sum(rows, i => i.amount), paid: sum(rows, i => i.paid || 0), due: sum(rows, i => invBal(i)) };
+  });
+}
+const monthlyBillMsgs = list => list.map(x => { const tp = monthlyBillTemplate(x.r, x.invs); return { phone: x.r.phone, text: billMessage(x.r, 'bill', x.invs).text, template: tp || undefined, label: `${x.r.name} · ${inr(x.due)}`, x }; });
 function markReminded(list) { for (const x of list) Store.put('log', { id: x.logId, rule: x.rule || 'remind', msg: `${x.r.name} · ${inr(x.due)}`, resId: x.r.id, date: today(), ts: nowIso() }); }
 const reminderMsgs = list => list.map(x => ({ phone: x.r.phone, text: billMessage(x.r, 'reminder').text, label: `${x.r.name} · ${inr(x.due)}`, x }));
 
 // Residents who owe money now — used by "Send reminders" (one tap each on WhatsApp).
 function dueList(overdueOnly) { return activeRes().map(r => ({ r, due: resDue(r.id), od: resOverdue(r.id) })).filter(x => (overdueOnly ? x.od : x.due) > 0).sort((a, b) => b.due - a.due); }
 
+/* Salary is never booked by the system - the owner books it. What the system does is REMIND: from the
+ * 25th of the month (or any time for last month) a staff member whose salary is not fully paid shows up
+ * in Approvals. Booking the salary makes the reminder vanish by itself, because due drops to 0. */
+function salaryReminders(d0 = today()) {
+  const out = [], ym = ymOf(d0), prev = addMonths(ym + '-01', -1).slice(0, 7), day = +String(d0).slice(8);
+  for (const s of staffList()) {
+    if (s.status !== 'active' || !(+s.salary > 0)) continue;
+    const joined = String(s.joinDate || '0000-00').slice(0, 7);
+    for (const m of [prev, ym]) {
+      if (m < joined) continue;
+      if (m === ym && day < 25) continue;
+      const p = payrollFor(s, m);
+      if (p.due > 0) out.push({ staffId: s.id, name: s.name, ym: m, due: p.due });
+    }
+  }
+  return out;
+}
+
+/* ===================================================================== business insights
+ * Everything the Insights tab shows is worked out here from records already on the device, so it is
+ * testable without a screen: monthly trend, cost analysis, a 3-month forecast, a what-if scenario and
+ * plain-language commentary. Nothing here writes data. */
+const FIXED_COST_SHARE = 0.6;   // rent, salaries, internet... do not move when a bed fills or empties
+function insightMonths(n = 6, upto = ymOf(today())) {
+  const out = []; for (let i = n - 1; i >= 0; i--) out.push(addMonths(upto + '-01', -i).slice(0, 7)); return out;
+}
+function bizInsights(n = 6) {
+  const cur = ymOf(today()), yms = insightMonths(n, cur);
+  const pays = payments().filter(p => p.mode !== 'deposit' && !p.reversed);
+  const exps = Store.all('exp');
+  const invs = invoices().filter(i => i.type !== 'deposit' && i.status !== 'void');
+  const occNow = occupancy(), totalBeds = occNow.total || 0;
+  const months = yms.map(ym => {
+    const income = sum(pays.filter(p => ymOf(p.date) === ym), p => p.amount);
+    const expense = sum(exps.filter(x => ymOf(x.date) === ym), x => x.amount);
+    const billed = sum(invs.filter(i => ymOf(i.date) === ym), i => i.amount);
+    const collected = sum(invs.filter(i => ymOf(i.date) === ym), i => i.paid || 0);
+    const end = ym === cur ? today() : `${ym}-${String(daysIn(ym)).padStart(2, '0')}`;
+    const occ = totalBeds ? Math.round(100 * residents().filter(r => activeOn(r, end)).length / totalBeds) : 0;
+    return { ym, income, expense, profit: income - expense, margin: income > 0 ? Math.round(100 * (income - expense) / income) : 0, billed, collected, occ, partial: ym === cur };
+  });
+  const full = months.filter(m => !m.partial && (m.income > 0 || m.expense > 0));
+  const base = full.slice(-3);
+  const avg = f => (base.length ? sum(base, f) / base.length : 0);
+  const avgIncome = Math.round(avg(m => m.income)), avgExpense = Math.round(avg(m => m.expense));
+  // cost analysis by category: last full month vs the average of the full months before it
+  const catOf = ym => groupBy(exps.filter(x => ymOf(x.date) === ym), x => x.cat);
+  const lastFull = full.length ? full[full.length - 1].ym : null;
+  const prevYms = full.slice(Math.max(0, full.length - 4), full.length - 1).map(m => m.ym);
+  const cats = {};
+  if (lastFull) {
+    const last = catOf(lastFull);
+    for (const [c, l] of Object.entries(last)) cats[c] = { cat: c, last: sum(l, x => x.amount), avgPrev: 0 };
+    for (const ym of prevYms) for (const [c, l] of Object.entries(catOf(ym))) { cats[c] = cats[c] || { cat: c, last: 0, avgPrev: 0 }; cats[c].avgPrev += sum(l, x => x.amount) / (prevYms.length || 1); }
+  }
+  const lastTotal = sum(Object.values(cats), c => c.last) || 1;
+  const costRows = Object.values(cats).map(c => ({ ...c, share: Math.round(100 * c.last / lastTotal), change: c.avgPrev > 0 ? Math.round(100 * (c.last - c.avgPrev) / c.avgPrev) : null, avgPrev: Math.round(c.avgPrev) })).sort((a, b) => b.last - a.last);
+  // forecast: straight-line trend over the full months, never below zero; with <2 months it is just the average
+  const trend = (vals, k) => {
+    if (vals.length < 2) return vals.length ? vals[0] : 0;
+    const m = vals.length, xs = vals.map((_, i) => i), mx = (m - 1) / 2, my = vals.reduce((a, b) => a + b, 0) / m;
+    const sl = xs.reduce((a, x, i) => a + (x - mx) * (vals[i] - my), 0) / (xs.reduce((a, x) => a + (x - mx) ** 2, 0) || 1);
+    return Math.max(0, my + sl * (m - 1 + k - mx));
+  };
+  // months before the first recorded expense are just "not started tracking" - they would fake a steep climb
+  const start = Math.max(0, full.findIndex(m => m.expense > 0 && m.income > 0));
+  const fit = full.slice(start);
+  const fullI = fit.map(m => m.income), fullE = fit.map(m => m.expense);
+  const bound = (v, a) => (a > 0 ? Math.min(a * 1.3, Math.max(a * 0.7, v)) : v);   // a forecast never swings more than 30% from the recent average
+  const forecast = [1, 2, 3].map(k => {
+    const income = Math.round(bound(trend(fullI, k), avgIncome)), expense = Math.round(bound(trend(fullE, k), avgExpense));
+    return { ym: addMonths(cur + '-01', k).slice(0, 7), income, expense, profit: income - expense };
+  });
+  // per-bed economics + vacancy cost
+  const occBeds = occNow.occ || 0, rentPerBed = occBeds ? Math.round(avgIncome / occBeds) : 0;
+  const vacancyCost = Math.round(occNow.vac * (sum(activeRes(), r => r.rent || 0) / (activeRes().length || 1)));
+  const fixed = avgExpense * FIXED_COST_SHARE, varPerBed = occBeds ? (avgExpense * (1 - FIXED_COST_SHARE)) / occBeds : 0;
+  const beBeds = rentPerBed > varPerBed ? Math.ceil(fixed / (rentPerBed - varPerBed)) : null;
+  const dues = sum(activeRes(), r => resDue(r.id)), overdue = sum(activeRes(), r => resOverdue(r.id));
+  const ins = { months, avgIncome, avgExpense, avgProfit: avgIncome - avgExpense, margin: avgIncome > 0 ? Math.round(100 * (avgIncome - avgExpense) / avgIncome) : 0,
+    costRows, forecast, occ: occNow, rentPerBed, vacancyCost, breakEven: { beds: beBeds, pct: beBeds != null && totalBeds ? Math.round(100 * beBeds / totalBeds) : null },
+    dues, overdue, fixedShare: FIXED_COST_SHARE, varPerBed, haveData: full.length > 0 };
+  ins.notes = insightNotes(ins);
+  return ins;
+}
+// What if occupancy / rent / costs move? occ and rent are +/- percent of today's, cost is +/- percent on top.
+function scenarioCalc(ins, { occ = 0, rent = 0, cost = 0 } = {}) {
+  const occBeds = ins.occ.occ || 0, total = ins.occ.total || 0;
+  const newBeds = Math.max(0, Math.min(total, Math.round(occBeds * (1 + occ / 100))));
+  const income = ins.rentPerBed * newBeds * (1 + rent / 100);
+  const expense = (ins.avgExpense * ins.fixedShare + ins.varPerBed * newBeds) * (1 + cost / 100);
+  return { beds: newBeds, income: Math.round(income), expense: Math.round(expense), profit: Math.round(income - expense), baseProfit: ins.avgProfit };
+}
+function insightNotes(i) {
+  const out = [], K = n => inr(Math.round(n));
+  if (!i.haveData) return [{ tone: 'info', text: t('Insights need at least one full month of payments and expenses. They will fill in by themselves as you use the app.') }];
+  const m = i.margin;
+  out.push({ tone: m < 0 ? 'bad' : m < 10 ? 'warn' : 'ok', text: m < 0 ? t('Costs are higher than income: on average you lose {a} a month. Fix this first.', { a: K(-i.avgProfit) })
+    : m < 10 ? t('Profit margin is thin at {m}%: only {a} a month is left after costs. A small cost rise can wipe it out.', { m, a: K(i.avgProfit) })
+      : t('Healthy: about {m}% of income ({a} a month) is left after costs.', { m, a: K(i.avgProfit) }) });
+  if (i.occ.vac > 0) out.push({ tone: 'warn', text: t('{n} beds are empty - about {a} a month of rent not earned. Filling even half of them adds {h} a month.', { n: i.occ.vac, a: K(i.vacancyCost), h: K(i.vacancyCost / 2) }) });
+  else out.push({ tone: 'ok', text: t('Every bed is occupied. Think about a small rent rise at the next renewal - see the scenario below.') });
+  if (i.breakEven.pct != null) out.push({ tone: i.occ.pct >= i.breakEven.pct ? 'ok' : 'bad', text: t('Break-even is about {b}% occupancy ({n} beds). You are at {p}%.', { b: i.breakEven.pct, n: i.breakEven.beds, p: i.occ.pct }) });
+  const top = i.costRows[0];
+  if (top) out.push({ tone: 'info', text: t('Biggest cost: {c} - {s}% of last month\'s spending ({a}).', { c: t(top.cat), s: top.share, a: K(top.last) }) });
+  const rise = i.costRows.filter(c => c.change != null && c.change >= 25 && c.last - c.avgPrev > 500).sort((a, b) => (b.last - b.avgPrev) - (a.last - a.avgPrev))[0];
+  if (rise) out.push({ tone: 'warn', text: t('{c} jumped {p}% above its usual level ({a} vs {b}). Worth checking the bills.', { c: t(rise.cat), p: rise.change, a: K(rise.last), b: K(rise.avgPrev) }) });
+  const f = i.forecast[2];
+  if (f) out.push({ tone: f.profit < i.avgProfit * 0.9 ? 'warn' : 'info', text: t('If the recent trend continues, {m} profit will be about {a} (income {i}, costs {c}).', { m: fmtYM(f.ym), a: K(f.profit), i: K(f.income), c: K(f.expense) }) });
+  if (i.overdue > 0) out.push({ tone: 'warn', text: t('{a} is overdue from residents. Collecting it is the fastest way to improve cash in hand.', { a: K(i.overdue) }) });
+  return out;
+}
+
 /* ===================================================================== approvals inbox */
 function inboxItems() {
   const out = [];
+  if (can('staff') && isAdmin()) for (const x of salaryReminders()) out.push({ k: 'salary', id: x.staffId, attrs: `data-ym="${x.ym}"`, icon: 'wallet', ic: 'warn', t: `${t('Book salary')} · ${x.name}`, d: `${fmtYM(x.ym)} · ${t('due')} ${inr(x.due)}`, ts: `${x.ym}-28T00:00:00` });
   if (can('payments')) for (const c of Store.all('claim').filter(c => c.status === 'pending')) { const r = resById(c.resId); out.push({ k: 'claim', id: c.id, icon: 'rupee', ic: 'ok', t: `${t('UPI payment')} · ${inr(c.amount)}`, d: `${r ? r.name : ''} · UTR ${c.utr || '—'}`, ts: c.ts }); }
   if (can('kitchen')) for (const p of Store.all('pr').filter(p => p.status === 'requested')) out.push({ k: 'pr', id: p.id, icon: 'cart', ic: 'warn', t: `${t('Purchase request')} ${p.no}`, d: `${p.by || ''} · ${p.items.length} ${t('items')}`, ts: p.ts });
   if (can('electricity')) for (const m of meters().filter(m => m.status === 'review')) {
@@ -4017,7 +4578,7 @@ function seedDemo(hostelId, opts = {}) {
   const act = activeRes();
   act.slice(0, 6).forEach((r, i) => { const { l } = laundryReceive({ resId: r.id, pcs: 8 + i * 4, date: addDays(today(), -(i % 3)) }); if (i % 2) Store.patch(l.id, { status: 'completed', completedAt: nowIso() }); });
   if (act[2]) Store.put('cmp', { resId: act[2].id, roomId: act[2].roomId, cat: 'Plumbing', text: t('Bathroom tap leaking'), status: 'open', date: today(), ts: nowIso(), src: 'resident' });
-  if (act[4]) Store.put('cmp', { resId: act[4].id, roomId: act[4].roomId, cat: 'Electrical', text: t('Fan making noise'), status: 'progress', date: addDays(today(), -2), ts: nowIso(), src: 'resident' });
+  if (act[4]) Store.put('cmp', { resId: act[4].id, roomId: act[4].roomId, cat: 'Electrical', text: t('Fan making noise'), status: 'open', date: addDays(today(), -2), ts: nowIso(), src: 'resident' });
   const owing = act.find(r => resDue(r.id) > 0);
   if (owing) Store.put('claim', { resId: owing.id, amount: resDue(owing.id), utr: '4' + String(Math.floor(1e10 + R() * 9e10)), date: today(), ts: nowIso(), status: 'pending' });
   for (let i = 0; i < 6; i++) { const r = act[(i * 3) % act.length]; Store.put('gate', { type: i % 2 ? 'visitor' : 'out', name: i % 2 ? pick(['Ramesh (father)', 'Courier', 'Electrician']) : r.name, resId: r.id, purpose: i % 2 ? t('Meeting') : t('Market'), date: today(), inAt: i % 2 ? nowIso() : null, outAt: i % 2 ? null : nowIso() }); }
@@ -4064,6 +4625,7 @@ function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = 
         floor: floorLabel,
         block: roomBlock,
         rent,
+        ...(+cr.deposit > 0 ? { deposit: round2(+cr.deposit) } : {}),
         ac,
         sharing: capacity,
         beds
@@ -4230,69 +4792,113 @@ function replaceIngredientInDishes(oldItemId, newItemId) {
 }
 
 /* ===================================================================== bank statement reconciliation */
-function parseBankStatement(text, format = 'csv') {
-  if (!text || typeof text !== 'string') throw new Error('Statement content cannot be empty');
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (lines.length < 2) throw new Error('Statement must contain at least a header and one transaction row');
-
-  const headerLine = lines[0];
-  const delim = headerLine.includes('\t') ? '\t' : (headerLine.includes(';') ? ';' : ',');
-  const headers = headerLine.split(delim).map(h => h.replace(/^["']|["']$/g, '').trim().toLowerCase());
-
-  const colDate = headers.findIndex(h => /date|txn_date|transaction_date|value_date/.test(h));
-  const colAmount = headers.findIndex(h => /amount|txn_amount|net_amount/.test(h));
-  const colCrDr = headers.findIndex(h => /cr_dr|type|credit_debit|dr_cr|direction/.test(h));
-  const colRef = headers.findIndex(h => /ref|utr|rrn|chq|cheque|reference|transaction_id/.test(h));
-  const colNarration = headers.findIndex(h => /narration|description|particulars|remarks/.test(h));
-  const colCr = headers.findIndex(h => /^credit|^cr$|deposit/.test(h));
-  const colDr = headers.findIndex(h => /^debit|^dr$|withdrawal/.test(h));
-
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const rawCols = lines[i].split(delim).map(c => c.replace(/^["']|["']$/g, '').trim());
-    if (rawCols.length < 2) continue;
-
-    let date = colDate >= 0 ? rawCols[colDate] : '';
-    if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(date)) {
-      const parts = date.split(/[-/]/);
-      date = `${parts[2]}-${parts[1]}-${parts[0]}`;
-    }
-
-    let amount = 0;
-    let direction = 'CR';
-
-    if (colCr >= 0 && rawCols[colCr] && parseFloat(rawCols[colCr].replace(/,/g, '')) > 0) {
-      amount = parseFloat(rawCols[colCr].replace(/,/g, ''));
-      direction = 'CR';
-    } else if (colDr >= 0 && rawCols[colDr] && parseFloat(rawCols[colDr].replace(/,/g, '')) > 0) {
-      amount = parseFloat(rawCols[colDr].replace(/,/g, ''));
-      direction = 'DR';
-    } else if (colAmount >= 0) {
-      amount = Math.abs(parseFloat(rawCols[colAmount].replace(/,/g, '')) || 0);
-      if (colCrDr >= 0) {
-        direction = /cr|credit/i.test(rawCols[colCrDr]) ? 'CR' : 'DR';
-      }
-    }
-
-    let narration = colNarration >= 0 ? rawCols[colNarration] : '';
-    let rawRef = colRef >= 0 ? rawCols[colRef] : '';
-    let ref = classifyPaymentRef(rawRef || narration);
-
-    if (amount > 0) {
-      rows.push({
-        lineNo: i + 1,
-        date: date || today(),
-        amount: round2(amount),
-        direction,
-        ref: ref.normalized || rawRef,
-        utr: ref.normalized || rawRef,
-        refType: ref.type,
-        narration,
-        raw: lines[i]
-      });
-    }
+/* ---- Bank statement import -------------------------------------------------------------------------
+ * Every Indian bank (and the UPI app exports) lays its CSV out differently: some put account details above the
+ * table, some have separate Credit / Debit columns, some one Amount + Cr/Dr column, dates come as 12/11/2026,
+ * 12-Nov-26 or 2026-11-12, amounts as 1,23,456.00 or "Rs. 500 Cr", and the UTR often only sits inside the
+ * narration. This reads all of them; rows that are not transactions (opening balance, totals, footers) are skipped. */
+function bankCsvRecords(text, delim) {
+  const out = []; let row = [], cur = '', q = false;
+  const src = String(text).replace(/^﻿/, '');
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === '"') { if (src[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; continue; }
+    if (c === '"') { q = true; continue; }
+    if (c === delim) { row.push(cur.trim()); cur = ''; continue; }
+    if (c === '\n' || c === '\r') { if (c === '\r' && src[i + 1] === '\n') i++; row.push(cur.trim()); if (row.some(x => x !== '')) out.push(row); row = []; cur = ''; continue; }
+    cur += c;
   }
+  row.push(cur.trim()); if (row.some(x => x !== '')) out.push(row);
+  return out;
+}
+const BANK_MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+function parseBankDate(v) {
+  let s = String(v || '').trim().replace(/[,]/g, ' ').replace(/\s+/g, ' ');
+  if (!s) return '';
+  const iso = (y, m, d) => { y = +y; if (y < 100) y += 2000; m = +m; d = +d; if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31)) return ''; return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`; };
+  let m;
+  if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) return iso(m[1], m[2], m[3]);
+  if ((m = s.match(/^(\d{1,2})[-/. ]([A-Za-z]{3,9})[-/. ]?(\d{2,4})/))) { const mo = BANK_MON[m[2].slice(0, 4).toLowerCase()] || BANK_MON[m[2].slice(0, 3).toLowerCase()]; return mo ? iso(m[3], mo, m[1]) : ''; }
+  if ((m = s.match(/^([A-Za-z]{3,9})[-/. ](\d{1,2})[-/. ]?(\d{2,4})/))) { const mo = BANK_MON[m[1].slice(0, 4).toLowerCase()] || BANK_MON[m[1].slice(0, 3).toLowerCase()]; return mo ? iso(m[3], mo, m[2]) : ''; }
+  if ((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/))) return iso(m[3], m[2], m[1]);   // India writes day first
+  if (/^\d{5}(\.\d+)?$/.test(s) && +s > 30000 && +s < 80000) { const d = new Date(Math.round((+s - 25569) * 864e5)); return d.toISOString().slice(0, 10); }   // Excel serial
+  return '';
+}
+// -> { v: number, dir: 'CR' | 'DR' | null } ; dir only when the cell itself says so (Cr / Dr suffix, minus sign, brackets)
+function parseBankAmount(v) {
+  let s = String(v == null ? '' : v).trim(); if (!s) return { v: 0, dir: null };
+  let dir = null;
+  if (/\b(cr|credit)\.?$/i.test(s)) dir = 'CR'; else if (/\b(dr|debit)\.?$/i.test(s)) dir = 'DR';
+  if (/^\(.*\)$/.test(s) || /^-/.test(s) || /^-\s*(₹|rs|inr)/i.test(s)) dir = dir || 'DR';
+  if (/^\+/.test(s)) dir = dir || 'CR';
+  s = s.replace(/(rs\.?|inr|₹|\bcr\b|\bdr\b|credit|debit)/gi, '').replace(/[,\s()+\-]/g, '');
+  const n = parseFloat(s);
+  return { v: isFinite(n) ? Math.abs(n) : 0, dir };
+}
+// The UTR is the column named so, or else it is hiding in the narration: UPI/412398765432/..., NEFT-AXISP00123456-NAME, IMPS-412345678901-..., UTR: ...
+function extractBankRef(refCell, narration) {
+  const clean = x => String(x || '').trim().replace(/^['"=]+|['"]+$/g, '');
+  const rc = clean(refCell);
+  if (rc && !/^0+$/.test(rc) && !/^[-–.]+$/.test(rc) && rc.length >= 6) { const m = rc.match(/\b\d{12}\b/); return (m ? m[0] : rc.replace(/\s+/g, '')).toUpperCase(); }
+  const n = String(narration || '');
+  let m;
+  if ((m = n.match(/(?:UTR|RRN|REF(?:ERENCE)?(?:\s*NO)?)[\s.:#-]*([A-Z0-9]{8,22})\b/i))) return m[1].toUpperCase();
+  if ((m = n.match(/(?:^|[^0-9])(\d{12})(?:[^0-9]|$)/))) return m[1];
+  if ((m = n.match(/\b([A-Z]{4}[A-Z0-9]\d{7,18}|[A-Z]{4}\d{9,20}|[A-Z]{3,6}R?\d{10,20})\b/))) return m[1];
+  if ((m = n.match(/\b(\d{9,11}|\d{13,22})\b/))) return m[1];
+  return '';
+}
+function parseBankStatement(text, format = 'csv') {
+  if (!text || typeof text !== 'string' || !text.trim()) throw new Error('Statement content cannot be empty');
+  const sample = text.split(/\r?\n/).filter(l => l.trim()).slice(0, 40);
+  const count = ch => sample.reduce((n, l) => n + (l.split(ch).length - 1), 0);
+  const delim = [['\t', count('\t')], [';', count(';')], ['|', count('|')], [',', count(',')]].sort((a, b) => b[1] - a[1])[0][0];
+  const recs = bankCsvRecords(text, delim);
+  if (recs.length < 2) throw new Error('Statement must contain at least a header and one transaction row');
+  const norm = h => String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  // the header is the first row (anywhere in the first 60) that has a date column and some amount column
+  let hi = -1, H = [];
+  for (let i = 0; i < Math.min(recs.length, 60); i++) {
+    const h = recs[i].map(norm);
+    if (h.some(x => /\bdate\b|\bdt\b|\btime\b/.test(x)) && h.some(x => /\b(amount|amt|credits?|deposits?|debits?|withdrawals?|cr|dr)\b/.test(x))) { hi = i; H = h; break; }
+  }
+  if (hi < 0) throw new Error('Could not find the column headings. The statement needs a Date column and Credit / Deposit or Amount columns.');
+  const idx = f => H.findIndex(f);
+  const isType = h => /\b(dr cr|cr dr|credit debit|debit credit|txn type|transaction type|type|dr or cr)\b/.test(h) && !/\b(amount|amt)\b/.test(h);
+  const colType = idx(isType);
+  const colBal = idx(h => /balance|bal\b/.test(h));
+  const colCr = idx((h, i) => i !== colType && i !== colBal && /\b(credit|deposit|deposits|credits|cr|received|credited)\b/.test(h) && !/\b(dr|debit|withdrawal)\b/.test(h));
+  const colDr = idx((h, i) => i !== colType && i !== colBal && i !== colCr && /\b(debit|withdrawal|withdrawals|dr|paid|debited)\b/.test(h) && !/\b(cr|credit|deposit)\b/.test(h));
+  const colAmt = idx((h, i) => i !== colType && i !== colBal && i !== colCr && i !== colDr && /\b(amount|amt|value)\b/.test(h) && !/\bdate\b/.test(h));
+  let colDate = idx(h => /\b(txn|tran|transaction|posting|post)\s+date\b|^date$|^date time$|^date and time$/.test(h));
+  if (colDate < 0) colDate = idx(h => /\bdate\b|\bdt\b/.test(h) && !/\bvalue\b/.test(h));
+  if (colDate < 0) colDate = idx(h => /\bdate\b|\bdt\b/.test(h));
+  const colNar = (() => { for (const re of [/narration/, /particulars/, /transaction remarks|remarks/, /description|desc\b/, /transaction details|details|name|merchant|payee/]) { const k = idx((h, i) => i !== colDate && re.test(h)); if (k >= 0) return k; } return -1; })();
+  const colRef = idx((h, i) => i !== colNar && i !== colDate && i !== colBal && /\b(utr|rrn|ref|reference|chq|cheque|instrument|txn id|transaction id|upi ref|trans id)\b/.test(h));
+  if (colCr < 0 && colAmt < 0) throw new Error('Could not find a Credit / Deposit or Amount column in this statement.');
 
+  const rows = []; let skipped = 0;
+  for (let i = hi + 1; i < recs.length; i++) {
+    const c = recs[i];
+    const date = parseBankDate(colDate >= 0 ? c[colDate] : '');
+    if (!date) { skipped++; continue; }                       // opening balance, totals, page footers
+    let amount = 0, direction = null;
+    if (colCr >= 0 || colDr >= 0) {
+      const cr = colCr >= 0 ? parseBankAmount(c[colCr]).v : 0, dr = colDr >= 0 ? parseBankAmount(c[colDr]).v : 0;
+      if (cr > 0 && !(dr > 0)) { amount = cr; direction = 'CR'; } else if (dr > 0 && !(cr > 0)) { amount = dr; direction = 'DR'; } else if (cr > 0 && dr > 0) { amount = Math.abs(cr - dr); direction = cr >= dr ? 'CR' : 'DR'; }
+    }
+    if (!direction && colAmt >= 0) {
+      const a = parseBankAmount(c[colAmt]); amount = a.v;
+      const tp = colType >= 0 ? String(c[colType] || '') : '';
+      if (tp) direction = /\b(cr|credit|deposit|received|in|inward|\+)\b/i.test(tp) ? 'CR' : /\b(dr|debit|withdraw|paid|sent|out|outward)\b/i.test(tp) ? 'DR' : null;
+      if (!direction) direction = a.dir || 'CR';
+    }
+    if (!direction || !(amount > 0)) { skipped++; continue; }
+    const narration = colNar >= 0 ? String(c[colNar] || '').replace(/\s+/g, ' ').trim() : '';
+    const ref = extractBankRef(colRef >= 0 ? c[colRef] : '', narration);
+    rows.push({ lineNo: i + 1, date, amount: round2(amount), direction, ref, utr: ref, refType: ref && /^\d{12}$/.test(ref) ? 'upi_rrn' : (ref ? 'bank_utr' : 'unknown'), narration, raw: c.join(delim) });
+  }
+  rows.meta = { headerRow: hi + 1, delimiter: delim === '\t' ? 'tab' : delim, skipped, columns: { date: H[colDate], narration: H[colNar], ref: H[colRef], credit: H[colCr], debit: H[colDr], amount: H[colAmt], type: H[colType] } };
   return rows;
 }
 
@@ -4367,8 +4973,12 @@ function reconcileBankStatement(statementRows, opts = {}) {
     }
   }
 
+  if (opts.dryRun) {   // show what would happen; nothing is saved or confirmed
+    return { dryRun: true, totalCredits: credits.length, exactMatches, probableMatches, amountMismatches, multipleCandidates, unmatchedCredits, duplicateTransactions, alreadyReconciled,
+      summary: { totalCredits: credits.length, autoMatched: opts.autoConfirm !== false ? exactMatches.length : 0, exactMatch: exactMatches.length, probableMatch: probableMatches.length, probable: probableMatches.length, unmatched: unmatchedCredits.length, duplicate: duplicateTransactions.length + alreadyReconciled.length, amountMismatch: amountMismatches.length } };
+  }
   const confirmed = [];
-  const toConfirm = opts.autoConfirm !== false ? exactMatches : [];
+  const toConfirm = opts.autoConfirm !== false ? [...exactMatches] : [];
   if (opts.confirmProbable) toConfirm.push(...probableMatches);
 
   for (const match of toConfirm) {
@@ -4508,8 +5118,9 @@ function sendMonthlyBillingWhatsApp(resId, ym, opts = {}) {
   if (!cleanP) throw new Error('Invalid resident mobile number');
   const waPhone = cleanP.startsWith('91') && cleanP.length === 12 ? cleanP : ('91' + cleanP);
 
-  const payLink = `${appUrl()}/pay.html?inv=${inv ? inv.id : ''}`;
   const totalDue = inv ? invBal(inv) : r.rent;
+  // the same working pay link every other message uses: amount, UPI id and the invoice are all in it
+  const payLink = (S().pay || {}).provider === 'cashfree' ? PaymentGateway.createPaymentLink({ invoiceId: inv ? inv.id : '', amount: totalDue, resId, hostelId: h.id, provider: 'cashfree' }) : payLinkFor(r, totalDue, inv);
   const rentAmt = inv ? (inv.type === 'rent' ? inv.amount : (inv.breakdown && inv.breakdown.rent) || r.rent) : r.rent;
   const elecAmt = inv && inv.breakdown ? (inv.breakdown.electricity || 0) : (inv && inv.type === 'electricity' ? inv.amount : 0);
   const messAmt = inv && inv.breakdown ? (inv.breakdown.mess || 0) : (inv && inv.type === 'mess' ? inv.amount : 0);
@@ -4518,7 +5129,7 @@ function sendMonthlyBillingWhatsApp(resId, ym, opts = {}) {
 
   const msgText = `Hello ${r.name},\n` +
     `HostelOS Monthly Bill for ${ym} at ${h.name || 'Hostel'}.\n\n` +
-    `📋 *Billing Breakdown:*\n` +
+    `*Billing Breakdown:*\n` +
     `• Rent: ₹${rentAmt}\n` +
     (elecAmt > 0 ? `• Electricity: ₹${elecAmt}\n` : '') +
     (messAmt > 0 ? `• Mess: ₹${messAmt}\n` : '') +
@@ -4574,33 +5185,8 @@ function sendAgreementEmail(agrId, opts = {}) {
     return { ok: true, delivered: true, sent: true, alreadyDelivered: true, status: 'already_delivered', agreement: Store.get(agrId) };
   }
 
-  const h = (typeof Store !== 'undefined' && Store.hostel) ? (Store.hostel() || {}) : {};
-  const hName = h.name || 'Sunrise PG';
-  const hSettings = (h && h.settings) || {};
-  const ownerEmail = opts.replyTo || hSettings.email || (typeof S === 'function' && S().pay && S().pay.email) || (Store.me && Store.me.email) || ((Store.org && Store.org()) ? Store.org().owner_email : undefined);
-  const room = r ? roomById(r.roomId) : null;
-  const roomStr = room ? room.no : (r ? r.roomId : '-');
-  const html = renderBrandedEmailHtml({
-    hostelName: hName,
-    title: 'Tenancy Agreement',
-    headline: 'Tenancy Agreement & Admission Confirmation',
-    recipientName: (r && r.name) || agr.tenantName || 'Resident',
-    bodyLines: `Room: ${roomStr} (Bed ${r && r.bed || '-'})\nMonthly Rent: ₹${(agr.rent || (r && r.rent) || 0).toLocaleString('en-IN')}\nSecurity Deposit: ₹${(agr.deposit || (r && r.deposit) || 0).toLocaleString('en-IN')}\nAgreement Period: ${fmtDate(agr.startDate)} to ${fmtDate(agr.endDate || addDays(agr.startDate, 335))}\n\nYour rental agreement terms and house rules have been accepted and registered.`,
-    date: fmtDate(today())
-  });
-
-  if (typeof sendBrandedEmail === 'function') {
-    sendBrandedEmail({
-      to: email,
-      subject: `Rental Agreement & Stay Confirmation · ${hName}`,
-      html,
-      text: `Rental Agreement confirmation for ${hName}. Room: ${roomStr}. Rent: ₹${agr.rent || (r && r.rent) || 0}.`,
-      resId: r && r.id,
-      hostelId: h.id,
-      replyTo: ownerEmail
-    }).catch(err => console.warn('Agreement sendBrandedEmail err:', err.message));
-  }
-
+  // 'sent' = handed to the mail service. It only becomes 'delivered' when the provider confirms, and
+  // 'failed' (with the reason) when it does not - the old code marked it delivered without sending anything.
   const initialStatus = opts.confirmed ? 'delivered' : 'sent';
   Store.patch(agrId, {
     emailStatus: initialStatus,
@@ -4608,6 +5194,25 @@ function sendAgreementEmail(agrId, opts = {}) {
     lastEmailAttempt: nowIso(),
     delivery: { channel: 'email', status: initialStatus, to: email, sentAt: nowIso(), deliveredAt: opts.confirmed ? nowIso() : null }
   });
+  if (!opts.noDispatch) {
+    const h = Store.hostel() || {};
+    const lines = [
+      `Agreement v${agr.version || 1} · ${agr.templateName || 'Rental Agreement'}`,
+      `Room ${(agr.resident || {}).roomNo || ''}${(agr.resident || {}).bed ? '-' + agr.resident.bed : ''}  |  Rent ${inr(agr.rent)}/month  |  Deposit ${inr(agr.deposit)}`,
+      `Period: ${agr.startDate ? fmtDate(agr.startDate) : '-'} to ${agr.endDate ? fmtDate(agr.endDate) : '-'}  |  Notice: ${agr.noticeDays || 30} days`,
+      '', 'TERMS & CONDITIONS',
+      ...(agr.clauses || (agr.terms ? [agr.terms] : [])).map((x, i) => `${i + 1}. ${x}`),
+      ...((agr.rules || []).length ? ['', 'HOUSE RULES', ...agr.rules.map((x, i) => `${i + 1}. ${x}`)] : []),
+      '', agr.legalDisclaimer || ''
+    ];
+    const text = lines.join('\n');
+    const html = renderBrandedEmailHtml({ hostelName: h.name || 'Hostel', title: 'Rental Agreement', headline: 'Your Rental Agreement', recipientName: (r && r.name) || 'Resident', bodyLines: text, intro: 'Your registration is complete. Your rental agreement is below - please keep it for your records.', summaryLabel: 'Rental Agreement', date: fmtDate(today()) });
+    Promise.resolve(sendBrandedEmail({ to: email, subject: `${h.name || 'Hostel'} · Your rental agreement`, html, text, resId: agr.resId, hostelId: h.id, replyTo: opts.replyTo || ((h.settings || {}).email) || (typeof S === 'function' && S().pay && S().pay.email) || (Store.me && Store.me.email) || undefined })).then(res => {
+      if (res.delivered) Store.patch(agrId, { emailStatus: 'delivered', emailError: '', delivery: { channel: 'email', status: 'delivered', to: email, sentAt: nowIso(), deliveredAt: nowIso() } });
+      else if (res.reason === 'demo') { /* demo hostel never sends */ }
+      else Store.patch(agrId, { emailStatus: 'failed', emailError: res.reason || 'Email service not configured', delivery: { channel: 'email', status: 'failed', to: email, error: res.reason || 'not_configured' } });
+    }).catch(() => {});
+  }
 
   return { ok: true, delivered: true, sent: true, status: initialStatus, recipient: email, agreement: Store.get(agrId) };
 }
@@ -4619,6 +5224,42 @@ function maskAadhaar(str) {
   return `XXXX-XXXX-${s.slice(8)}`;
 }
 
+/* What a police tenant-verification form actually asks for, and nothing else: who the tenant is, who to reach in the family, how to identify
+ * them, where they will stay, and since when. No rent, deposit, dues, payments, electricity, attendance, e-mail, notes or other papers.
+ * Every E-Mitra screen reads the resident only through this, so a field that is not listed here cannot show up there. */
+const PV_DOC_ALLOWED = /aadhaar|aadhar|id proof|identity|passport photo|photo|pan|voter|driving|passport/i;
+function pvSheet(r) {
+  const h = (typeof Store !== 'undefined' && Store.hostel && Store.hostel()) || {};
+  const room = r && r.roomId ? roomById(r.roomId) : null;
+  const docs = ((r && r.docs) || []).filter(d => PV_DOC_ALLOWED.test(String(d.type || ''))).map(d => ({ type: d.type, path: d.path || '' }));
+  return {
+    id: r.id,
+    tenant: [
+      ['Full name', r.name || ''], ['Father / guardian name', r.guardian || ''], ['Guardian mobile', r.guardianPhone || ''],
+      ['Tenant mobile', r.phone || ''], ['Aadhaar number', r.idNo || ''], ['Permanent address', r.address || ''], ['College / workplace', r.college || '']
+    ],
+    stay: [['Room and bed', room ? `${room.no}${r.bed ? ' - ' + r.bed : ''}` : ''], ['Staying since', r.checkIn || '']],
+    property: [['Hostel / PG name', h.name || ''], ['Hostel address', h.address || '']],
+    docs,
+    missing: [['Full name', r.name], ['Father / guardian name', r.guardian], ['Aadhaar number', r.idNo], ['Permanent address', r.address]].filter(x => !x[1]).map(x => x[0]),
+  };
+}
+// Who does the police verification is the super admin's decision, per hostel: the hostel's own
+// e-Mitra operator login (default), or the Sarvlekh team from the super admin console (pvPlatform).
+// The owner never does it; the owner only watches the status, so this is the one place that says who may.
+const pvByPlatform = () => { const h = Store.hostel(); return !!(h && h.modules && h.modules.pvPlatform === true); };
+const canVerifyPV = () => ctx().role === 'emitra' || isSuper();
+// Every resident who needs verification, sorted into the four states the screens show.
+function pvBoard() {
+  const rs = (typeof activeRes === 'function' ? activeRes() : Store.all('res')).filter(r => r.status === 'active' || r.status === 'notice');
+  const out = { todo: [], submitted: [], verified: [] };
+  for (const r of rs) {
+    const st = (r.pv || {}).status || 'none';
+    if (st === 'not_required' || st === 'exempt') continue;
+    (st === 'verified' ? out.verified : st === 'submitted' ? out.submitted : out.todo).push(r);
+  }
+  return out;
+}
 function emitraPendingQueue() {
   const allRes = typeof activeRes === 'function' ? activeRes() : Store.all('res');
   return allRes.filter(r => {
@@ -4665,7 +5306,7 @@ function checkAndAutoSendAgreement(resId) {
   if (!r) return null;
   const hasRoom = !!(r.roomId && r.bed);
   const hasDocs = (r.docs && r.docs.length > 0) || !!r.idNo;
-  const hasPv = r.pv && r.pv.status && r.pv.status !== 'none' && r.pv.status !== 'not_started';
+  const hasPv = !pvOn() || (r.pv && r.pv.status && r.pv.status !== 'none' && r.pv.status !== 'not_started' && r.pv.status !== 'rejected');
 
   if (!hasRoom || !hasDocs || !hasPv) return null;
 
@@ -4682,7 +5323,7 @@ function checkAndAutoSendAgreement(resId) {
 
   if (agr && r.email && isValidEmail(r.email) && agr.emailStatus !== 'delivered' && agr.emailStatus !== 'sent') {
     try {
-      sendAgreementEmail(agr.id, { confirmed: true });
+      sendAgreementEmail(agr.id);
       notify({
         to: 'res',
         resId: r.id,

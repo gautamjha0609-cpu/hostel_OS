@@ -8,18 +8,47 @@ const person = (r, sub) => `<div class="person">${avatar(r.name)}<div style="min
  * electricity module is on. It is required: the reading closes the current stretch, so whoever
  * was in the room pays for exactly the units used until today, and the next normal reading
  * starts fresh from it. */
-function meterField(roomId, name = 'meterNow', label = 'Meter reading now') {
+// "Last reading 4,764 on 17 Nov" - always visible under the field, and refreshed when another room is picked
+const meterHintText = roomId => { const h = roomId ? moveReadingHint(roomId) : null; return !h ? '' : h.last ? t('Last reading {u} on {d}.', { u: num(h.last.curr), d: fmtShort(h.last.date) }) : t('No reading yet for this room: this becomes its starting point.'); };
+function setMeterHint(form, name, roomId) {
+  const box = form.querySelector(`[data-fw="${name}"] .hint`); if (!box) return;
+  const txt = meterHintText(roomId); box.textContent = txt; box.hidden = !txt;
+  const inp = form.elements[name]; if (inp && roomId) inp.placeholder = (moveReadingHint(roomId) || {}).last ? `> ${num(moveReadingHint(roomId).last.curr)}` : '';
+}
+/* Keeps the box honest while typing: a number below the room's last reading turns the hint red, and (where
+ * the form can handle a replaced meter) offers the "meter was replaced or reset" tick-box. */
+function meterGuard(form, v, name, roomId, canReset) {
+  const box = form.querySelector(`[data-fw="${name}"] .hint`), last = roomId ? lastMeter(roomId) : null;
+  const low = !!last && v[name] !== '' && v[name] != null && !isNaN(v[name]) && +v[name] < last.curr;
+  if (box) {
+    box.classList.toggle('bad-t', low);
+    if (low) { box.textContent = t('Lower than the last reading ({p}). Readings only go up.', { p: num(last.curr) }); box.hidden = false; }
+    else setMeterHint(form, name, roomId);
+  }
+  if (canReset) { showField(form, name + 'Reset', low); showField(form, name + 'OldFinal', low && !!v[name + 'Reset']); }
+}
+// A replaced meter is recorded BEFORE the check-in / checkout it was found at, so the old meter's last units are billed
+// to the people who used them and the new meter starts from the number typed.
+function meterResetNow(roomId, v, name, date) {
+  if (!v[name + 'Reset'] || meterReadingProblem(roomId, v[name], { canReset: false }) === null) return false;
+  replaceMeter({ roomId, finalOldReading: v[name + 'OldFinal'], startingNewReading: v[name], reason: 'Meter replaced / reset (found at ' + (name === 'meterNow' ? 'check-in or checkout' : 'a move') + ')', date });
+  return true;
+}
+function meterField(roomId, name = 'meterNow', label = 'Meter reading now', canReset = false) {
   const hint = moveReadingHint(roomId);
   if (!hint) return [];
   const who = !hint.last ? t('This room has no reading yet, so this becomes its starting point.')
     : !hint.names.length ? t('The room was empty, so nothing before today lands on the new resident.')
       : hint.names.length === 1 ? t('{n} then pays only up to today.', { n: hint.names[0] })
         : t('{n} then pay only up to today.', { n: listNames(hint.names) });
-  return [{
+  return [...[{
     name, label, type: 'number', min: 0, required: true, step: 0.1,
-    hint: (hint.last ? t('Last reading {u} on {d}.', { u: num(hint.last.curr), d: fmtShort(hint.last.date) }) + ' ' : '') + who,
-    info: t('Electricity is split between the readings on either side of it. Taking one now ends the current stretch and starts a fresh one, so everybody pays for the units they actually used, and free units are counted only for the days they stayed.')
-  }];
+    hint: meterHintText(roomId), hintShow: true,
+    info: who + ' ' + t('Electricity is split between the readings on either side of it. Taking one now ends the current stretch and starts a fresh one, so everybody pays for the units they actually used, and free units are counted only for the days they stayed.')
+  }], ...(canReset ? [
+    { name: name + 'Reset', label: 'Meter was replaced or reset', type: 'checkbox', full: true, hidden: true },
+    { name: name + 'OldFinal', label: 'Old meter\'s final reading', type: 'number', min: 0, step: 0.1, full: true, hidden: true, info: t('What the old meter showed when it was taken out. Its last units are billed to the people in the room. The number above then becomes the new meter\'s first reading.') },
+  ] : [])];
 }
 const listNames = a => (a.length < 2 ? a[0] || '' : a.slice(0, -1).join(', ') + ' ' + t('and') + ' ' + a[a.length - 1]);
 /* Every "choose a bed" list in the app, built once. With blocks switched on the options are
@@ -32,8 +61,10 @@ function bedOptions(vac, label) {
 }
 
 /* ===================================================================== home */
+// each quick action keeps its own calm tone, so the grid reads as a set and not as random colours
+const QA_TONE = { checkin: 'tn0', pay: 'tn2', reading: 'tn3', remindall: 'tn1', ldrecv: 'tn5', addexp: 'tn4', addnotice: 'tn0', go: 'tn2' };
 PAGES.home = {
-  title: 'Home', mod: 'home',
+  title: 'Home', mod: 'home', when: () => !!ctx().hostelId,
   render() {
     const ym = ymOf(today()), occ = occupancy();
     const collected = sum(payments().filter(p => ymOf(p.date) === ym && p.mode !== 'deposit'), p => p.amount);
@@ -49,22 +80,34 @@ PAGES.home = {
       ['ldrecv', 'Laundry', 'shirt', 'info', 'laundry'], ['addexp', 'Add expense', 'wallet', 'pink', 'expenses'], ['addnotice', 'Notice', 'megaphone', 'teal', 'notices'], ['go', 'Cleaning', 'broom', 'mute', 'housekeeping'],
     ].filter(x => can(x[4]));
     const months = [...Array(6)].map((_, i) => addMonths(ym, i - 5));
-    return `${head(t(hello) + (Store.me ? ', ' + Store.me.full_name.split(' ')[0] : ''), `${fmtDate(today())} · ${esc(hostelName())}`)}
-      <div class="grid g4 keep2">
-        ${kpi('Collected this month', inr(collected), `${dues.length ? t('{n} residents still owe', { n: dues.length }) : t('All clear')}`, 'ok', 'payments', 'rupee')}
-        ${kpi('Pending dues', inr(dueTot), overdue.length ? t('{n} overdue', { n: overdue.length }) : t('Nothing overdue'), dueTot ? 'bad' : '', 'payments', 'alert')}
-        ${kpi('Occupancy', occ.pct + '%', t('{a} of {b} beds · {v} vacant', { a: occ.occ, b: occ.total, v: occ.vac }), '', 'rooms', 'bed')}
-        ${hc ? kpi(`${mealName(nextMeal.k)} ${t('today')}`, hc.eat, t('{s} skipped · {l} on leave · {f} tiffin', { s: hc.skip, l: hc.leave, f: hc.tiffin }), '', 'mess', 'utensils') : kpi('Approvals', inbox.length, t('waiting for you'), inbox.length ? 'warn' : '', 'inbox', 'inbox')}
-      </div>
+    const pym = ymOf(addDays(ym + '-01', -1)), prevCol = sum(payments().filter(p => ymOf(p.date) === pym && p.mode !== 'deposit'), p => p.amount);
+    const chgPct = prevCol > 0 ? Math.round((collected - prevCol) / prevCol * 100) : null;
+    const series = months.map(m => sum(payments().filter(p => ymOf(p.date) === m && p.mode !== 'deposit'), p => p.amount)), odTot = sum(overdue, x => x.od);
+    return `${homeHero({
+      name: Store.me ? Store.me.full_name.split(' ')[0] : '', sub: `${esc(fmtDate(today()))}<br>${esc(hostelName())}`,
+      cards: [
+        { l: 'Collected this month', icon: 'wallet', v: inr(collected), count: collected, to: 'payments', tone: 'ok', area: series, areaLabels: [fmtYM(months[0]).split(' ')[0], t('This month')],
+          pill: chgPct == null ? esc(t('This month')) : `${chgPct >= 0 ? '&#9650;' : '&#9660;'} ${Math.abs(chgPct) > 150 ? esc(hhShort(Math.abs(collected - prevCol))) : Math.abs(chgPct) + '%'}`, stone: chgPct != null && chgPct < 0 ? 'bad' : 'ok',
+          s: esc(prevCol > 0 ? t('vs {a} last month', { a: inr(prevCol) }) : t('Last 6 months')) },
+        { l: 'Pending dues', icon: 'clock', v: inr(dueTot), count: dueTot, to: 'payments', tone: dueTot ? 'bad' : 'ok',
+          pill: esc(overdue.length ? t('{n} overdue', { n: overdue.length }) : t('All on time')), stone: overdue.length ? 'bad' : 'ok', s: esc(t('{n} residents', { n: dues.length })),
+          seg: dueTot ? { a: odTot, b: Math.max(0, dueTot - odTot), la: 'Overdue', lb: 'Not yet due' } : null }
+      ],
+      strip: [
+        { icon: 'users', v: dues.length, l: 'Residents owing' },
+        { icon: 'bed', v: occ.pct + '%', l: 'Occupancy', bar: occ.pct },
+        hc ? { icon: 'utensils', v: hc.eat, l: `${mealName(nextMeal.k)} ${t('today')}` } : { icon: 'inbox', v: inbox.length, l: 'Approvals' },
+      ],
+    })}
       <div class="group-t">${esc(t('Quick actions'))}</div>
-      <div class="qa">${qa.map(([act, l, icn, col, mod]) => `<button data-act="${act}" ${act === 'go' ? `data-to="${mod}"` : ''}><span class="ic" style="${col ? `background:var(--${col === 'pink' ? 'bad' : col === 'teal' ? 'info' : col === 'mute' ? 'muted' : col})` : ''}">${ico(icn)}</span>${esc(t(l))}</button>`).join('')}</div>
+      <div class="qa">${qa.map(([act, l, icn, col, mod], qi) => `<button data-act="${act}" ${act === 'go' ? `data-to="${mod}"` : ''}><span class="ic ${QA_TONE[act] || 'tn0'}">${ico(icn)}</span><span class="qa-l">${esc(t(l))}</span></button>`).join('')}</div>
       <div class="grid g-main" style="margin-top:6px">
         <div class="stack">
           ${group('Needs your attention', inbox.slice(0, 6).map(x => li({ icon: x.icon, ic: x.ic, t: x.t, d: x.d, act: 'go', attrs: 'data-to="inbox"' })).join('') || li({ icon: 'check', ic: 'ok', t: t('All clear'), d: t('Nothing is waiting for you.') }), inbox.length > 6 ? `<a href="/inbox">${esc(t('See all {n}', { n: inbox.length }))}</a>` : '')}
           ${can('payments') ? `<div class="card"><h3>${esc(t('Income vs expenses'))}<span class="sp"></span><small>${esc(t('last 6 months'))}</small>${blockScope() ? tip(esc(t('Payments are shown for the block you are looking at. Expenses — gas, salaries, internet — are recorded for the whole hostel and are not split between blocks.'))) : ''}</h3>${barChart(months.map(m => fmtYM(m).split(' ')[0]), [months.map(m => sum(payments().filter(p => ymOf(p.date) === m && p.mode !== 'deposit'), p => p.amount)), months.map(m => sum(Store.all('exp').filter(x => ymOf(x.date) === m), x => x.amount))], ['#34c759', '#ff9500'])}<div class="legend"><span><i style="background:#34c759"></i>${esc(t('Income'))}</span><span><i style="background:#ff9500"></i>${esc(t('Expenses'))}</span></div></div>` : ''}
         </div>
         <div class="stack">
-          ${can('housekeeping') && hkT.length ? `<div class="card"><h3>${esc(t('Cleaning today'))}<span class="sp"></span><small>${hkDone}/${hkT.length}</small></h3><div class="bar ok"><i style="width:${pct(hkDone, hkT.length)}%"></i></div><div class="row" style="margin-top:10px">${badge(t('{n} pending', { n: hkT.filter(x => x.status === 'pending').length }), 'info')}${hkT.some(x => x.status === 'missed') ? badge(t('{n} missed', { n: hkT.filter(x => x.status === 'missed').length }), 'bad') : ''}</div></div>` : ''}
+          ${can('housekeeping') && hkT.length ? `<div class="card"><h3>${esc(t('Cleaning today'))}<span class="sp"></span><small>${hkDone}/${hkT.length}</small></h3><div class="bar ok"><i class="pgi" style="width:${pct(hkDone, hkT.length)}%;--p:${pct(hkDone, hkT.length)}"></i></div><div class="row" style="margin-top:10px">${badge(t('{n} pending', { n: hkT.filter(x => x.status === 'pending').length }), 'info')}${hkT.some(x => x.status === 'missed') ? badge(t('{n} missed', { n: hkT.filter(x => x.status === 'missed').length }), 'bad') : ''}</div></div>` : ''}
           ${hc ? `<div class="card"><h3>${esc(t('Kitchen'))}<span class="sp"></span><a class="sm" href="/mess">${esc(t('Open'))}</a></h3><dl class="kv">${meals().map(m => { const h = headcount(today(), m.k); return `<dt>${esc(mealName(m.k))}</dt><dd>${h.eat} ${esc(t('plates'))}${h.tiffin ? ` · ${h.tiffin} ${esc(t('tiffin'))}` : ''}</dd>`; }).join('')}</dl>${low.length ? `<div class="note warn" style="margin:12px 0 0">${ico('alert', 'sm')} ${esc(t('Low stock'))}: ${esc(low.map(i => i.name).join(', '))}</div>` : ''}</div>` : ''}
           ${group('Top dues', dues.slice(0, 5).map(x => li({ lead: avatar(x.r.name), t: x.r.name, d: `${roomName(x.r.roomId)} · ${x.od ? t('overdue') + ' ' + inr(x.od) : t('due')}`, end: `<b class="${x.od ? 'bad-t' : ''}">${inr(x.due)}</b>`, act: 'go', attrs: `data-to="residents/${x.r.id}"` })).join('') || li({ icon: 'check', ic: 'ok', t: t('No dues') }))}
         </div>
@@ -73,6 +116,11 @@ PAGES.home = {
 };
 
 /* ===================================================================== approvals inbox */
+/* Approvals: one card per thing waiting, grouped by kind. The filter row on top narrows it to one kind (money,
+ * new residents, meters, stock, housekeeping & complaints). Each card: what it is, who, how long ago - and its buttons. */
+const APV_CAT = { claim: 'money', dep: 'money', salary: 'money', mbill: 'money', remind: 'money', signup: 'people', pv: 'people', rinfo: 'people', meter: 'meters', pr: 'stock', hk: 'house', cmp: 'house' };
+const APV_CATS = [['all', 'All'], ['money', 'Money'], ['people', 'Residents'], ['meters', 'Meters'], ['stock', 'Stock'], ['house', 'Housekeeping & complaints']];
+const APV_PRIMARY = { claim: 'claimview', signup: 'signupview', pv: 'pvstatus', meter: 'meterview', pr: 'prview', dep: 'depok', cmp: 'go', hk: 'hkack', mbill: 'mbillsend', remind: 'remindsend', rinfo: 'go', salary: 'paysal' };
 PAGES.inbox = {
   title: 'Approvals', mod: 'inbox',
   render() {
@@ -85,29 +133,28 @@ PAGES.inbox = {
       dep: btn('Mark refunded', 'depok', `data-id="${x.id}"`, 'sm ok'),
       cmp: btn('Open', 'go', 'data-to="complaints"', 'sm'),
       hk: `${btn('Reassign', 'hkreassign', `data-id="${x.id}"`, 'sm')}${btn('OK', 'hkack', `data-id="${x.id}"`, 'sm')}`,
-      mbill: btn('Send', 'mbillsend', '', 'sm ok', 'wa'),
-      remind: btn('Send', 'remindsend', '', 'sm ok', 'wa'),
+      mbill: btn('E-mail all', 'mbillsend', '', 'sm ok', 'mail'),
+      remind: btn('E-mail all', 'remindsend', '', 'sm ok', 'mail'),
       pv: `${btn('Open resident', 'go', `data-to="residents/${x.id}"`, 'sm')}${btn('Update', 'pvstatus', `data-id="${x.id}"`, 'sm primary')}`,
       rinfo: btn('Open', 'go', 'data-to="complaints"', 'sm'),
+      salary: btn('Book salary', 'paysal', `data-id="${x.id}" ${x.attrs || ''}`, 'sm primary', 'wallet'),
     }[x.k] || '');
-    return `${head('Approvals', t('Only the things that need a human. Everything else runs automatically.'))}
-      ${list.length ? `<div class="group">${list.map(x => {
-      const primaryAct = {
-        claim: 'claimview',
-        signup: 'signupview',
-        pv: 'pvstatus',
-        meter: 'meterview',
-        pr: 'prview',
-        dep: 'depok',
-        cmp: 'go',
-        hk: 'hkack',
-        mbill: 'mbillsend',
-        remind: 'remindsend',
-        rinfo: 'go'
-      }[x.k] || 'claimview';
+    const row = x => {
       const toAttr = (x.k === 'cmp' || x.k === 'rinfo') ? 'data-to="complaints"' : '';
-      return `<div class="li" style="cursor:pointer" data-act="${primaryAct}" data-id="${x.id}" ${toAttr}><span class="ic ${x.ic}">${ico(x.icon)}</span><span class="body"><span class="t">${esc(x.t)}</span><span class="d">${esc(x.d)} · ${esc(ago(x.ts || nowIso()))}</span></span><span class="end">${acts(x)}</span></div>`;
-    }).join('')}</div>` : `<div class="card">${empty('All clear 🎉', 'Nothing needs your approval right now.')}</div>`}`;
+      return `<div class="apv" data-act="${APV_PRIMARY[x.k] || 'claimview'}" data-id="${x.id}" ${x.attrs || ''} ${toAttr}>
+        <span class="ic ${x.ic}">${ico(x.icon)}</span>
+        <div class="apv-main"><div class="apv-t">${esc(x.t)}</div><div class="apv-d">${esc(x.d)}</div><div class="apv-ago">${esc(ago(x.ts || nowIso()))}</div></div>
+        <div class="apv-acts">${acts(x)}</div></div>`;
+    };
+    const catOf = x => APV_CAT[x.k] || 'money';
+    const counts = Object.fromEntries(APV_CATS.map(([k]) => [k, k === 'all' ? list.length : list.filter(x => catOf(x) === k).length]));
+    const fl = (counts[curFlt('apc', 'all')] ? curFlt('apc', 'all') : 'all');
+    const chipRow = `<div class="chips apv-chips">${APV_CATS.filter(([k]) => k === 'all' || counts[k]).map(([k, l]) => `<button class="chip ${fl === k ? 'on' : ''}" data-act="flt" data-key="apc" data-v="${k}">${esc(t(l))} <span class="chip-n">${counts[k]}</span></button>`).join('')}</div>`;
+    let body;
+    if (!list.length) body = `<div class="card">${empty('All clear ', 'Nothing needs your approval right now.')}</div>`;
+    else if (fl !== 'all') body = `<div class="apv-list fold-list">${list.filter(x => catOf(x) === fl).map(row).join('')}</div>`;
+    else body = APV_CATS.filter(([k]) => k !== 'all' && counts[k]).map(([k, l]) => `<div class="group-t">${esc(t(l))} · ${counts[k]}</div><div class="apv-list fold-list">${list.filter(x => catOf(x) === k).map(row).join('')}</div>`).join('');
+    return `${head('Approvals', t('Only the things that need a human. Everything else runs automatically.'))}${chipRow}${body}`;
   },
 };
 A.claimview = el => {
@@ -116,10 +163,10 @@ A.claimview = el => {
   const r = resById(c.resId);
   const refInfo = c.utr ? classifyPaymentRef(c.utr) : null;
   const docs = r && r.docs && r.docs.length
-    ? `<div style="margin-top:12px"><b>${esc(t('Resident ID / KYC:'))}</b><div class="row" style="gap:8px;margin-top:6px">${r.docs.map(d => `<a href="${d.path || '#'}" target="_blank" rel="noopener" class="btn xs ghost">${ico('file', 'sm')} ${esc(t(d.type || 'Document'))}</a>`).join('')}</div></div>`
+    ? `<div style="margin-top:12px"><b>${esc(t('Resident ID / KYC:'))}</b><div class="row" style="gap:8px;margin-top:6px">${r.docs.map(d => `<button type="button" class="btn xs ghost" data-act="opendoc" data-path="${esc(d.path || '')}" data-res="${r.id}" data-type="${esc(d.type || 'Document')}">${ico('file', 'sm')} ${esc(t(d.type || 'Document'))}</button>`).join('')}</div></div>`
     : '';
   const ssHtml = c.proofUrl
-    ? `<div style="margin-top:12px"><b>${esc(t('Payment Screenshot:'))}</b><br><a href="${c.proofUrl}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px"><img src="${c.proofUrl}" style="max-width:100%;max-height:280px;border-radius:8px;border:1px solid var(--line);object-fit:contain" alt="Payment proof"><div class="xs muted" style="margin-top:4px">${ico('search', 'sm')} ${esc(t('Tap to open full size'))}</div></a></div>`
+    ? `<div style="margin-top:12px"><b>${esc(t('Payment Screenshot:'))}</b><br><a href="${c.proofUrl}" data-docview data-name="${esc(t('Payment Screenshot:'))}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px"><img src="${c.proofUrl}" style="max-width:100%;max-height:280px;border-radius:8px;border:1px solid var(--line);object-fit:contain" alt="Payment proof"><div class="xs muted" style="margin-top:4px">${ico('search', 'sm')} ${esc(t('Tap to open full size'))}</div></a></div>`
     : `<div class="note warn" style="margin-top:12px">${esc(t('No payment screenshot was uploaded.'))}</div>`;
 
   sheet(t('Verify UPI payment'), `<dl class="kv">
@@ -242,7 +289,7 @@ PAGES.rooms = {
       const cls = isOcc ? 'occ' : b.status === 'mnt' ? 'mnt' : 'vac';
       return `<button class="bed ${cls}" data-act="bed" data-room="${room.id}" data-bed="${b.id}"><b>${esc(b.id)} · ${isOcc ? esc(r.name.split(' ')[0]) : esc(t(b.status === 'mnt' ? 'Repair' : 'Vacant'))}</b>${isOcc ? (due ? `<span class="bad-t">${inr(due)} ${esc(t('due'))}</span>` : esc(t('Paid up'))) : esc(t(b.status === 'mnt' ? 'Blocked' : 'Tap to check in'))}</button>`;
     };
-    return `${head('Rooms & Beds', t('{o} occupied · {v} vacant · {p}% full', { o: occ.occ, v: occ.vac, p: occ.pct }), `${btn('Bulk setup', 'bulkrooms', '', '', 'grid')}${btn('Add room', 'addroom', '', '', 'plus')}${btn('Check-in', 'checkin', '', 'primary', 'userplus')}`)}
+    return `${head('Rooms & Beds', t('{o} occupied · {v} vacant · {p}% full', { o: occ.occ, v: occ.vac, p: occ.pct }), `<span class="btn-pair">${btn('Bulk setup', 'bulkrooms', '', '', 'grid')}${btn('Add room', 'addroom', '', '', 'plus')}</span>${btn('Check-in', 'checkin', '', 'primary', 'userplus')}`)}
       <div class="tool">${chips('rooms', [['all', 'All rooms'], ['vac', 'Has vacant bed'], ['due', 'Has dues']], 'all')}<span class="sp"></span><div class="key"><span><i style="background:var(--ok-bg)"></i>${esc(t('Vacant'))}</span><span><i style="background:var(--info-bg)"></i>${esc(t('Occupied'))}</span><span><i style="background:var(--bad-bg)"></i>${esc(t('Repair'))}</span></div></div>
       ${Object.keys(byFloor).length ? Object.entries(byFloor).map(([fl, list]) => {
       const shown = list.filter(r => f === 'all' || (f === 'vac' && bedsOf(r).some(b => b.status === 'vac')) || (f === 'due' && bedsOf(r).some(b => b.resId && resDue(b.resId) > 0)));
@@ -275,13 +322,14 @@ function roomForm(room) {
   formModal({
     title: room ? `${t('Edit room')} ${r.no}` : 'Add room', submit: room ? 'Save' : 'Add room',
     fields: [
-      { name: 'no', label: 'Room number', value: r.no, required: true, maxlength: 20 }, { name: 'floor', label: 'Floor', value: r.floor || `${t('Floor')} 1`, required: true, maxlength: 30 },
+      { name: 'no', label: 'Room number', value: r.no, required: true, maxlength: 20, pattern: /^[A-Za-z0-9][A-Za-z0-9 \-\/.]{0,19}$/ }, { name: 'floor', label: 'Floor', value: r.floor || `${t('Floor')} 1`, required: true, maxlength: 30 },
       ...(blocksOn() ? [{
         name: 'block', label: 'Block', type: 'select', value: roomBlock(r),
         options: [{ v: '', l: t('Not in a block') }, ...hostelBlocks().map(b => ({ v: b.k, l: b.l }))],
         info: t('Everyone living in this room counts as being in this block. Beds, bills and the head count stay with the hostel.')
       }] : []),
-      { name: 'beds', label: 'Number of beds', type: 'number', value: r.beds ? r.beds.length : 2, min: 1, max: 12, required: true }, { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', value: r.rent, min: 0, required: true },
+      { name: 'beds', label: 'Number of beds', type: 'number', int: true, value: r.beds ? r.beds.length : '', placeholder: 'e.g. 2', min: 1, max: 12, required: true }, { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', value: r.rent, min: 0, required: true },
+      ...(S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', value: r.deposit || '', min: 0, max: 500000, placeholder: t('e.g. 10000') }] : []),
       { name: 'ac', label: 'AC room', type: 'checkbox', value: r.ac },
       ...(room ? [{
         type: 'html',
@@ -309,12 +357,13 @@ function roomForm(room) {
     ],
     danger: room && !hasLiving ? { label: 'Delete room', run: () => confirmBox(t('Delete room {r}?', { r: r.no }), () => { Store.remove(r.id); toast('Room deleted'); }, 'Delete', 'bad') } : null,
     onSubmit: v => {
-      if (rooms().some(x => x.no === v.no && x.id !== r.id)) return 'A room with this number already exists';
+      v.no = String(v.no || '').replace(/\s+/g, ' ').trim();
+      if (rooms().some(x => String(x.no).trim().toLowerCase() === v.no.toLowerCase() && x.id !== r.id)) return 'A room with this number already exists';
       const ids = 'ABCDEFGHIJKL'.slice(0, v.beds).split('');
       const cur = bedsOf(r);
       if (cur.filter(b => !ids.includes(b.id)).some(b => b.status === 'occ')) return 'You cannot remove a bed that is occupied';
       const beds = ids.map(id => cur.find(b => b.id === id) || { id, status: 'vac' });
-      Store.put('room', { ...r, id: r.id || `room-${slug(v.no)}-${uid()}`, no: v.no, floor: v.floor, block: blocksOn() ? v.block || '' : r.block || '', rent: v.rent, ac: v.ac, sharing: v.beds, beds });
+      Store.put('room', { ...r, id: r.id || `room-${slug(v.no)}-${uid()}`, no: v.no, floor: v.floor, block: blocksOn() ? v.block || '' : r.block || '', rent: v.rent, ...(S().deposit.mode === 'per_bed' ? { deposit: +v.deposit > 0 ? +v.deposit : 0 } : {}), ac: v.ac, sharing: v.beds, beds });
       toast(room ? 'Room updated' : 'Room added');
     },
   });
@@ -340,13 +389,14 @@ A.bulkrooms = () => {
     title: 'Bulk Setup Floors & Rooms (Step 1/2: Configuration)',
     submit: 'Next: Preview Generated Rooms →',
     wide: true,
-    note: t('Define floor labels, room numbering pattern, and standard capacity. You can preview and customize every room before saving.'),
     fields: [
-      { name: 'floors', label: 'Floor labels (comma-separated)', value: 'Floor 1, Floor 2, Floor 3', required: true, full: true, hint: 'e.g. Floor 1, Floor 2, Floor 3' },
-      { name: 'startNo', label: 'Start room number', type: 'number', value: 101, required: true },
-      { name: 'endNo', label: 'End room number', type: 'number', value: 108, required: true },
-      { name: 'beds', label: 'Beds per room (capacity)', type: 'number', min: 1, max: 12, value: 2, required: true },
-      { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', min: 0, value: 6500, required: true },
+      { type: 'html', html: `<div class="row sb" style="align-items:center"><b>${esc(t('Floors & rooms'))}</b>${tip(esc(t('Define floor labels, room numbering pattern, and standard capacity. You can preview and customize every room before saving.')))}</div>` },
+      { name: 'floors', label: 'Floor labels (comma-separated)', value: `${t('Floor')} 1`, required: true, full: true, hint: 'e.g. Floor 1, Floor 2, Floor 3' },
+      { name: 'startNo', label: 'Start room number', type: 'number', placeholder: 'e.g. 101', required: true },
+      { name: 'endNo', label: 'End room number', type: 'number', placeholder: 'e.g. 108', required: true },
+      { name: 'beds', label: 'Beds per room (capacity)', type: 'number', int: true, min: 1, max: 12, placeholder: 'e.g. 2', required: true },
+      { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', min: 0, placeholder: 'e.g. 6500', required: true },
+      ...(S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', min: 0, max: 500000, placeholder: 'e.g. 10000' }] : []),
       { name: 'ac', label: 'AC rooms', type: 'checkbox', value: false },
       ...(blocksOn() ? [{ name: 'block', label: 'Block', type: 'select', options: [{ v: '', l: t('None') }, ...hostelBlocks().map(b => ({ v: b.k, l: b.l }))] }] : [])
     ],
@@ -375,6 +425,7 @@ A.bulkrooms = () => {
           no: roomNoStr,
           beds: +v.beds,
           rent: +v.rent,
+          deposit: S().deposit.mode === 'per_bed' && +v.deposit > 0 ? +v.deposit : 0,
           ac: !!v.ac,
           block: v.block || '',
           conflict
@@ -390,21 +441,19 @@ A.bulkrooms = () => {
           title: `Bulk Setup (Step 2/2: Verification & Preview · ${previewList.length} Rooms)`,
           submit: hasConflict ? 'Resolve Conflicts to Create' : `Confirm & Create All (${previewList.length} Rooms, ${totalBeds} Beds)`,
           wide: true,
-          note: hasConflict
-            ? t('Warning: Some room numbers already exist in this property. Rename room numbers or resolve duplicate conflicts to proceed.')
-            : t('Review and customize room beds, AC, or rent directly in the table below before creating.'),
           fields: [
             {
               type: 'html',
               html: `
-                <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-                  <div class="xs muted">💡 <b>${esc(t('Quick Edit'))}:</b> ${esc(t('You can change beds, AC, rent or room number directly in the table.'))}</div>
-                  <div class="xs muted" style="white-space:nowrap">👈👉 ${esc(t('Scroll horizontally to view all columns'))}</div>
+                <div class="row sb" style="margin-bottom:8px;align-items:center">
+                  <b>${esc(t('Rooms to create'))}</b>
+                  ${tip(esc(t('Review and customize room beds, AC, or rent directly in the table below before creating.')) + '<br>' + esc(t('You can change beds, AC, rent or room number directly in the table.')) + '<br>' + esc(t('Scroll horizontally to view all columns')) + (hasConflict ? '<br><b>' + esc(t('Warning: Some room numbers already exist in this property. Rename room numbers or resolve duplicate conflicts to proceed.')) + '</b>' : ''))}
+                  ${hasConflict ? `<span class="badge bad">${esc(t('Some room numbers already exist'))}</span>` : ''}
                 </div>
-                <div class="tbl-wrap" style="max-height:360px;overflow-y:auto;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--surface)">
-                  <table class="tbl" style="min-width:540px;width:100%;font-size:13px;border-collapse:collapse">
+                <div class="tbl-wrap bulk-wrap" style="overflow:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:8px;background:var(--surface)">
+                  <table class="tbl" style="min-width:540px;width:100%;font-size:13px;border-collapse:separate;border-spacing:0">
                     <thead>
-                      <tr style="background:var(--subtle);position:sticky;top:0;z-index:2">
+                      <tr style="position:sticky;top:0;z-index:2">
                         <th style="padding:9px 12px;white-space:nowrap;text-align:left">${esc(t('Floor'))}</th>
                         <th style="padding:9px 12px;white-space:nowrap;text-align:left">${esc(t('Room'))}</th>
                         <th style="padding:9px 12px;white-space:nowrap;text-align:left">${esc(t('Beds'))}</th>
@@ -427,10 +476,7 @@ A.bulkrooms = () => {
                             </div>
                           </td>
                           <td style="padding:8px 12px;white-space:nowrap;vertical-align:middle;overflow-wrap:normal">
-                            <select class="inp bulk-inp-ac" data-idx="${i}" style="width:85px;padding:4px 6px;font-size:12px;height:32px">
-                              <option value="1" ${p.ac ? 'selected' : ''}>AC</option>
-                              <option value="0" ${!p.ac ? 'selected' : ''}>Non-AC</option>
-                            </select>
+                            <label class="sw" title="${esc(t('AC room'))}"><input type="checkbox" class="bulk-inp-ac" data-idx="${i}" ${p.ac ? 'checked' : ''} aria-label="${esc(t('AC room'))} ${esc(p.no)}"><span></span></label>
                           </td>
                           <td style="padding:8px 12px;white-space:nowrap;vertical-align:middle;overflow-wrap:normal">
                             <div style="display:inline-flex;align-items:center;gap:3px">
@@ -496,7 +542,7 @@ A.bulkrooms = () => {
               if (el.classList.contains('bulk-inp-beds')) {
                 p.beds = Math.max(1, Math.min(12, parseInt(el.value, 10) || 1));
               } else if (el.classList.contains('bulk-inp-ac')) {
-                p.ac = el.value === '1';
+                p.ac = !!el.checked;
               } else if (el.classList.contains('bulk-inp-rent')) {
                 p.rent = Math.max(0, parseFloat(el.value) || 0);
               } else if (el.classList.contains('bulk-inp-no')) {
@@ -556,34 +602,28 @@ A.checkin = (el, opts = {}) => {
       { type: 'section', label: 'Resident' },
       { name: 'name', label: 'Full name', value: (opts && opts.name) || '', required: true, maxlength: 80 },
       { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', value: (opts && opts.phone) || '', required: true, maxlength: 10, placeholder: '10-digit mobile' },
-      { name: 'email', label: 'Email address', type: 'email', value: (opts && opts.email) || '', maxlength: 80, placeholder: 'name@example.com' },
-      { name: 'guardian', label: 'Parent / guardian name', maxlength: 80 }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', maxlength: 10, placeholder: '10-digit mobile' },
-      { name: 'college', label: 'College / office', maxlength: 120 }, { name: 'idNo', label: 'Aadhaar card number', maxlength: 12, placeholder: '12-digit Aadhaar' },
-      { name: 'address', label: 'Home address', full: true, maxlength: 240 },
+      { name: 'email', label: 'Email address', type: 'email', value: (opts && opts.email) || '', maxlength: 80, placeholder: 'name@example.com', required: true },
+      { name: 'guardian', label: 'Parent / guardian name', maxlength: 80, required: true }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', maxlength: 10, placeholder: '10-digit mobile', required: true },
+      { name: 'college', label: 'College / office', maxlength: 120, required: true }, { name: 'idNo', label: 'Aadhaar card number', maxlength: 12, placeholder: '12-digit Aadhaar', required: true },
+      { name: 'address', label: 'Home address', full: true, maxlength: 240, required: true },
       { type: 'section', label: 'Room & money' },
       { name: 'bed', label: 'Room & bed', type: 'select', options: bedOpts, value: pre, required: true },
       { name: 'checkIn', label: 'Check-in date', type: 'date', value: today(), required: true },
-      ...meterField(room0 ? room0.id : ''),
+      ...meterField(room0 ? room0.id : '', 'meterNow', 'Meter reading now', true),
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: room0 ? room0.rent : '', min: 0, max: 500000, required: true, hint: t('Filled from the room. Change only for a special deal.') },
-      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: room0 ? room0.rent : 0, min: 0, max: 500000 },
+      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: room0 ? depositFor(room0.rent, room0) : 0, min: 0, max: 500000 },
       { name: 'food', label: 'Takes mess food', type: 'checkbox', value: true },
+      ...(accOn() ? [{ name: 'acc', label: 'Accessories given with the bed', type: 'multi', options: accItems().map(x => ({ v: x, l: x })), value: accItems(), full: true, info: t('Tick what you are handing over. The same list comes up at checkout so nothing goes missing. Edit the list in Settings > Room accessories.') }] : []),
       { name: 'lang', label: 'WhatsApp language', type: 'select', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }], value: S().wa.lang === 'hi' ? 'hi' : 'en' },
       { type: 'section', label: 'Documents' },
-      ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*,application/pdf' })),
+      ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*', required: true })),
       { type: 'html', html: docsNote() },
-      ...(pvOn() ? [
-        { type: 'section', label: 'Police verification' },
-        {
-          name: 'pvState', label: 'State / portal', type: 'select', value: S().police.state || '',
-          options: [{ v: '', l: t('Use the hostel default') }].concat(PV_STATES.map(([k, l]) => ({ v: k, l: t(l) })))
-        },
-        { type: 'html', html: `<div class="hint">${esc(t('Marked as not started. Open the portal from the resident page when you are ready — their details are one tap away.'))}</div>` },
-      ] : []),
       { type: 'section', label: 'App login' },
       { name: 'login', label: 'Create app login for resident', type: 'checkbox', value: true, hint: t('User ID = mobile.hostel, password = mobile number. They can change it later.') },
     ],
     onChange: (v, form, changed) => {
-      if (changed === 'bed') { const rm = roomById(String(v.bed).split('|')[0]); if (rm) { setField(form, 'rent', rm.rent); setField(form, 'deposit', rm.rent); } }
+      if (changed === 'meterNow' || changed === 'meterNowReset' || changed === 'bed') meterGuard(form, v, 'meterNow', String(v.bed || '').split('|')[0], true);
+      if (changed === 'bed') { const rm = roomById(String(v.bed).split('|')[0]); if (rm) { setField(form, 'rent', rm.rent); setField(form, 'deposit', depositFor(rm.rent, rm)); setMeterHint(form, 'meterNow', rm.id); } }
     },
     preview: v => {
       if (!v.name) return '';
@@ -591,16 +631,25 @@ A.checkin = (el, opts = {}) => {
       const cCalc = calcCheckInRent({ checkInDate: v.checkIn || today(), monthlyRent: rRent });
       const depAmt = v.deposit != null && !isNaN(v.deposit) ? +v.deposit : 0;
       const hSlug = slug((Store.hostel() || {}).name || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+      const depFee = depAmt > 0 ? Math.min(depAmt, Math.max(0, +S().deposit.nonRefundable || 0)) : 0;
       const uPreview = phone10(v.phone) ? `${phone10(v.phone)}.${hSlug}` : slug(v.name);
-      return `<div style="font-size:12px;line-height:1.4"><b>${esc(t('Login'))}:</b> ${esc(uPreview)} / ${esc(phone10(v.phone) || '—')}<br><b>${esc(t('First Rent'))}:</b> ${inr(cCalc.amount)} (${cCalc.occupiedDays}/${cCalc.totalDays} ${esc(t('days'))} · ${inr(cCalc.dailyRate)}/${esc(t('day'))}) + ${inr(depAmt)} ${esc(t('deposit'))}<br><small class="mute">${esc(cCalc.formula)}</small></div>`;
+      return `<div style="font-size:12px;line-height:1.4"><b>${esc(t('Login'))}:</b> ${esc(uPreview)} / ${esc(phone10(v.phone) || '—')}<br><b>${esc(t('First Rent'))}:</b> ${inr(cCalc.amount)} (${cCalc.occupiedDays}/${cCalc.totalDays} ${esc(t('days'))} · ${inr(cCalc.dailyRate)}/${esc(t('day'))}) + ${inr(depAmt)} ${esc(t('deposit'))}${depFee > 0 ? `<br><b>${esc(t('Non-refundable fee'))}:</b> ${inr(depFee)} <span class="mute">(${esc(t('part of the deposit, kept at checkout'))})</span>` : ''}<br><small class="mute">${esc(cCalc.formula)}</small></div>`;
     },
     onSubmit: async v => {
       if (residents().some(r => r.status !== 'left' && r.phone === phone10(v.phone))) return 'A resident with this mobile number already exists';
+      // Everything about the resident is compulsory: a check-in with a missing paper or contact cannot be saved.
+      if (!isValidEmail(v.email)) return t('Enter a valid email address');
+      if (!/^[5-9][0-9]{9}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
+      const aad = String(v.idNo || '').replace(/[^0-9]/g, '');
+      if (aad.length !== 12 || /^[01]/.test(aad)) return t('Aadhaar number must be exactly 12 digits');
       const [roomId, bed] = v.bed.split('|');
       // Settle the room's electricity up to the moment this person moves in, before they
       // exist as an occupant — otherwise they inherit a share of units used before they came.
-      try { moveReading(roomId, v.meterNow, v.checkIn); } catch (e) { return e.message; }
-      const r = checkIn({ name: v.name, phone: v.phone, email: v.email, guardian: v.guardian, guardianPhone: v.guardianPhone, college: v.college, idNo: v.idNo, address: v.address, roomId, bed, rent: v.rent, deposit: v.deposit, checkIn: v.checkIn, food: v.food, lang: v.lang });
+      // Checked first of all, before anything is saved: a lower reading stops the check-in right here.
+      const mp = meterReadingProblem(roomId, v.meterNow, { reset: v.meterNowReset, oldFinal: v.meterNowOldFinal });
+      if (mp) return mp;
+      try { if (!meterResetNow(roomId, v, 'meterNow', v.checkIn)) moveReading(roomId, v.meterNow, v.checkIn); } catch (e) { return e.message; }
+      const r = checkIn({ name: v.name, phone: v.phone, email: v.email, guardian: v.guardian, guardianPhone: v.guardianPhone, college: v.college, idNo: v.idNo, address: v.address, roomId, bed, rent: v.rent, deposit: v.deposit, checkIn: v.checkIn, food: v.food, lang: v.lang, accessories: accOn() ? (v.acc || []) : null });
       if (opts && opts.inquiryId) {
         const inq = Store.get(opts.inquiryId);
         Store.patch(opts.inquiryId, {
@@ -612,9 +661,9 @@ A.checkin = (el, opts = {}) => {
       const files = req.map((d, i) => ({ type: d, file: (v['doc' + i] || [])[0] })).filter(x => x.file);
       if (pvOn()) {
         const initialPv = files.length >= req.length && files.length > 0 ? 'ready' : 'pending_docs';
-        Store.patch(r.id, { pv: { status: initialPv, state: v.pvState || '', updatedAt: nowIso() } });
+        Store.patch(r.id, { pv: { status: initialPv, state: S().police.state || '', updatedAt: nowIso() } });
       } else {
-        Store.patch(r.id, { pv: { status: 'not_required', state: v.pvState || '' } });
+        Store.patch(r.id, { pv: { status: 'not_required', state: S().police.state || '' } });
       }
       let login = null;
       if (v.login) login = await createResidentLogin(r).catch(e => { toast(t('Login not created: {m}', { m: e.message }), 'bad'); return null; });
@@ -640,13 +689,14 @@ async function createResidentLogin(r) {
 }
 // One line under every document picker, so nobody wonders where the papers go.
 const docsNote = () => (Files.ready()
-  ? `<div class="hint">${ico('lock', 'sm')} ${esc(t('Saved privately. Photos auto-compressed, PDF max 1.5 MB. Deleted {n} days after checkout.', { n: DOC_KEEP_DAYS }))}</div>`
+  ? `<div class="hint">${ico('lock', 'sm')} ${esc(t('Saved privately. Photos only; they are compressed automatically to save space. Deleted {n} days after checkout.', { n: DOC_KEEP_DAYS }))}</div>`
   : `<div class="note warn">${esc(t('Documents are not uploaded in demo mode.'))}</div>`);
 // The record is saved first and the papers follow in the background, so a slow network never
 // holds up a check-in. A paper of a type already on file replaces it; the old file is left for
 // the daily sweep, so a failed sync can never leave a record pointing at nothing.
 async function uploadDocs(kind, id, files) {
-  if (!Files.ready() || !files.length) return 0;
+  if (!files.length) return 0;
+  if (!Files.ready()) { toast(t('Demo mode: the documents you picked are NOT stored. Use the cloud version to keep them.'), 'warn'); return 0; }
   toast(t('Uploading {n} documents…', { n: files.length }));
   let ok = 0;
   for (const f of files) {
@@ -656,6 +706,7 @@ async function uploadDocs(kind, id, files) {
       Store.patch(id, { docs: [...(cur.docs || []).filter(d => d.type !== doc.type), doc] }); ok++;
     } catch (e) { toast(`${t(f.type)}: ${e.message}`, 'bad'); }
   }
+  if (ok < files.length) toast(t('{m} of {n} documents are still missing - open the resident and upload them again.', { m: files.length - ok, n: files.length }), 'bad');
   if (ok) {
     toast(t('{n} documents saved', { n: ok }));
     if (kind === 'res' && typeof checkAndAutoSendAgreement === 'function') {
@@ -728,7 +779,7 @@ function pvAfterForm(id) {
     title: `${t('Police form submitted?')} · ${r.name}`,
     fields: [
       { name: 'refNo', label: 'Acknowledgement / reference number', value: pvOf(r).refNo || '' },
-      { name: 'file', label: 'Acknowledgement (screenshot or PDF)', type: 'file', accept: 'image/*,application/pdf' },
+      { name: 'file', label: 'Acknowledgement (screenshot or photo)', type: 'file', accept: 'image/*' },
     ],
     submit: 'Save to documents',
     onSubmit: async v => {
@@ -794,7 +845,7 @@ A.pvupload = el => {
     title: `${t('Upload verification paper')} · ${r.name}`,
     fields: [
       { name: 'type', label: 'What is this?', type: 'select', options: PV_DOC_TYPES.map(x => ({ v: x, l: t(x) })), required: true },
-      { name: 'file', label: 'File (photo or PDF)', type: 'file', accept: 'image/*,application/pdf', required: true },
+      { name: 'file', label: 'Photo', type: 'file', accept: 'image/*', required: true },
       { type: 'html', html: docsNote() },
     ],
     onSubmit: async v => {
@@ -891,6 +942,11 @@ PAGES.residents = {
       ${list.length ? `<div class="group">${list.slice(0, ui.lim.res || 60).map(r => { const due = resDue(r.id); return li({ lead: avatar(r.name), t: r.name, d: `${blocksOn() && !blockScope() ? blockName(resBlock(r)) + ' · ' : ''}${roomName(r.roomId)}-${r.bed} · ${r.phone}${r.status !== 'active' ? ' · ' + t(r.status === 'left' ? 'Left' : 'On notice') : ''}`, end: due ? `<b class="${resOverdue(r.id) ? 'bad-t' : ''}">${inr(due)}</b>` : badge('Paid', 'ok'), act: 'go', attrs: `data-to="residents/${r.id}"` }); }).join('')}</div>${list.length > (ui.lim.res || 60) ? `<div style="text-align:center;margin-top:12px">${btn('Show more', 'more', 'data-key="res" data-per="60"', 'sm')}</div>` : ''}` : `<div class="card">${empty('No residents found', 'Try another search or filter.')}</div>`}`;
   },
 };
+function billBreakdownCard(id) {
+  const rows = billBreakdown(id, 4); if (!rows.length) return '';
+  const cols = [['rent', 'Rent'], ['electricity', 'Electricity'], ['late', 'Late fee'], ['laundry', 'Laundry'], ['penalty', 'Penalty'], ['other', 'Other']].filter(([k]) => rows.some(r => r[k] > 0));
+  return `<div class="group-t">${esc(t('Bill breakdown'))}</div><div class="card" style="padding:0;overflow:auto"><table class="tbl nw-tbl" style="width:100%;font-size:13px"><thead><tr><th>${esc(t('Month'))}</th>${cols.map(([, l]) => `<th style="text-align:right">${esc(t(l))}</th>`).join('')}<th style="text-align:right">${esc(t('Total'))}</th><th style="text-align:right">${esc(t('Due'))}</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(fmtYM(r.ym))}</td>${cols.map(([k]) => `<td style="text-align:right">${r[k] ? inr(r[k]) : '—'}</td>`).join('')}<td style="text-align:right"><b>${inr(r.total)}</b></td><td style="text-align:right">${r.due > 0 ? `<b class="bad-t">${inr(r.due)}</b>` : badge('Paid', 'ok')}</td></tr>`).join('')}</tbody></table></div>`;
+}
 function residentDetail(id) {
   if (ctx().role === 'emitra') {
     setTimeout(() => go('emitra'), 0);
@@ -912,8 +968,9 @@ function residentDetail(id) {
       <div class="row" style="margin-top:14px">${showFin && living ? btn('Record payment', 'pay', `data-res="${id}"`, 'primary sm', 'rupee') : ''}${showFin && due ? btn('Send bill', 'sendbill', `data-res="${id}"`, 'sm', 'wa') : `<a class="btn sm" href="${esc(waUrl(r.phone, `Hi ${r.name.split(' ')[0]}, `))}" target="_blank" rel="noopener">${ico('wa', 'sm')}WhatsApp</a>`}<a class="btn sm" href="tel:${esc(r.phone)}">${ico('phone', 'sm')}${esc(t('Call'))}</a></div></div>
     <div class="grid g2" style="margin-top:14px">
       <div class="stack">
-        ${showFin ? group('Bills', inv.slice(0, 12).map(i => li({ icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : i.type === 'deposit' ? 'wallet' : 'rupee', ic: invStat(i) === 'paid' ? 'ok' : invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title, d: `${inr(i.amount)} · ${t('due')} ${fmtShort(i.due)}${i.discount > 0 ? ' · ' + t('discount') + ' ' + inr(i.discount) : ''}${i.paid && invBal(i) ? ' · ' + t('paid') + ' ' + inr(i.paid) : ''}`, end: invBal(i) ? `<b>${inr(invBal(i))}</b>` : statBadge('paid'), act: isAdmin() ? 'invedit' : '', attrs: `data-id="${i.id}"` })).join(''), isAdmin() ? `<a href="#" data-act="addinv" data-res="${id}">+ ${esc(t('Add a one-time charge'))}</a>` : '') : ''}
-        ${showFin ? group('Payments', pays.length ? li({
+        ${showFin ? billBreakdownCard(id) : ''}
+        ${showFin ? group('Bills due', inv.filter(i => invBal(i) > 0).slice(0, 12).map(i => li({ icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : i.type === 'deposit' ? 'wallet' : 'rupee', ic: invStat(i) === 'paid' ? 'ok' : invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title, d: `${inr(i.amount)} · ${t('due')} ${fmtShort(i.due)}${i.discount > 0 ? ' · ' + t('discount') + ' ' + inr(i.discount) : ''}${i.paid && invBal(i) ? ' · ' + t('paid') + ' ' + inr(i.paid) : ''}`, end: invBal(i) ? `<b>${inr(invBal(i))}</b>` : statBadge('paid'), act: isAdmin() ? 'invedit' : '', attrs: `data-id="${i.id}"` })).join(''), isAdmin() ? `<a href="#" data-act="addinv" data-res="${id}">+ ${esc(t('Add a one-time charge'))}</a>` : '') : ''}
+        ${showFin ? group('Transaction history', pays.length ? li({
     icon: 'check', ic: 'ok',
     t: t('{n} payments · {a}', { n: pays.filter(x => !x.reversed).length, a: inr(sum(pays.filter(x => !x.reversed), x => x.amount)) }),
     d: t('Last {a} on {d}', { a: inr(pays[0].amount), d: fmtDate(pays[0].date) }),
@@ -928,6 +985,8 @@ function residentDetail(id) {
     r.guardianPhone ? li({ icon: 'users', ic: 'info', t: `${r.guardian || t('Guardian')} · ${r.guardianPhone}`, d: t('Guardian') }) : '',
     showFin ? li({ icon: 'rupee', ic: 'warn', t: `${inr(r.rent)} / ${t('month')}`, d: `${t('Deposit')} ${inr(r.deposit)}` }) : '',
     r.college ? li({ icon: 'building', ic: 'mute', t: r.college, d: t('College / office') }) : '',
+    r.accessories && (r.accessories.given || []).length ? li({ icon: 'box', ic: (r.accessories.missing || []).length ? 'bad' : 'info', t: t('Accessories: {n} given', { n: r.accessories.given.length }), d: (r.accessories.returned ? ((r.accessories.missing || []).length ? t('NOT returned: {l}', { l: r.accessories.missing.join(', ') }) : t('All returned ✓')) : r.accessories.given.join(', ')) }) : '',
+    r.food !== false && typeof tifPlanText === 'function' && (tifPlanText(r.id) || tifPlanText(r.id, 'skipPlan')) ? li({ icon: 'cal', ic: 'warn', t: t('Weekly meal plan'), d: [tifPlanText(r.id) ? `${t('Tiffin')} - ${tifPlanText(r.id)}` : '', tifPlanText(r.id, 'skipPlan') ? `${t('Skip')} - ${tifPlanText(r.id, 'skipPlan')}` : ''].filter(Boolean).join(' | '), chev: false }) : '',
     li({ icon: 'utensils', ic: 'teal', t: t(r.food !== false ? 'Takes mess food' : 'No mess food'), d: orgEnabled('laundry') ? t('Laundry this month: {n} clothes', { n: sum(ld, l => l.pcs) }) : '' }),
   ].filter(Boolean).join(''))}
         ${docsCard(r)}
@@ -942,14 +1001,22 @@ A.resedit = el => {
   formModal({
     title: 'Edit resident', fields: [
       { name: 'name', label: 'Full name', value: r.name, required: true, maxlength: 80 }, { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', value: r.phone, required: true, maxlength: 10, placeholder: '10-digit mobile' },
-      { name: 'guardian', label: 'Parent / guardian name', value: r.guardian, maxlength: 80 }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: r.guardianPhone, maxlength: 10, placeholder: '10-digit mobile' },
-      { name: 'college', label: 'College / office', value: r.college, maxlength: 120 }, { name: 'idNo', label: 'Aadhaar card number', value: r.idNo, maxlength: 12, placeholder: '12-digit Aadhaar' },
+      { name: 'email', label: 'Email address', type: 'email', value: r.email || '', maxlength: 80, placeholder: 'name@example.com', required: true, full: true },
+      { name: 'guardian', label: 'Parent / guardian name', value: r.guardian, maxlength: 80, required: true }, { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: r.guardianPhone, maxlength: 10, placeholder: '10-digit mobile', required: true },
+      { name: 'college', label: 'College / office', value: r.college, maxlength: 120, required: true }, { name: 'idNo', label: 'Aadhaar card number', value: r.idNo, maxlength: 12, placeholder: '12-digit Aadhaar', required: true },
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: r.rent, min: 0, max: 500000, required: true, hint: t('Applies from the next bill.') }, { name: 'lang', label: 'WhatsApp language', type: 'select', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }], value: r.lang },
-      { name: 'food', label: 'Takes mess food', type: 'checkbox', value: r.food !== false }, { name: 'address', label: 'Home address', value: r.address, full: true, maxlength: 240 },
+      { name: 'food', label: 'Takes mess food', type: 'checkbox', value: r.food !== false }, { name: 'address', label: 'Home address', value: r.address, full: true, maxlength: 240, required: true },
     ],
     onSubmit: v => {
       const was = r.phone, now = phone10(v.phone);
-      Store.patch(r.id, { ...v, phone: now, guardianPhone: phone10(v.guardianPhone) });
+      // the same rules as check-in: nothing half-filled gets saved
+      if (!/^[5-9][0-9]{9}$/.test(now)) return t('Mobile (WhatsApp) must be a 10-digit mobile number.');
+      if (residents().some(x => x.id !== r.id && x.status !== 'left' && x.status !== 'cancelled' && phone10(x.phone) === now)) return t('A resident with this mobile number already exists');
+      if (!isValidEmail(v.email)) return t('Enter a valid email address');
+      if (!/^[5-9][0-9]{9}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
+      const aad = String(v.idNo || '').replace(/[^0-9]/g, '');
+      if (aad.length !== 12 || /^[01]/.test(aad)) return t('Aadhaar number must be exactly 12 digits');
+      Store.patch(r.id, { ...v, name: String(v.name || '').replace(/\s+/g, ' ').trim(), phone: now, guardianPhone: phone10(v.guardianPhone), idNo: aad });
       // Their password was set from the OLD number and does not follow it. Say so, and offer the fix
       // in one tap, rather than leaving a resident who tries the new number and is refused.
       if (r.userId && was !== now) toast(t('Mobile changed. Their login password is still the old number.'), 'ok', { label: t('Reset to new'), run: () => A.respw({ dataset: { id: r.id } }) });
@@ -1134,6 +1201,8 @@ A.resshift = el => {
       if (mode === 'shift') {
         if (!v.bed) return 'Select a room and bed';
         const [rid, b] = v.bed.split('|');
+        const mp = meterReadingProblem(r.roomId, v.meterOld, { canReset: false }) || meterReadingProblem(rid, v.meterNew, { canReset: false });
+        if (mp) return mp;
         try {
           shiftBed(r.id, rid, b, v.rent, {
             date: today(),
@@ -1150,6 +1219,8 @@ A.resshift = el => {
         if (!v.swapResId) return 'Select a resident to swap with';
         const target = resById(v.swapResId);
         if (!target) return 'Target resident not found';
+        const mp = meterReadingProblem(r.roomId, v.meterA, { canReset: false }) || meterReadingProblem(target.roomId, v.meterB, { canReset: false });
+        if (mp) return mp;
         try {
           swapBeds(r.id, target.id, {
             rentA: v.rentA,
@@ -1172,12 +1243,12 @@ A.resshift = el => {
 A.resleave = el => formModal({
   title: 'Leave (meals off)', note: t('Meals are not counted for these days, so the cook makes less food.'),
   fields: [{ name: 'from', label: 'From', type: 'date', value: addDays(today(), 1), required: true }, { name: 'to', label: 'To (including)', type: 'date', value: addDays(today(), 3), required: true }, { name: 'reason', label: 'Reason' }],
-  onSubmit: v => { if (v.to < v.from) return 'End date is before start date'; Store.put('leave', { resId: el.dataset.id, roomId: resById(el.dataset.id).roomId, from: v.from, to: v.to, date: v.from, reason: v.reason }); toast('Leave saved'); },
+  onSubmit: v => { const lp = leaveProblem(el.dataset.id, v.from, v.to); if (lp) return lp; Store.put('leave', { resId: el.dataset.id, roomId: resById(el.dataset.id).roomId, from: v.from, to: v.to, date: v.from, reason: v.reason }); toast('Leave saved'); },
 });
 A.resnotice = el => {
   const r = resById(el.dataset.id);
   if (r.status === 'notice') { Store.patch(r.id, { status: 'active', planOut: null }); toast('Notice cancelled'); render(); return; }
-  formModal({ title: 'Give notice', fields: [{ name: 'planOut', label: 'Planned checkout date', type: 'date', value: addDays(today(), 30), required: true }], onSubmit: v => { Store.patch(r.id, { status: 'notice', planOut: v.planOut }); toast('Notice recorded'); } });
+  formModal({ title: 'Give notice', fields: [{ name: 'planOut', label: 'Planned checkout date', type: 'date', value: addDays(today(), 30), required: true }], onSubmit: v => { if (v.planOut < today()) return t('The planned checkout date cannot be in the past'); Store.patch(r.id, { status: 'notice', planOut: v.planOut }); toast('Notice recorded'); } });
 };
 A.resout = el => {
   const r = resById(el.dataset.id);
@@ -1188,28 +1259,31 @@ A.resout = el => {
     submit: t('Settle Accounts & Check out'),
     fields: [
       { name: 'date', label: 'Checkout date', type: 'date', value: today(), required: true },
-      ...meterField(r.roomId),
-      { name: 'ded', label: 'Damage / maintenance deductions (₹)', type: 'number', value: 0, min: 0 },
+      ...meterField(r.roomId, 'meterNow', 'Meter reading now', true),
+      { name: 'ded', label: 'Damage / maintenance deductions (₹)', type: 'number', value: 0, min: 0, info: t('Charge for damage or missing items. It is taken from the deposit first. It cannot be more than the deposit held.') },
+      ...(r.accessories && (r.accessories.given || []).length ? [{ name: 'accBack', label: 'Accessories handed back (untick anything missing)', type: 'multi', options: r.accessories.given.map(x => ({ v: x, l: x })), value: r.accessories.given, full: true, info: t('These were given at check-in. Anything you untick is recorded as not returned - add a deduction above if it should be charged.') }] : []),
       {
         name: 'settleAction',
-        label: 'Settlement Decision (Zero-Due Guarantee)',
+        label: 'Settlement',
+        info: t('Collect dues: any balance is collected now (or the refund is paid now) so the account ends at zero. Waive clears the balance without collecting. Refund later keeps the refund pending in Approvals. Leave with dues keeps the dues open.'),
         type: 'select',
         options: [
-          { v: 'auto_zero', l: t('⚡ Zero-Due Guarantee (Collect Remaining / Pay Refund Now)') },
-          { v: 'waive_balance', l: t('🎁 Waive / Discount Remaining Dues (Clear to ₹0)') },
-          { v: 'refund_later', l: t('⏳ Refund Later (Approval via Inbox)') },
-          { v: 'leave_debt', l: t('⚠️ Allow Exit with Debt (Leave Dues Hanging)') }
+          { v: 'auto_zero', l: t('Settle now') },
+          { v: 'waive_balance', l: t('Waive the balance') },
+          { v: 'refund_later', l: t('Refund later') },
+          { v: 'leave_debt', l: t('Leave with dues') }
         ],
         value: 'auto_zero'
       },
       {
         name: 'payMode',
-        label: 'Settlement Mode (Cash / UPI / Bank)',
+        label: 'Paid by',
+        info: t('How the balance is received, or how the refund is handed back. It is written on the settlement statement.'),
         type: 'select',
         options: [
-          { v: 'upi', l: '📱 UPI (PhonePe / GPay / Paytm)' },
-          { v: 'cash', l: '💵 Cash' },
-          { v: 'bank', l: '🏛️ Bank Transfer / NEFT' }
+          { v: 'upi', l: t('UPI') },
+          { v: 'cash', l: t('Cash') },
+          { v: 'bank', l: t('Bank transfer') }
         ],
         value: 'upi'
       },
@@ -1233,7 +1307,7 @@ A.resout = el => {
       const elecRow = stmt.elecShare ? `
         <div style="background:var(--subtle);padding:10px 12px;border-radius:8px;margin:8px 0;font-size:12px;border-left:3px solid var(--accent)">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <b>⚡ ${esc(t('Final Electricity Reading & Bill'))}:</b>
+            <b>${esc(t('Final Electricity Reading & Bill'))}:</b>
             <b class="ok-t" style="font-size:14px">${inr(stmt.elecShare.amount)}</b>
           </div>
           <div class="muted xs" style="margin-top:3px">
@@ -1249,8 +1323,8 @@ A.resout = el => {
           <div class="card" style="background:rgba(52,199,89,0.1);border:1px solid rgba(52,199,89,0.3);padding:12px;border-radius:8px;margin-top:10px">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div>
-                <b style="color:var(--ok);font-size:15px">🎉 ${esc(t('Net Refund to Resident'))}</b>
-                <div class="xs muted">${esc(t('Deposit ₹{d} - Dues ₹{l}', { d: inr(stmt.depositPaid), l: inr(stmt.totalLiabilities) }))}</div>
+                <b style="color:var(--ok);font-size:15px">${esc(t('Net Refund to Resident'))}</b>
+                <div class="xs muted">${esc(t('Refundable deposit {d} - Dues & deductions {l}', { d: inr(stmt.availableDepositAndCredit), l: inr(stmt.totalLiabilities) }))}</div>
               </div>
               <div style="font-size:20px;font-weight:800;color:var(--ok)">${inr(stmt.refund)}</div>
             </div>
@@ -1264,17 +1338,17 @@ A.resout = el => {
           <div class="card" style="background:rgba(255,59,48,0.08);border:1px solid rgba(255,59,48,0.25);padding:12px;border-radius:8px;margin-top:10px">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div>
-                <b style="color:var(--bad);font-size:15px">⚠️ ${esc(t('Net Balance to Collect'))}</b>
-                <div class="xs muted">${esc(t('Total Dues ₹{l} - Deposit ₹{d}', { l: inr(stmt.totalLiabilities), d: inr(stmt.depositPaid) }))}</div>
+                <b style="color:var(--bad);font-size:15px">${esc(t('Net Balance to Collect'))}</b>
+                <div class="xs muted">${esc(t('Dues & deductions {l} - Refundable deposit {d}', { l: inr(stmt.totalLiabilities), d: inr(stmt.availableDepositAndCredit) }))}</div>
               </div>
               <div style="font-size:20px;font-weight:800;color:var(--bad)">${inr(stmt.balancePayable)}</div>
             </div>
             <div class="xs" style="margin-top:6px">
               ${v.settleAction === 'waive_balance'
-                ? `<b style="color:var(--accent)">${esc(t('Action: ₹{a} will be waived / discounted. Resident checks out with ₹0 due ✓', { a: inr(stmt.balancePayable) }))}</b>`
+                ? `<b style="color:var(--accent)">${esc(t('Action: {a} will be waived / discounted. Resident checks out with ₹0 due ✓', { a: inr(stmt.balancePayable) }))}</b>`
                 : v.settleAction === 'leave_debt'
-                ? `<b style="color:var(--bad)">${esc(t('Warning: Resident will leave with ₹{a} unpaid debt hanging under their name.', { a: inr(stmt.balancePayable) }))}</b>`
-                : `<b style="color:var(--ok)">${esc(t('Action: Collect ₹{a} via {m}. All invoices 100% cleared to ₹0 due ✓', { a: inr(stmt.balancePayable), m: (v.payMode || 'UPI').toUpperCase() }))}</b>`
+                ? `<b style="color:var(--bad)">${esc(t('Warning: Resident will leave with {a} unpaid debt hanging under their name.', { a: inr(stmt.balancePayable) }))}</b>`
+                : `<b style="color:var(--ok)">${esc(t('Action: Collect {a} via {m}. All invoices 100% cleared to ₹0 due ✓', { a: inr(stmt.balancePayable), m: (v.payMode || 'UPI').toUpperCase() }))}</b>`
               }
             </div>
           </div>
@@ -1291,24 +1365,20 @@ A.resout = el => {
       return `
         <div style="margin-bottom:10px">
           <dl class="kv">
-            <dt>${esc(t('Security Deposit held'))}</dt><dd><b>${inr(stmt.depositPaid)}</b></dd>
-            ${stmt.credit > 0 ? `<dt>${esc(t('Eligible Credit'))}</dt><dd>${inr(stmt.credit)}</dd>` : ''}
-            <dt>${esc(t('Total Unpaid Dues'))}</dt><dd><b>${inr(stmt.unpaidDues)}</b></dd>
-            ${stmt.shortfallFee > 0 ? `<dt class="warn-t">${esc(t('Notice shortfall (' + stmt.shortfallDays + 'd)'))}</dt><dd class="warn-t">${inr(stmt.shortfallFee)}</dd>` : ''}
-            <dt>${esc(t('Deductions'))}</dt><dd>${inr(stmt.deductions)}</dd>
+            ${settleRows(stmt, stmt.unpaidDues)}
           </dl>
           ${elecRow}
           ${bannerHtml}
         </div>
       `;
     },
+    onChange: (v, form, ch) => { if (ch === 'meterNow' || ch === 'meterNowReset') meterGuard(form, v, 'meterNow', r.roomId, true); },
     onSubmit: v => {
-      if (orgEnabled('electricity') && (v.meterNow != null && v.meterNow !== '')) {
-        const last = lastMeter(r.roomId);
-        if (last && +v.meterNow < last.curr) {
-          return t('Reading cannot be less than previous ({p})', { p: last.curr });
-        }
-      }
+      // No checkout without the room's meter reading - it decides this resident's electricity share.
+      if (orgEnabled('electricity') && (v.meterNow == null || v.meterNow === '' || isNaN(v.meterNow))) return t('Enter the meter reading - a resident cannot be checked out without it');
+      const mp = meterReadingProblem(r.roomId, v.meterNow, { reset: v.meterNowReset, oldFinal: v.meterNowOldFinal });
+      if (mp) return mp;
+      try { meterResetNow(r.roomId, v, 'meterNow', v.date); } catch (e) { return e.message; }
 
       let settleBalance = 'pay';
       if (v.settleAction === 'waive_balance') settleBalance = 'waive';
@@ -1325,7 +1395,8 @@ A.resout = el => {
           waiveReason: v.note || 'Waived at checkout settlement',
           refundNow,
           refundMode: v.payMode || 'cash',
-          refundRef: v.payRef || ''
+          refundRef: v.payRef || '',
+          accReturned: r.accessories && (r.accessories.given || []).length ? (v.accBack || []) : undefined
         });
 
         if (v.settleAction === 'leave_debt') {
@@ -1339,16 +1410,15 @@ A.resout = el => {
 
         if (dep) {
           A.depstatement({ dataset: { id: dep.id } });
+          sendCheckoutReport(dep.id).then(x => {
+            if (x.delivered) toast(t('Exit report PDF e-mailed to {e}', { e: x.to }), 'ok');
+            else if (x.reason === 'no_owner_email') toast(t('Exit report not e-mailed: add your e-mail in Settings > Property'), 'warn');
+            else if (x.reason !== 'demo') toast(t('Exit report could not be e-mailed: {m}', { m: x.reason }), 'warn');
+          });
         }
 
         if (S().wa.auto) {
-          waOpen(r.phone, tpl('checkout', {
-            name: r.name.split(' ')[0],
-            hostel: hostelName(),
-            deposit: rs(dep.deposit),
-            deduct: rs(dep.settled + dep.deductions),
-            refund: rs(dep.refund)
-          }, waLang(r)), 'Send checkout message');
+          waOpen(r.phone, checkoutMessage(dep, r), 'Send checkout message');
         }
       } catch (e) {
         return e.message;
@@ -1375,7 +1445,7 @@ A.reswelcome = el => { const r = resById(el.dataset.id); waOpen(r.phone, welcome
 A.resdocs = el => {
   const r = resById(el.dataset.id), req = S().docs.required;
   formModal({
-    title: 'Upload documents', fields: [...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*,application/pdf' })), { type: 'html', html: docsNote() }],
+    title: 'Upload documents', fields: [...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*' })), { type: 'html', html: docsNote() }],
     onSubmit: v => { if (!Files.ready()) return 'Documents are not uploaded in demo mode.'; const files = req.map((d, i) => ({ type: d, file: (v['doc' + i] || [])[0] })).filter(x => x.file); if (!files.length) return 'Choose at least one file'; uploadDocs('res', r.id, files); }
   });
 };
@@ -1405,7 +1475,7 @@ async function openResidentDocViewer(resId, activeType = '', initialPath = '', f
   // Gather all available documents for this resident into a unified viewer collection
   const allDocs = [];
 
-  for (const d of (r.docs || [])) {
+  for (const d of (r.docs || []).filter(x => ctx().role !== 'emitra' || PV_DOC_ALLOWED.test(String(x.type || '')))) {
     allDocs.push({
       id: 'doc-' + slug(d.type),
       type: d.type,
@@ -1562,7 +1632,7 @@ A.docadd = el => {
   const r = resById(el.dataset.id), type = el.dataset.type; if (!r) return;
   formModal({
     title: type, submit: 'Upload',
-    fields: [{ name: 'file', label: 'Photo or PDF', type: 'file', required: true, accept: 'image/*,application/pdf' }, { type: 'html', html: docsNote() }],
+    fields: [{ name: 'file', label: 'Photo', type: 'file', required: true, accept: 'image/*' }, { type: 'html', html: docsNote() }],
     onSubmit: v => {
       if (!Files.ready()) return 'Documents are not uploaded in demo mode.';
       const f = (v.file || [])[0]; if (!f) return 'Choose a file';
@@ -1689,7 +1759,7 @@ A.respays = el => {
   const r = resById(el.dataset.id); if (!r) return;
   const pays = resPays(r.id);
   const activePays = pays.filter(p => !p.reversed);
-  sheet(`${t('Payments')} · ${r.name}`, `<div class="group">${pays.map(p => li({
+  sheet(`${t('Transaction history')} · ${r.name}`, `<div class="group">${pays.map(p => li({
     icon: p.reversed ? 'alert' : 'check', ic: p.reversed ? 'bad' : 'ok',
     t: `${inr(p.amount)}${p.reversed ? ' · ' + t('REVERSED') : ''}`,
     d: [fmtDate(p.date), t(p.mode.toUpperCase()), p.ref, p.adv ? t('advance, {n} months', { n: p.adv.months }) : '', p.no, p.reversalReason ? `(${p.reversalReason})` : ''].filter(Boolean).join(' · '),
@@ -1754,21 +1824,26 @@ A.signupok = el => {
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', min: 0, required: true, info: t('Filled from the room when you pick a bed. Change it if this resident pays something else.') },
       { name: 'deposit', label: 'Security deposit (₹)', type: 'number', min: 0, value: 0 },
       { name: 'from', label: 'Staying from', type: 'date', value: today(), required: true, info: t('The first rent bill is worked out from this date.') },
-      ...meterField(free[0] ? free[0].room.id : ''),
+      ...meterField(free[0] ? free[0].room.id : '', 'meterNow', 'Meter reading now', true),
       { name: 'food', label: 'Takes mess food', type: 'checkbox', value: true },
+      ...(accOn() ? [{ name: 'acc', label: 'Accessories given with the bed', type: 'multi', options: accItems().map(x => ({ v: x, l: x })), value: accItems(), full: true }] : []),
       { name: 'login', label: 'Create app login and send it on WhatsApp', type: 'checkbox', value: true, info: t('User ID = mobile.hostel, password = mobile number. They can change it later.') },
     ],
     onChange: (v, form, ch) => {
+      if (ch === 'meterNow' || ch === 'meterNowReset' || ch === 'bed') meterGuard(form, v, 'meterNow', String(v.bed || '').split('|')[0], true);
       if (ch !== 'bed' || !v.bed) return;
+      setMeterHint(form, 'meterNow', String(v.bed).split('|')[0]);
       const rent = rentOf(v.bed);
       const el2 = form.elements.rent; if (el2 && !el2.value) el2.value = rent;
-      const dep = form.elements.deposit; if (dep && !(+dep.value > 0)) dep.value = rent;
+      const dep = form.elements.deposit; if (dep && !(+dep.value > 0)) dep.value = depositFor(rent, roomById(String(v.bed).split('|')[0]));
     },
     preview: v => (v.bed && v.rent >= 0 ? `${esc(t('First bill'))}: ${inr(round2((v.rent || 0) + (v.deposit || 0)))} · ${esc(t('rent is pro-rata from {d}', { d: fmtShort(v.from) }))}` : ''),
     onSubmit: async v => {
       const [roomId, bed] = v.bed.split('|');
-      try { moveReading(roomId, v.meterNow, v.from); } catch (e) { return e.message; }
-      const r = admitSignup(a.id, { roomId, bed, rent: v.rent, deposit: v.deposit || 0, checkIn: v.from, food: v.food });
+      const mp = meterReadingProblem(roomId, v.meterNow, { reset: v.meterNowReset, oldFinal: v.meterNowOldFinal });
+      if (mp) return mp;
+      try { if (!meterResetNow(roomId, v, 'meterNow', v.from)) moveReading(roomId, v.meterNow, v.from); } catch (e) { return e.message; }
+      const r = admitSignup(a.id, { roomId, bed, rent: v.rent, deposit: v.deposit || 0, checkIn: v.from, food: v.food, accessories: accOn() ? (v.acc || []) : null });
       closeModal(); render();
       toast(t('{n} admitted', { n: r.name }), 'ok', { label: 'Open', run: () => go('residents/' + r.id) });
       if (v.login) {
@@ -1800,7 +1875,7 @@ A.invedit = el => {
     const m = Store.get(i.meterId) || Store.all('meter').find(x => x.id === i.meterId || (i.id && i.id.includes(x.id))) || lastMeter(i.roomId);
     if (m) {
       const s = (m.shares || []).find(x => x.resId === i.resId);
-      elecNote = t('⚡ Meter Reading: {prev} → {curr} ({u} room units) · Rate: ₹{r}/unit{free}', {
+      elecNote = t('Meter Reading: {prev} → {curr} ({u} room units) · Rate: ₹{r}/unit{free}', {
         prev: num(m.prev),
         curr: num(m.curr),
         u: num(m.units),
@@ -1810,7 +1885,7 @@ A.invedit = el => {
       elecHtml = `
         <div style="background:var(--subtle);padding:10px 12px;border-radius:8px;margin-bottom:12px;border-left:3px solid var(--accent);font-size:12.5px;line-height:1.5">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <b>⚡ ${esc(t('Room Electricity Meter & Split'))}</b>
+            <b>${esc(t('Room Electricity Meter & Split'))}</b>
             <button class="btn sm" type="button" data-act="meterview" data-id="${m.id}">${ico('eye', 'xs')} ${esc(t('View Room Split'))}</button>
           </div>
           <div>${esc(t('Meter Reading'))}: <b>${num(m.prev)} → ${num(m.curr)}</b> (${num(m.units)} ${esc(t('room units'))})</div>
@@ -1838,6 +1913,21 @@ A.invedit = el => {
     }
   });
 };
+/* The same breakdown everywhere a settlement is shown, in the order the money moves:
+ * deposit paid, non-refundable fee kept, refundable deposit, credit, dues, notice shortfall, damages. */
+function settleRows(s, dues) {
+  const row = (l, v, cls = '') => `<dt class="${cls}">${esc(t(l))}</dt><dd class="${cls}">${v}</dd>`;
+  const rule = s.depositRule && DEPOSIT_RULE_LABEL[s.depositRule] ? ` <span class="xs muted">(${esc(t(DEPOSIT_RULE_LABEL[s.depositRule]))})</span>` : '';
+  return [
+    row('Security deposit paid', `<b>${inr(s.depositPaid)}</b>${rule}`),
+    s.nonRefundable > 0 ? row('Non-refundable fee (kept)', `-${inr(s.nonRefundable)}`, 'bad-t') : '',
+    s.nonRefundable > 0 ? row('Refundable deposit', `<b>${inr(s.refundableDeposit)}</b>`) : '',
+    s.credit > 0 ? row('Advance credit', `+${inr(s.credit)}`, 'ok-t') : '',
+    row('Unpaid dues', `-${inr(dues)}`),
+    s.shortfallFee > 0 ? row(`Notice shortfall (${s.shortfallDays} days)`, `-${inr(s.shortfallFee)}`, 'warn-t') : '',
+    s.deductions > 0 ? row('Damage / other deductions', `-${inr(s.deductions)}`, 'bad-t') : '',
+  ].join('');
+}
 A.depstatement = el => {
   const depId = el.dataset.id;
   const dep = Store.get(depId) || Store.all('dep').find(d => d.id === depId);
@@ -1858,7 +1948,7 @@ A.depstatement = el => {
   const elecBreakdown = s.elecShare ? `
     <div style="background:var(--subtle);padding:10px 12px;border-radius:8px;margin:10px 0;border-left:3px solid var(--accent);font-size:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <b>⚡ ${esc(t('Final Electricity Reading & Share'))}</b>
+        <b>${esc(t('Final Electricity Reading & Share'))}</b>
         <b class="ok-t" style="font-size:14px">${inr(s.elecShare.amount)}</b>
       </div>
       <div>${esc(t('Room Reading'))}: <b>${num(s.elecShare.prev)} → ${num(s.elecShare.curr)}</b> (${num(s.elecShare.roomUnits)} ${t('units')})</div>
@@ -1885,7 +1975,7 @@ A.depstatement = el => {
   const html = `
     <div class="card" style="font-size:13px;line-height:1.6">
       <div style="text-align:center;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px">
-        <div style="font-size:24px;margin-bottom:4px">📋</div>
+        
         <h3 style="margin:0">${esc(t('Final Settlement Statement'))}</h3>
         <span class="muted xs">${esc(hostelName())} · ${esc(r.name)} (${esc(room ? room.no : '')})</span>
       </div>
@@ -1893,16 +1983,13 @@ A.depstatement = el => {
       <div style="display:flex;justify-content:center;margin-bottom:12px">
         ${isZeroDue
           ? `<span class="badge ok" style="padding:6px 12px;font-size:13px">✓ ${esc(t('Zero-Due Guarantee: Accounts 100% Cleared (₹0 Due)'))}</span>`
-          : `<span class="badge warn" style="padding:6px 12px;font-size:13px">⚠️ ${esc(t('Pending Balance on Account: {b}', { b: inr(resDue(dep.resId)) }))}</span>`
+          : `<span class="badge warn" style="padding:6px 12px;font-size:13px">${esc(t('Pending Balance on Account: {b}', { b: inr(resDue(dep.resId)) }))}</span>`
         }
       </div>
 
       <dl class="kv">
         <dt>${esc(t('Checkout Date'))}</dt><dd>${fmtDate(dep.date)}</dd>
-        <dt>${esc(t('Security Deposit held'))}</dt><dd><b>${inr(dep.deposit)}</b></dd>
-        <dt>${esc(t('Adjusted towards Dues'))}</dt><dd class="ok-t">-${inr(dep.settled)}</dd>
-        ${dep.deductions > 0 ? `<dt class="bad-t">${esc(t('Damage / Maintenance Deductions'))}</dt><dd class="bad-t">-${inr(dep.deductions)}</dd>` : ''}
-        ${s.shortfallFee > 0 ? `<dt class="warn-t">${esc(t('Notice Shortfall Fee'))}</dt><dd class="warn-t">-${inr(s.shortfallFee)}</dd>` : ''}
+        ${settleRows({ ...s, depositPaid: dep.deposit, nonRefundable: dep.nonRefundable || s.nonRefundable || 0, refundableDeposit: round2((+dep.deposit || 0) - (dep.nonRefundable || s.nonRefundable || 0)), depositRule: dep.depositRule || s.depositRule, deductions: dep.deductions, credit: s.credit || 0 }, dep.settled)}
         <dt style="border-top:1px solid var(--line);padding-top:4px"><b>${esc(t('Net Refund to Resident'))}</b></dt>
         <dd style="border-top:1px solid var(--line);padding-top:4px"><b class="ok-t" style="font-size:15px">${inr(dep.refund)}</b> ${badge(dep.status || 'closed', dep.status === 'paid' ? 'ok' : 'info')}</dd>
         ${dep.balancePayable > 0 ? `
@@ -1929,6 +2016,9 @@ A.addinv = el => formModal({
 });
 
 /* ===================================================================== payments */
+// One money row for every Payments tab: the name wraps (never "Shi…"), amount on the right, actions underneath on a phone.
+const pillb = (label, act, attrs = '', cls = '') => `<button type="button" class="pillbtn ${cls}" data-act="${act}" ${attrs}>${esc(t(label))}</button>`;
+const prow = o => `<div class="prow ${o.act ? 'tap' : ''}" ${o.act ? `role="button" tabindex="0" data-act="${o.act}" ${o.attrs || ''}` : ''}>${o.lead || ''}<div class="prow-b"><b class="prow-t">${o.t}</b><span class="prow-s">${o.s || ''}</span>${o.note ? `<span class="prow-n">${o.note}</span>` : ''}${o.tags ? `<span class="prow-g">${o.tags}</span>` : ''}</div>${o.amt != null ? `<div class="prow-m"><b class="${o.mc || ''}">${o.amt}</b>${o.ms ? `<small>${esc(o.ms)}</small>` : ''}</div>` : ''}${o.acts ? `<div class="prow-a">${o.acts}</div>` : ''}</div>`;
 PAGES.payments = {
   title: 'Payments', mod: 'payments',
   render() {
@@ -1936,84 +2026,63 @@ PAGES.payments = {
     const dues = dueList(), ym = ymOf(today());
     const coll = sum(payments().filter(p => ymOf(p.date) === ym && p.mode !== 'deposit'), p => p.amount);
     let body = '';
+    const pstat = (l, v, sub, kind) => kpi(l, v, sub, kind);
+    const pair = (...x) => `<span class="btn-pair">${x.join('')}</span>`;
     if (tab === 'dues') {
       const list = dues.filter(x => needle('pay', x.r.name, roomName(x.r.roomId)));
-      body = `<div class="tool">${searchBox('pay', 'Search resident or room')}<span class="sp"></span><div class="tool-actions">${btn(t('Monthly billing & WhatsApp'), 'monthlybatch', '', 'primary wa', 'wa')}${dues.length ? btn(t('Send bills to all ({n})', { n: dues.length }), 'billall', '', 'wa', 'wa') : ''}</div></div>
-        ${list.length ? `<div class="group">${list.map(x => `<div class="li">${avatar(x.r.name)}<span class="body"><span class="t ell">${esc(x.r.name)}</span><span class="d">${esc(roomName(x.r.roomId))} · ${openInv(x.r.id).map(i => esc(t(INV_TYPES[i.type] || i.type))).filter((v, i, a) => a.indexOf(v) === i).join(', ')}${x.od ? ` · <span class="bad-t">${esc(t('overdue'))}</span>` : ''}</span></span><span class="end"><b class="${x.od ? 'bad-t' : ''}" style="margin-right:4px">${inr(x.due)}</b>${btn('', 'sendbill', `data-res="${x.r.id}" aria-label="${esc(t('Send bill'))}"`, 'sm', 'wa')}${btn('Cash', 'pay', `data-res="${x.r.id}"`, 'sm primary')}</span></div>`).join('')}</div>` : `<div class="card">${empty('No dues 🎉', 'Everyone has paid.')}</div>`}`;
+      const nOd = dues.filter(x => x.od).length;
+      body = `<div class="pstats">${pstat('Pending', inr(sum(dues, x => x.due)), t('{n} residents', { n: dues.length }), dues.length ? 'warn' : '')}${pstat('Overdue', nOd, t('residents'), nOd ? 'bad' : '')}${pstat('Collected', inr(coll), fmtYM(ym), 'ok')}</div>
+        <div class="tool">${searchBox('pay', 'Search resident or room')}<span class="sp"></span>${pair(btn('Monthly billing', 'monthlybatch', '', 'primary', 'cal'), dues.length ? (() => { const bp = bulkMailPlan('bill'), left = bp.todo.length + bp.noEmail.length; return left ? btn(t('E-mail all ({n})', { n: left }), 'billall', '', '', 'mail') : bp.blocked.length ? btn(t('Pending ({n})', { n: bp.blocked.length }), 'monthlybatch', '', 'warn-soft', 'alert') : btn('Sent today', 'billall', '', 'ok-soft', 'check'); })() : '')}</div>
+        ${list.length ? `<div class="group">${list.map(x => prow({
+          lead: avatar(x.r.name), t: `<button class="linkish" data-act="go" data-to="residents/${x.r.id}">${esc(x.r.name)}</button>`,
+          s: `${esc(roomName(x.r.roomId))} · ${openInv(x.r.id).map(i => esc(t(INV_TYPES[i.type] || i.type))).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`,
+          tags: x.od ? badge('Overdue', 'bad') : '', amt: inr(x.due), mc: x.od ? 'bad-t' : '',
+          acts: `${btn('Send bill', 'sendbill', `data-res="${x.r.id}"`, 'sm', 'wa')}${btn('Cash', 'pay', `data-res="${x.r.id}"`, 'sm primary', 'rupee')}`
+        })).join('')}</div>` : `<div class="card">${empty('No dues ', 'Everyone has paid.')}</div>`}`;
     } else if (tab === 'claims') {
-      const list = Store.all('claim').slice().sort(by('ts', -1)).slice(0, 80);
-      body = table([
-        { h: 'Resident', f: c => { const r = resById(c.resId); return r ? person(r, roomName(r.roomId)) : '—'; } },
-        { h: 'Amount', f: c => `<b>${inr(c.amount)}</b>` }, { h: 'UTR', f: c => esc(c.utr || '—') }, { h: 'Date', f: c => fmtShort(c.date) },
-        { h: 'Status', f: c => badge(c.status === 'pending' ? 'Pending' : c.status === 'approved' ? 'Approved' : 'Rejected', c.status === 'pending' ? 'warn' : c.status === 'approved' ? 'ok' : 'bad') },
-        { h: '', acts: true, f: c => (c.status === 'pending' ? `${btn('View', 'claimview', `data-id="${c.id}"`, 'sm')}${btn('Approve', 'claimok', `data-id="${c.id}"`, 'sm ok')}` : '') },
-      ], list, { key: 'claims', emptyT: 'No UPI payments yet', empty: 'When residents pay by UPI and enter the UTR in their app, it shows here.' });
+      const list = Store.all('claim').slice().sort((a, b) => (b.status === 'pending') - (a.status === 'pending') || (b.ts > a.ts ? 1 : -1)).slice(0, 80);
+      const stc = { pending: ['Pending', 'warn'], approved: ['Approved', 'ok'] };
+      body = list.length ? `<div class="group">${list.map(c => { const r = resById(c.resId), [lbl, cls] = stc[c.status] || ['Rejected', 'bad']; return prow({
+        lead: avatar(r ? r.name : '?'), t: esc(r ? r.name : '—'), s: `${r ? esc(roomName(r.roomId)) + ' · ' : ''}${fmtShort(c.date)}${c.utr ? ' · UTR ' + esc(c.utr) : ''}`,
+        tags: badge(lbl, cls), amt: inr(c.amount),
+        acts: c.status === 'pending' ? `${btn('View', 'claimview', `data-id="${c.id}"`, 'sm')}${btn('Approve', 'claimok', `data-id="${c.id}"`, 'sm ok', 'check')}` : ''
+      }); }).join('')}</div>` : `<div class="card">${empty('No UPI payments yet', 'When residents pay by UPI and enter the UTR in their app, it shows here.')}</div>`;
     } else if (tab === 'statement') {
-      const stmtTxs = Store.all('stmt_tx').slice().sort(by('ts', -1));
-      const pendingClaims = Store.all('claim').filter(c => c.status === 'pending');
-      const totalTxs = stmtTxs.length;
-      const matchedCount = stmtTxs.filter(x => x.status === 'matched').length;
-      const reviewCount = stmtTxs.filter(x => x.status === 'probable' || x.status === 'amount_mismatch' || x.status === 'multiple_candidates').length;
-      const unmatchedCount = stmtTxs.filter(x => x.status === 'unmatched').length;
-
-      const txStatusBadge = st => {
-        const m = {
-          matched: ['Matched & Confirmed', 'ok'],
-          exact: ['Exact Match', 'ok'],
-          probable: ['Review: Probable', 'info'],
-          amount_mismatch: ['Amount Mismatch', 'warn'],
-          multiple_candidates: ['Multiple Candidates', 'warn'],
-          unmatched: ['Unmatched Credit', 'bad'],
-          duplicate: ['Duplicate Ref', 'mute'],
-          already_reconciled: ['Already Reconciled', 'mute']
-        };
-        const [lbl, cls] = m[st] || [st || 'Pending', 'warn'];
-        return badge(lbl, cls);
-      };
-
-      body = `<div class="tool">${searchBox('stmt', 'Search statement transactions')}<span class="sp"></span><div class="tool-actions">${btn('Import statement (CSV)', 'importstmt', '', 'primary', 'upload')}</div></div>
-        <div class="grid g4 keep2" style="margin-bottom:14px">
-          ${kpi('Statement Credits', totalTxs, t('{n} claims', { n: pendingClaims.length }))}
-          ${kpi('Auto-Reconciled', matchedCount, '', 'ok')}
-          ${kpi('Needs Review', reviewCount, '', reviewCount ? 'warn' : '')}
-          ${kpi('Unmatched Credits', unmatchedCount, '', unmatchedCount ? 'bad' : '')}
-        </div>
-        ${stmtTxs.length ? table([
-        { h: 'Date', f: c => fmtShort(c.date) },
-        { h: 'Amount', f: c => `<b>${inr(c.amount)}</b>` },
-        { h: 'Ref / UTR', f: c => esc(c.ref || '—') },
-        { h: 'Narration', f: c => `<span class="sm ell" style="max-width:200px;display:inline-block">${esc(c.narration || '—')}</span>` },
-        { h: 'Matched Resident', f: c => { const r = c.resId && resById(c.resId); return r ? person(r, roomName(r.roomId)) : '<span class="muted sm">—</span>'; } },
-        { h: 'Status', f: c => txStatusBadge(c.status) },
-        { h: '', acts: true, f: c => (c.status !== 'matched' && c.status !== 'already_reconciled' ? btn('Confirm / Link', 'stmtconfirm', `data-id="${c.id}"`, 'sm ok') : badge('Reconciled', 'ok')) }
-      ], stmtTxs, { key: 'stmt_txs', emptyT: 'No statement credits imported yet' }) : (`<div class="card" style="margin-bottom:12px">
-          <div class="row sb"><b>${esc(t('Bank Statement Direct Reconciliation'))}</b><span class="muted sm">${esc(t('{n} pending claims', { n: pendingClaims.length }))}</span></div>
-          <p class="hint" style="margin-top:6px">${esc(t('Import your bank account statement (CSV) to auto-verify resident UPI claims without gateway fees. Uniquely matching UTRs will confirm automatically, while ambiguous entries wait in your review queue.'))}</p>
-        </div>` + table([
-        { h: 'Date', f: c => fmtShort(c.date) },
-        { h: 'Resident', f: c => { const r = resById(c.resId); return r ? person(r, roomName(r.roomId)) : '—'; } },
-        { h: 'Claimed UTR', f: c => esc(c.utr || '—') },
-        { h: 'Amount', f: c => `<b>${inr(c.amount)}</b>` },
-        { h: 'Status', f: c => badge(c.status === 'approved' ? 'Matched' : 'Pending', c.status === 'approved' ? 'ok' : 'warn') },
-        { h: '', acts: true, f: c => (c.status === 'pending' ? `${btn('Approve', 'claimok', `data-id="${c.id}"`, 'sm ok')}` : badge('Reconciled', 'mute')) }
-      ], Store.all('claim').slice().sort(by('ts', -1)), { key: 'stmtclaims', emptyT: 'No statement claims' }))}`;
+      const all = Store.all('stmt_tx').slice().sort(by('ts', -1));
+      const REVIEW = ['probable', 'amount_mismatch', 'multiple_candidates'], DONE = ['matched', 'already_reconciled'];
+      const nRev = all.filter(x => REVIEW.includes(x.status)).length, nUn = all.filter(x => x.status === 'unmatched').length, nOk = all.filter(x => DONE.includes(x.status)).length;
+      const sf = curFlt('stmtf', 'all');
+      const st = { matched: ['Matched', 'ok'], exact: ['Exact match', 'ok'], probable: ['Probable match', 'info'], amount_mismatch: ['Amount mismatch', 'warn'], multiple_candidates: ['Multiple candidates', 'warn'], unmatched: ['Unmatched', 'bad'], duplicate: ['Duplicate ref', 'mute'], already_reconciled: ['Reconciled', 'ok'] };
+      const list = all.filter(c => (sf === 'all' || (sf === 'review' && REVIEW.includes(c.status)) || (sf === 'unmatched' && c.status === 'unmatched') || (sf === 'done' && DONE.includes(c.status))) && needle('stmt', c.narration, c.ref, c.amount, (resById(c.resId) || {}).name));
+      body = `<div class="pstats">${pstat('Needs review', nRev, '', nRev ? 'warn' : '')}${pstat('Unmatched', nUn, '', nUn ? 'bad' : '')}${pstat('Matched', nOk, t('of {n} credits', { n: all.length }), 'ok')}</div>
+        <div class="tool">${searchBox('stmt', 'Search statement transactions')}<span class="sp"></span>${btn('Import statement (CSV)', 'importstmt', '', 'primary', 'upload')}</div>
+        ${all.length ? `<div class="tool">${chips('stmtf', [['all', 'All'], ['review', 'Needs review'], ['unmatched', 'Unmatched'], ['done', 'Matched']], 'all')}</div>` : ''}
+        ${list.length ? `<div class="group">${list.map(c => { const r = c.resId && resById(c.resId), [lbl, cls] = st[c.status] || [c.status || 'Pending', 'warn']; return prow({
+          lead: r ? avatar(r.name) : `<span class="prow-ic">${ico('rupee', 'sm')}</span>`, t: esc(r ? r.name : (c.narration || t('Unknown sender'))),
+          s: `${fmtShort(c.date)}${c.ref ? ' · ' + esc(c.ref) : ''}`, note: r && c.narration ? esc(c.narration) : '', tags: badge(lbl, cls), amt: inr(c.amount), mc: 'ok-t',
+          acts: DONE.includes(c.status) ? '' : btn('Confirm / Link', 'stmtconfirm', `data-id="${c.id}"`, 'sm ok', 'check')
+        }); }).join('')}</div>` : `<div class="card">${all.length ? empty('Nothing here', 'No transactions match this filter.') : empty('No statement credits imported yet', 'Import your bank statement (CSV) to verify resident UPI claims without gateway fees. Clear UTR matches confirm automatically; unclear ones wait for your review.')}</div>`}`;
     } else if (tab === 'history') {
-      const list = payments().filter(p => needle('payh', (resById(p.resId) || {}).name, p.ref, p.no)).sort(by('date', -1));
-      body = `<div class="tool">${searchBox('payh', 'Search name, UTR, receipt')}<span class="sp"></span><div class="tool-actions">${btn('Reconcile', 'reconcilepay', '', '', 'sync')}${btn('Export', 'exportpay', '', '', 'download')}</div></div>` + table([
-        { h: 'Date', f: p => fmtShort(p.date) }, { h: 'Resident', f: p => { const r = resById(p.resId); return r ? person(r, roomName(r.roomId)) : '—'; } },
-        { h: 'Amount', f: p => `<b>${inr(p.amount)}</b>` }, { h: 'Mode', f: p => badge(p.mode.toUpperCase(), p.mode === 'cash' ? 'warn' : p.mode === 'deposit' ? '' : 'info') },
-        { h: 'Gateway / UTR', f: p => esc(p.ref || '—') },
-        { h: 'Settlement', f: p => badge(p.mode === 'cash' ? 'DIRECT CASH' : p.mode === 'deposit' ? 'DEPOSIT' : 'EASY SPLIT T+1', 'ok') },
-        { h: '', acts: true, f: p => btn('Receipt', 'receipt', `data-id="${p.id}"`, 'sm') },
-      ], list, { key: 'payh' });
+      const mf = curFlt('payhm', 'all'), modeOf = x => x.mode === 'cash' ? 'cash' : x.mode === 'deposit' ? 'deposit' : 'upi';
+      const list = payments().filter(x => (mf === 'all' || modeOf(x) === mf) && needle('payh', (resById(x.resId) || {}).name, x.ref, x.no)).sort(by('date', -1));
+      const months = {}; list.forEach(x => (months[ymOf(x.date)] = months[ymOf(x.date)] || []).push(x));
+      body = `<div class="tool">${searchBox('payh', 'Search name, UTR, receipt')}<span class="sp"></span>${pair(orgEnabled('cashfree') ? btn('Reconcile', 'reconcilepay', '', '', 'sync') : '', btn('Export', 'exportpay', '', '', 'download'))}</div>
+        <div class="tool">${chips('payhm', [['all', 'All'], ['upi', 'UPI'], ['cash', 'Cash'], ['deposit', 'Deposit']], 'all')}</div>
+        ${list.length ? Object.keys(months).sort().reverse().map(m => { const act = months[m].filter(x => !x.reversed); return `<div class="pgh"><b>${esc(fmtYM(m))}</b><span>${inr(sum(act, x => x.amount))} · ${t('{n} payments', { n: act.length })}</span></div>
+          <div class="group">${months[m].map(x => { const r = resById(x.resId); return prow({
+            act: 'receipt', attrs: `data-id="${x.id}"`, lead: avatar(r ? r.name : '?'), t: esc(r ? r.name : '—'),
+            s: `${fmtShort(x.date)} · ${esc(x.mode.toUpperCase())}${x.ref ? ' · ' + esc(x.ref) : x.no ? ' · ' + esc(x.no) : ''}`, tags: x.reversed ? badge('REVERSED', 'bad') : '', amt: inr(x.amount), mc: x.reversed ? 'bad-t' : ''
+          }); }).join('')}</div>`; }).join('') : `<div class="card">${empty('No payments found', 'Payments you record or confirm appear here.')}</div>`}`;
     } else {
       const list = Store.all('dep').slice().sort(by('date', -1));
       const held = sum(activeRes(), r => sum(resInvoices(r.id).filter(i => i.type === 'deposit'), i => i.paid || 0));
-      body = `<div class="grid g2 keep2" style="margin-bottom:14px">${kpi('Deposits held', inr(held), t('{n} residents', { n: activeRes().length }), '', null, 'wallet')}${kpi('Refunds pending', inr(sum(list.filter(d => d.status === 'pending'), d => d.refund)), '', 'warn', null, 'clock')}</div>` + table([
-        { h: 'Resident', f: d => esc((resById(d.resId) || {}).name || '—') }, { h: 'Date', f: d => fmtShort(d.date) }, { h: 'Deposit', f: d => inr(d.deposit) }, { h: 'Adjusted', f: d => inr(d.settled + d.deductions) }, { h: 'Refund', f: d => `<b>${inr(d.refund)}</b>` },
-        { h: 'Status', f: d => badge(d.status === 'pending' ? 'Pending' : d.status === 'paid' ? 'Refunded' : (d.status === 'debt' ? 'Debt' : 'Closed'), d.status === 'pending' ? 'warn' : (d.status === 'debt' ? 'bad' : 'ok')) },
-        { h: '', acts: true, f: d => `${btn(t('Statement'), 'depstatement', `data-id="${d.id}"`, 'sm')}${d.status === 'pending' ? btn('Mark refunded', 'depok', `data-id="${d.id}"`, 'sm ok') : ''}` },
-      ], list, { key: 'deps', emptyT: 'No checkouts yet' });
+      const sd = { pending: ['Pending', 'warn'], paid: ['Refunded', 'ok'], debt: ['Debt', 'bad'] };
+      body = `<div class="pstats">${pstat('Deposits held', inr(held), t('{n} residents', { n: activeRes().length }))}${pstat('Refunds pending', inr(sum(list.filter(d => d.status === 'pending'), d => d.refund)), '', 'warn')}</div>
+        ${list.length ? `<div class="group">${list.map(d => { const [lbl, cls] = sd[d.status] || ['Closed', 'ok']; return prow({
+          lead: avatar((resById(d.resId) || {}).name || '?'), t: esc((resById(d.resId) || {}).name || '—'),
+          s: `${fmtShort(d.date)} · ${t('Deposit')} ${inr(d.deposit)} · ${t('adjusted')} ${inr(d.settled + d.deductions)}`, tags: badge(lbl, cls), amt: inr(d.refund), ms: t('refund'),
+          acts: `${btn('Statement', 'depstatement', `data-id="${d.id}"`, 'sm')}${d.status === 'pending' ? btn('Mark refunded', 'depok', `data-id="${d.id}"`, 'sm ok') : ''}`
+        }); }).join('')}</div>` : `<div class="card">${empty('No checkouts yet')}</div>`}`;
     }
     return `${head('Payments', t('{c} collected in {m} · {d} pending', { c: inr(coll), m: fmtYM(ym), d: inr(sum(dues, x => x.due)) }), btn('Record cash payment', 'pay', '', 'primary', 'plus'))}
       ${seg('pay', [['dues', 'Dues'], ['claims', 'UPI claims', claims.length], ['statement', 'Bank statement'], ['history', 'History'], ['deps', 'Deposits']], 'dues')}${body}`;
@@ -2022,24 +2091,26 @@ PAGES.payments = {
 A.importstmt = () => {
   formModal({
     title: 'Import Bank Statement (CSV) & Auto-Reconcile',
-    submit: 'Run Reconciliation',
+    submit: 'Apply these results',
     wide: true,
-    note: t('Paste CSV bank statement or transaction export. System identifies Credit rows, normalizes UTRs, and matches against pending resident claims.'),
+    note: t('Pick the CSV file you downloaded from your bank (or paste it). You will see exactly what will happen below before anything is saved.'),
     fields: [
-      { name: 'csvText', label: 'Bank Statement CSV Data', type: 'textarea', required: true, full: true, hint: 'Supports HDFC, ICICI, SBI, Axis, PhonePe, and standard exports.' },
+      { type: 'html', html: `<label class="f">${esc(t('CSV file'))}</label><input type="file" id="stmtFile" accept=".csv,.txt,text/csv,text/plain">` },
+      { name: 'csvText', label: 'Or paste the statement here', type: 'textarea', required: true, full: true, hint: 'Works with HDFC, ICICI, SBI, Axis, Kotak, PNB, Bank of Baroda, Canara, Union, Yes, IDFC, IndusInd, Federal, PhonePe, Paytm and similar exports.' },
       { name: 'autoConfirm', label: 'Automatically confirm exact UTR & amount matches', type: 'checkbox', value: true }
     ],
     preview: v => {
       if (!v.csvText || !v.csvText.trim()) return '';
       try {
-        const rows = parseBankStatement(v.csvText);
-        const credits = rows.filter(r => r.direction === 'CR');
-        return `<div class="note info">
-          <b>${esc(t('Detected Format Preview'))}:</b> ${rows.length} total rows, <b>${credits.length} credit transactions</b>.<br>
-          <div style="margin-top:6px;max-height:140px;overflow-y:auto;font-size:11px">
-            ${credits.slice(0, 3).map(c => `• ${fmtShort(c.date)}: <b>${inr(c.amount)}</b> · Ref: ${esc(c.ref || '—')} · Narration: ${esc((c.narration || '').slice(0, 40))}`).join('<br>')}
-          </div>
-        </div>`;
+        const rows = parseBankStatement(v.csvText), credits = rows.filter(r => r.direction === 'CR'), m = rows.meta || {};
+        if (!credits.length) return `<div class="note warn">${esc(t('No credit (money received) rows found in this statement.'))}</div>`;
+        const d = reconcileBankStatement(rows, { autoConfirm: v.autoConfirm !== false, dryRun: true }), sm = d.summary;
+        const line = (x, tag) => `<div class="stm-l">${tag}<span class="stm-n">${esc(((x.res || (x.claim && resById(x.claim.resId)) || {}).name) || (x.row.narration || '').slice(0, 34) || '—')}</span><b>${inr(x.row.amount)}</b></div>`;
+        const part = (n, lbl, cls) => `<div class="stm-c ${cls}"><b>${n}</b><span>${esc(t(lbl))}</span></div>`;
+        return `<div class="stm-p"><div class="stm-h">${esc(t('{n} credits found in {r} rows', { n: credits.length, r: rows.length }))} <span class="muted xs">· ${esc(t('header on line {l}', { l: m.headerRow || 1 }))}</span></div>
+          <div class="stm-g">${part(sm.autoMatched, 'Will be confirmed', 'ok')}${part(sm.probableMatch + sm.amountMismatch, 'Need your review', 'warn')}${part(sm.unmatched, 'Unmatched', 'bad')}${part(sm.duplicate, 'Duplicate', 'mute')}</div>
+          ${d.exactMatches.length ? `<div class="stm-t">${esc(t('Will be confirmed'))}</div>${d.exactMatches.slice(0, 6).map(x => line(x, ico('check', 'xs'))).join('')}${d.exactMatches.length > 6 ? `<div class="muted xs">+${d.exactMatches.length - 6} ${esc(t('more'))}</div>` : ''}` : ''}
+          ${d.probableMatches.length + d.amountMismatches.length ? `<div class="stm-t">${esc(t('Need your review'))}</div>${[...d.probableMatches, ...d.amountMismatches].slice(0, 4).map(x => line(x, ico('alert', 'xs'))).join('')}` : ''}</div>`;
       } catch (e) {
         return `<div class="note warn">${esc(e.message)}</div>`;
       }
@@ -2061,6 +2132,13 @@ A.importstmt = () => {
   });
 };
 
+// a CSV picked from the phone / computer fills the box, and the preview above the buttons refreshes
+document.addEventListener('change', async e => {
+  const f = e.target; if (!f || f.id !== 'stmtFile' || !f.files || !f.files[0]) return;
+  const file = f.files[0], form = f.closest('form'), box = form && form.elements.csvText; if (!box) return;
+  if (file.size > 3 * 1024 * 1024) { toast(t('This file is too large for a statement (max 3 MB). Export a shorter date range.'), 'bad'); f.value = ''; return; }
+  try { box.value = await file.text(); box.dispatchEvent(new Event('input', { bubbles: true })); } catch (err) { toast(t('Could not read this file'), 'bad'); }
+});
 A.stmtconfirm = el => {
   const tx = Store.get(el.dataset.id);
   if (!tx) return;
@@ -2184,6 +2262,7 @@ A.pay = el => {
           : `<span class="ok-t">${esc(t('Clears all dues'))} ✓</span>`) + tail;
     },
     onSubmit: v => {
+      if (v.date > today()) return t('The date cannot be in the future');
       const isAdv = v.adv && v.amount > rentOf(v.res);
       if (isAdv && !(v.months >= 1)) return 'How many months is this payment for?';
       const pen = penaltyDue(v.res);
@@ -2201,43 +2280,85 @@ A.pay = el => {
     },
   });
 };
-A.sendbill = el => {
+/* The bill goes to ONE resident on WhatsApp together with a clean payment card: the QR first, then the amount and the details.
+ * A wa.me link can only carry text, so on a phone the card + message go through the system share sheet (the owner taps
+ * WhatsApp and the resident); without that (a laptop) the card is copied so it can be pasted into the chat. */
+async function payCardBlob(r, amount, note) {
+  if (typeof qrcode !== 'function') await loadScript('/vendor/qrcode.js');
+  const q = qrcode(0, 'M'); q.addData(upiUri(amount, note)); q.make();
+  const n = q.getModuleCount(), W = 1080, H = 1660, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d'), rr = (X, Y, w, h, R) => { x.beginPath(); x.moveTo(X + R, Y); x.arcTo(X + w, Y, X + w, Y + h, R); x.arcTo(X + w, Y + h, X, Y + h, R); x.arcTo(X, Y + h, X, Y, R); x.arcTo(X, Y, X + w, Y, R); x.closePath(); };
+  const F = "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", h0 = Store.hostel() || {}, p = S().pay || {};
+  const g = x.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#1d1b6b'); g.addColorStop(1, '#4b4ff0'); x.fillStyle = g; x.fillRect(0, 0, W, H);
+  x.save(); x.shadowColor = 'rgba(10,10,60,.4)'; x.shadowBlur = 60; x.shadowOffsetY = 24; x.fillStyle = '#fff'; rr(60, 60, W - 120, H - 120, 64); x.fill(); x.restore();
+  const qs = 620, qx = (W - qs) / 2, qy = 130; x.fillStyle = '#f4f5fd'; rr(qx - 36, qy - 36, qs + 72, qs + 72, 44); x.fill();
+  const cell = qs / n; x.fillStyle = '#16163a'; for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (q.isDark(i, j)) x.fillRect(Math.round(qx + j * cell), Math.round(qy + i * cell), Math.ceil(cell), Math.ceil(cell));
+  const T = (txt, y, size, w, col) => { x.fillStyle = col; x.font = `${w} ${size}px ${F}`; x.textAlign = 'center'; x.fillText(txt, W / 2, y); };
+  T('Scan with any UPI app', qy + qs + 104, 34, '600', '#6b6f8d');
+  T('₹' + Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }), qy + qs + 262, 150, '800', '#3b3fe0');
+  x.fillStyle = '#e7e8f3'; x.fillRect(150, qy + qs + 326, W - 300, 3);
+  const rows = [[t('Pay to'), p.payee || h0.name || ''], ['UPI ID', p.upiId || ''], [t('For'), `${r.name} · ${t('Room')} ${roomName(r.roomId)}`]];
+  rows.forEach((row, i) => { const y = qy + qs + 420 + i * 84; x.textAlign = 'left'; x.fillStyle = '#8a8eab'; x.font = `600 32px ${F}`; x.fillText(row[0], 150, y); x.textAlign = 'right'; x.fillStyle = '#1b1c3a'; x.font = `700 34px ${F}`; let v = String(row[1]); while (x.measureText(v).width > 620 && v.length > 4) v = v.slice(0, -2); x.fillText(v === row[1] ? v : v + '…', W - 150, y); });
+  x.fillStyle = '#e8f7ee'; rr(150, H - 270, W - 300, 96, 48); x.fill(); T(h0.name || 'Sarvlekh', H - 208, 36, '700', '#128a4a');
+  return new Promise(res => c.toBlob(res, 'image/png'));
+}
+async function sendBillWithQr(r, m) {
+  const p = S().pay || {}; if (!p.upiId || !(m.total > 0)) return false;
+  let blob; try { blob = await payCardBlob(r, m.total, `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim()); } catch (e) { return false; }
+  if (!blob) return false;
+  const file = new File([blob], `pay-${r.name.split(' ')[0]}-${m.total}.png`, { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], text: m.text }); return true; }
+    catch (e) { return e && e.name === 'AbortError'; }   // the owner closed the share sheet: nothing more to do
+  }
+  try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast(t('Payment card copied - paste it in the WhatsApp chat'), 'ok'); } catch (e) { /* no image clipboard: the text goes alone */ }
+  return false;
+}
+A.sendbill = async el => {
   const r = resById(el.dataset.res); if (!r) return;
   if (!S().pay.upiId) toast('Add your UPI ID in Settings → Payments to include a pay link', 'bad');
   const m = billMessage(r);
   if (!m.total) return toast('No dues for this resident');
-  closeModal(true);
+  if (await sendBillWithQr(r, m)) return;
+  // only a message goes out here, so the panel it was sent from (Record payment, a profile) stays open behind WhatsApp
   waOpen(r.phone, m.text, 'Send bill');
 };
-A.billall = () => {
-  const list = dueList();
-  if (!S().pay.upiId) toast('Add your UPI ID in Settings → Payments to include a pay link', 'bad');
-  waSheet(list.map(x => ({ phone: x.r.phone, text: billMessage(x.r).text, label: `${x.r.name} · ${inr(x.due)}`, r: x.r, resId: x.r.id })), 'Send bills');
-};
-// This month's bills (rent + electricity), one message per resident. With the gateway connected
-// they go out by themselves; otherwise WhatsApp opens for each and the owner presses Send.
-A.mbillsend = async el => {
-  const due = monthlyBillsDue();
-  if (!due.length) return toast('Nothing to send');
-  if (!S().pay.upiId) toast('Add your UPI ID in Settings → Payments to include a pay link', 'bad');
-  if (!WaGw.on()) return waSheet(monthlyBillMsgs(due), 'Send monthly bills');
-  if (el) el.disabled = true;
-  const res = await WaGw.send(monthlyBillMsgs(due));
-  const sent = due.filter((x, i) => res[i] && res[i].ok); markReminded(sent);
-  toast(t('{n} monthly bills sent on WhatsApp', { n: sent.length }), sent.length === due.length ? 'ok' : 'bad');
+function bulkMailHtml(plan, kind) {
+  const total = plan.total, left = plan.todo.length + plan.noEmail.length, doneN = plan.done.length, wait = (plan.blocked || []).length;
+  const when = plan.at ? fmtTime(new Date(plan.at).toTimeString().slice(0, 5)) : '';
+  const owed = sum([...plan.todo, ...plan.noEmail, ...plan.done], x => x.due);
+  if (!total) return `<div class="bm"><div class="bm-ic ok">${ico('check')}</div><b class="bm-h">${esc(t('Nobody to send to'))}</b></div>`;
+  if (!left && !doneN && wait) return `<div class="bm"><div class="bm-ic bad">${ico('alert')}</div><b class="bm-h">${esc(t('{n} bills are not complete', { n: wait }))}</b><p class="bm-p">${esc(t('Add the missing readings first. Their e-mails wait until the bill is complete.'))}</p></div>`;
+  if (!left) return `<div class="bm"><div class="bm-ic ok">${ico('mail')}</div><b class="bm-h">${esc(t('Sent today'))}</b><p class="bm-p">${esc(t('{a} e-mailed at {w}', { a: plan.emailed, w: when }))}${plan.appOnly ? ' · ' + esc(t('{n} app notice only', { n: plan.appOnly })) : ''}</p></div>`;
+  return `<div class="bm">
+    ${doneN ? `<div class="bm-note">${ico('check', 'sm')} ${esc(t('{n} already sent today', { n: doneN }))}</div>` : ''}
+    <div class="bm-ic">${ico('mail')}</div><b class="bm-h">${esc(t('{n} residents', { n: left }))}</b><span class="bm-amt">${inr(owed)}</span>
+    <div class="bm-st"><span class="ok">${ico('mail', 'xs')} ${esc(t('{n} will be e-mailed', { n: plan.todo.length }))}</span>${plan.noEmail.length ? `<span class="warn">${ico('alert', 'xs')} ${esc(t('{n} have no e-mail (app notice only)', { n: plan.noEmail.length }))}</span>` : ''}${wait ? `<span class="warn">${esc(t('{n} bills not complete', { n: wait }))}</span>` : ''}</div></div>`;
+}
+function bulkMailResult(r, kind) {
+  const msg = r.demo ? t('Demo hostel: nothing was really e-mailed.') : r.reason === 'not_configured' ? t('E-mail is not set up on the server yet (RESEND_API_KEY). Nothing was sent.') : '';
+  return `<div class="bm"><div class="bm-ic ${r.failed && !r.sent ? 'bad' : 'ok'}">${ico(r.failed && !r.sent ? 'alert' : 'check')}</div><b class="bm-h">${esc(r.sent ? t('Sent to {n} residents', { n: r.sent }) : t('Nothing was sent'))}</b>
+    <div class="bm-st">${r.noEmail ? `<span class="warn">${esc(t('{n} app notice only (no e-mail)', { n: r.noEmail }))}</span>` : ''}${r.failed ? `<span class="bad">${esc(t('{n} failed - tap again to retry only those', { n: r.failed }))}</span>` : ''}</div>${msg ? `<p class="bm-p">${esc(msg)}</p>` : ''}</div>`;
+}
+function openBulkMail(kind = 'bill', opts = {}) {
+  const plan = bulkMailPlan(kind, opts), left = plan.todo.length + plan.noEmail.length;
+  sheet(t(kind === 'reminder' ? 'E-mail payment reminders' : 'E-mail bills to everyone'), `<div id="bmBody">${bulkMailHtml(plan, kind)}</div>`,
+    { foot: left ? `<button class="btn primary block bm-go" data-act="bulkmailgo" data-kind="${kind}" ${opts.only ? `data-only="${[...opts.only].join(',')}"` : ''}>${ico('mail', 'sm')} ${esc(t('Send to all ({n})', { n: left }))}</button>` : `<button class="btn block" data-act="close">${esc(t('Close'))}</button>` });
+}
+A.bulkmail = el => openBulkMail((el && el.dataset && el.dataset.kind) || 'bill');
+A.bulkmailgo = async el => {
+  const kind = el.dataset.kind || 'bill', only = el.dataset.only ? new Set(el.dataset.only.split(',')) : null, body = $('#bmBody');
+  el.disabled = true; el.innerHTML = `<span class="spin sm"></span> ${esc(t('Sending...'))}`;
+  if (body) body.innerHTML = `<div class="bm"><div class="spin"></div><b class="bm-h">${esc(t('Sending e-mails...'))}</b></div>`;
+  let r; try { r = await sendBulkMail(kind, only ? { only } : {}); } catch (e) { r = { status: 'sent', sent: 0, failed: 1, reason: e.message, noEmail: 0 }; }
+  if (body) body.innerHTML = bulkMailResult(r, kind);
+  const foot = $('.modal footer'); if (foot) foot.innerHTML = `<button class="btn primary block" data-act="close">${esc(t('Done'))}</button>`;
   render();
 };
-// Sends exactly the reminders that are due today; each is marked once its WhatsApp opens.
-A.remindsend = () => {
-  const due = remindersDue().filter(x => phone10(x.r.phone));
-  if (!due.length) return toast('Nothing to send');
-  waSheet(reminderMsgs(due), 'Send reminders');
-};
-A.remindall = () => {
-  const list = dueList(true);
-  if (!list.length) return toast('Nobody is overdue 🎉');
-  waSheet(list.map(x => ({ phone: x.r.phone, text: billMessage(x.r, 'reminder').text, label: `${x.r.name} · ${inr(x.due)}`, r: x.r, resId: x.r.id })), 'Send reminders');
-};
+A.billall = () => { if (!S().pay.upiId) toast('Add your UPI ID in Settings → Payments to include a pay link', 'bad'); openBulkMail('bill'); };
+A.mbillsend = () => { if (!S().pay.upiId) toast('Add your UPI ID in Settings → Payments to include a pay link', 'bad'); openBulkMail('bill'); };
+A.remindsend = () => openBulkMail('reminder');
+A.remindall = () => openBulkMail('reminder');
 A.receipt = el => {
   const p = Store.get(el.dataset.id), r = resById(p.resId), h = Store.hostel();
   const revBanner = p.reversed ? `<div class="badge bad" style="display:block;margin-bottom:12px;text-align:center;padding:8px;font-size:13px">${ico('alert', 'xs')} <b>${esc(t('PAYMENT REVERSED'))}</b><br><span class="xs">${esc(fmtDate(p.reversedAt))} · ${esc(p.reversalReason || '')}</span></div>` : '';
@@ -2268,51 +2389,58 @@ A.payreverse = el => {
     }
   });
 };
-A.sendrcpt = el => { const p = Store.get(el.dataset.id); closeModal(true); waOpen(resById(p.resId).phone, receiptMessage(p), 'Send receipt'); };
+A.sendrcpt = el => { const p = Store.get(el.dataset.id); waOpen(resById(p.resId).phone, receiptMessage(p), 'Send receipt'); };
 A.exportpay = () => download(`payments-${today()}.csv`, csv([['Date', 'Receipt', 'Resident', 'Room', 'Amount', 'Mode', 'Reference', 'Status', 'Reversal Reason'], ...Store.all('pay').sort(by('date')).map(p => [p.date, p.no, (resById(p.resId) || {}).name, roomName(p.roomId), p.amount, p.mode, p.ref, p.reversed ? 'Reversed' : 'Active', p.reversalReason || ''])]), 'text/csv');
 
 /* ===================================================================== electricity */
+// What a reading was billed for (older readings may only hold their shares, or nothing yet)
+function meterBilled(m) {
+  let tot = (m.total != null && !isNaN(m.total)) ? m.total : (Array.isArray(m.shares) && m.shares.length ? sum(m.shares, s => s.amount) : null);
+  if ((tot == null || tot === 0) && (!m.shares || !m.shares.length) && m.units > 0 && m.status === 'billed') {
+    const fromDate = m.prevDate || (m.span ? addDays(m.date, -m.span) : null);
+    const occ = meterOccupants(m.roomId, fromDate, m.date);
+    const occupants = occ.length ? occ.map(o => o[0]) : activeRes().filter(r => r.roomId === m.roomId).map(r => r.id);
+    if (occupants.length) tot = sum(splitElectricity(m.roomId, m.units, m.rate || S().elec.rate, occupants, occ.length ? occ.map(o => o[1]) : null, freeMonths(fromDate, m.date)), s => s.amount);
+  }
+  return tot || 0;
+}
 PAGES.electricity = {
   title: 'Electricity', mod: 'electricity',
   render() {
-    const e = S().elec, ym = ymOf(today());
+    const e = S().elec, cur = ymOf(today()), ym = ui.flt.elm || cur;
     const occRooms = rooms().filter(r => bedsOf(r).some(b => b.status === 'occ'));
-    const pending = occRooms.filter(r => !meters().some(m => m.roomId === r.id && ymOf(m.date) === ym));
-    const list = meters().slice(0, ui.lim.mt || 60);
-    return `${head('Electricity', t('₹{r}/unit · {f} free units per {m} · split by days stayed', { r: e.rate, f: e.freeUnits, m: t(e.freeMode === 'room' ? 'room' : 'resident') }), `<div class="tool-actions">${btn('Settings', 'go', 'data-to="settings/elec"', '', 'settings')}${btn('Reset / New meter', 'meterreset', '', 'ghost', 'refresh')}${btn('Scan meter', 'meterscan', '', 'ghost', 'camera')}${btn('Enter readings', 'readings', '', 'primary', 'bolt')}</div>`)}
-      ${pending.length ? `<div class="note warn">${esc(t('{n} rooms still need this month\'s reading', { n: pending.length }))}: ${esc(pending.map(r => r.no).join(', '))}</div>` : ''}
-      ${table([
-      { h: 'Room', f: m => { const r = roomById(m.roomId); return `<b>${esc(roomName(m.roomId))}</b>${!r ? ` <span class="badge bad sm">${esc(t('Orphaned'))}</span>` : ''}`; } },
-      { h: 'Date', f: m => fmtShort(m.date) },
-      { h: 'Reading', f: m => `${num(m.prev)} → ${num(m.curr)}` },
-      { h: 'Units', f: m => { const isAbnormal = m.units > 10000; return `<b class="${isAbnormal ? 'bad-t' : ''}">${num(m.units)}</b>${isAbnormal ? ` <span class="badge bad sm">⚠️ ${esc(t('Abnormal'))}</span>` : ''}`; } },
-      { h: 'Billed', f: m => {
-        if (m.opening) return badge(m.meterReplaced ? 'Replaced' : 'Opening', 'mute');
-        if (m.status === 'review') return badge(m.isReplacement ? 'New meter claim' : 'Check reading', 'warn');
-        const isAbnormal = m.units > 10000 || !roomById(m.roomId);
-        let tot = (m.total != null && !isNaN(m.total)) ? m.total : (Array.isArray(m.shares) && m.shares.length ? sum(m.shares, s => s.amount) : null);
-        if ((tot == null || tot === 0) && (!m.shares || !m.shares.length) && m.units > 0 && m.status === 'billed') {
-          const fromDate = m.prevDate || (m.span ? addDays(m.date, -m.span) : null);
-          const occ = meterOccupants(m.roomId, fromDate, m.date);
-          const occupants = occ.length ? occ.map(o => o[0]) : (typeof activeRes === 'function' ? activeRes().filter(r => r.roomId === m.roomId).map(r => r.id) : []);
-          if (occupants.length) {
-            const sh = splitElectricity(m.roomId, m.units, m.rate || S().elec.rate, occupants, occ.length ? occ.map(o => o[1]) : null, freeMonths(fromDate, m.date));
-            tot = sum(sh, s => s.amount);
-          }
-        }
-        tot = tot || 0;
-        return isAbnormal ? `<b class="bad-t">${inr(tot)}</b>` : inr(tot);
-      } },
-      {
-        h: '', acts: true, f: m => {
-          const isAbnormal = m.units > 10000 || m.curr > 999999 || !roomById(m.roomId);
-          if (m.opening) return isAbnormal ? btn('Delete', 'meterdel', `data-id="${m.id}"`, 'sm bad') : '';
-          return `${btn('Split', 'meterview', `data-id="${m.id}"`, 'sm')}${m.status === 'review' ? btn(m.isReplacement ? 'Approve' : 'Bill it', 'meterok', `data-id="${m.id}"`, 'sm ok') : ''}${btn(isAbnormal ? 'Delete' : '', 'meterdel', `data-id="${m.id}" title="${esc(t('Delete reading'))}" aria-label="${esc(t('Delete reading'))}"`, `sm ${isAbnormal ? 'bad' : 'ghost'}`, 'trash')}`;
-        }
-      },
-    ], list, { key: 'mt', emptyT: 'No readings yet', empty: 'Enter meter readings once a month — bills are created automatically.' })}`;
+    const all = meters().filter(m => ymOf(m.date) === ym), real = all.filter(m => !m.opening);
+    const doneRooms = new Set(real.map(m => m.roomId)), pending = ym === cur ? occRooms.filter(r => !doneRooms.has(r.id)) : [];
+    const review = meters().filter(m => m.status === 'review');
+    const billed = sum(real.filter(m => m.status !== 'review'), meterBilled), units = sum(real, m => +m.units || 0);
+    const total = occRooms.length || 1, read = occRooms.filter(r => doneRooms.has(r.id)).length;
+    const rowOf = m => {
+      const abnormal = m.units > 10000 || m.curr > 999999 || !roomById(m.roomId), rv = m.status === 'review';
+      const tag = m.opening ? badge(m.meterReplaced ? 'Replaced' : 'Opening', 'mute') : rv ? badge(m.isReplacement ? 'New meter claim' : 'Check reading', 'warn') : abnormal ? badge('Abnormal', 'bad') : badge('Billed', 'ok');
+      return prow({
+        act: 'meterview', attrs: `data-id="${m.id}"`, lead: `<span class="prow-ic tn3 prow-no">${esc(roomName(m.roomId))}</span>`, t: `${esc(t('Room'))} ${esc(roomName(m.roomId))}${!roomById(m.roomId) ? ` · ${esc(t('Orphaned'))}` : ''}`,
+        s: esc(`${num(m.prev)} → ${num(m.curr)} · ${num(m.units)} ${t('units')} · ${fmtShort(m.date)}`),
+        tags: `${tag}${rv ? pillb(m.isReplacement ? 'Approve' : 'Bill it', 'meterok', `data-id="${m.id}"`, 'ok') : ''}`,
+        amt: m.opening || rv ? '' : inr(meterBilled(m)), mc: abnormal ? 'bad-t' : ''
+      });
+    };
+    return `${head('Electricity', '', `<span class="btn-pair">${btn('Rates', 'go', 'data-to="settings/elec"', '', 'settings')}${btn('Replace meter', 'meterreset', '', '', 'repeat')}</span>${btn('Enter readings', 'readings', '', 'primary', 'bolt')}`)}
+      ${monthBar(ym, 'elmon')}
+      <div class="elhero"><div class="el-t"><span>${esc(t('Billed in {m}', { m: fmtYM(ym) }))}</span><b>${inr(billed)}</b><small>${esc(t('{u} units · ₹{r}/unit · {f} free per {m}', { u: num(units), r: e.rate, f: e.freeUnits, m: t(e.freeMode === 'room' ? 'room' : 'resident') }))}</small></div>
+        ${ym === cur && occRooms.length ? `<div class="el-p"><div class="el-pb"><i class="pgi" style="width:${pct(read, total)}%;--p:${pct(read, total)}"></i></div><span>${esc(t('{a} of {b} rooms read', { a: read, b: occRooms.length }))}</span></div>` : ''}</div>
+      ${pending.length ? (() => {
+        // every room is a button that opens its own reading form; a long list folds to 12 with a "show all"
+        const all = ui.flt.elmore === '1', cap = 12, shown = all ? pending : pending.slice(0, cap);
+        return `<div class="el-pend"><div class="el-ph"><b>${esc(t('Still to read'))}</b><span class="el-cnt">${pending.length}</span>${pending.length > cap ? `<button type="button" class="el-more" data-act="setflt" data-k="elmore" data-v="${all ? '' : '1'}">${esc(all ? t('Show less') : t('Show all'))}</button>` : ''}</div>
+          <div class="el-chips">${shown.map(r => `<button type="button" class="el-chip" data-act="readroom" data-id="${esc(r.id)}" aria-label="${esc(`${t('Room')} ${roomName(r.id)}`)}">${esc(roomName(r.id))}</button>`).join('')}${!all && pending.length > cap ? `<button type="button" class="el-chip more" data-act="setflt" data-k="elmore" data-v="1">+${pending.length - cap}</button>` : ''}</div></div>`;
+      })() : ''}
+      ${review.length ? `<div class="group-t">${esc(t('Waiting for your approval'))} · ${review.length}</div><div class="group">${review.map(rowOf).join('')}</div>` : ''}
+      <div class="group-t">${esc(t('Readings'))} · ${esc(fmtYM(ym))}</div>
+      ${real.filter(m => m.status !== 'review').length || all.some(m => m.opening) ? `<div class="group">${all.filter(m => m.status !== 'review').sort((a, b) => (b.date > a.date ? 1 : -1)).map(rowOf).join('')}</div>` : `<div class="card">${empty('No readings yet', 'Enter meter readings once a month — bills are created automatically.', btn('Enter readings', 'readings', '', 'primary', 'bolt'))}</div>`}
+      ${about(t('Free units are deducted before charging per unit, and the bill is split by the days each person stayed. Tap a reading to see the split.'))}`;
   },
 };
+A.elmon = el => { ui.flt.elm = el.dataset.m; render(); };
 A.reading = () => A.readings();
 A.meterreset = () => {
   const occRooms = rooms();
@@ -2328,15 +2456,12 @@ A.meterreset = () => {
       { name: 'finalOld', label: 'Old meter final reading before removal', type: 'number', step: 0.1, value: p, required: true, hint: t('Units above last reading will be billed to current occupants') },
       { name: 'startingNew', label: 'New meter starting reading', type: 'number', step: 0.1, value: 0, required: true, hint: t('Usually 0.0 or the starting number on new meter') },
       { name: 'newSerial', label: 'New meter serial / model (optional)', placeholder: 'e.g. EM-2026-994' },
-      { name: 'newQr', label: 'Meter sticker code (optional)', value: `MTR-${defaultRoom.no}` },
       { name: 'reason', label: 'Reason for replacement / reset', required: true, placeholder: t('Old meter burnt out, installed new digital submeter') }
     ],
     onChange: (vals, form, changedField) => {
       if (changedField === 'roomId') {
         const l = lastMeter(vals.roomId);
         setField(form, 'finalOld', l ? l.curr : 0);
-        const rm = roomById(vals.roomId);
-        if (rm) setField(form, 'newQr', `MTR-${rm.no}`);
       }
     },
     onSubmit: v => {
@@ -2346,7 +2471,6 @@ A.meterreset = () => {
           finalOldReading: v.finalOld,
           startingNewReading: v.startingNew,
           newSerial: v.newSerial,
-          newQr: v.newQr,
           reason: v.reason
         });
         closeModal();
@@ -2358,59 +2482,54 @@ A.meterreset = () => {
     }
   });
 };
-A.meterscan = () => {
-  const occRooms = rooms().filter(r => bedsOf(r).some(b => b.status === 'occ'));
-  if (!occRooms.length) return toast('No occupied rooms', 'bad');
+// One room: opened by tapping its number under "Still to read". Same rules as the all-rooms screen, and the
+// same replaced / reset meter option; afterwards it offers the next room that is still waiting.
+function roomBillPreview(roomId, curr, date) {
+  const l = lastMeter(roomId); if (isNaN(curr) || curr === '' || curr == null) return null;
+  const units = +curr - (l ? l.curr : 0); if (units < 0) return null;
+  const on = date || today(), prevDate = l ? l.date : null, occ = on > (prevDate || '') ? meterOccupants(roomId, prevDate, on) : [];
+  const ids = occ.length ? occ.map(o => o[0]) : activeRes().filter(x => x.roomId === roomId).map(x => x.id);
+  const shares = splitElectricity(roomId, units, S().elec.rate, ids, occ.length && occ.some(o => o[1] < 1) ? occ.map(o => o[1]) : null, freeMonths(prevDate, on));
+  return { units: round2(units), total: sum(shares, s => s.amount) };
+}
+A.readroom = el => {
+  const room = roomById(el.dataset.id); if (!room) return toast('Room not found', 'bad');
+  const last = lastMeter(room.id);
   formModal({
-    title: t('Scan meter reading'),
+    title: `${t('Room')} ${room.no} · ${t('Meter reading')}`, submit: 'Save reading',
     fields: [
-      { name: 'roomId', label: 'Room', type: 'select', options: occRooms.map(r => ({ v: r.id, l: roomName(r.id) })), required: true },
-      { name: 'photo', label: 'Camera photo of meter display', type: 'file', accept: 'image/*', capture: true, required: true },
-      { name: 'qrCode', label: 'Meter QR code (optional)', placeholder: t('QR-101 etc.') },
-      { name: 'curr', label: 'Current meter reading', type: 'number', step: 0.1, required: true }
+      { name: 'date', label: 'Reading date', type: 'date', value: today(), required: true },
+      { name: 'curr', label: 'Meter reading now', type: 'number', min: 0, max: 999999, step: 0.1, required: true, placeholder: last ? `> ${num(last.curr)}` : t('Current reading'), hint: meterHintText(room.id), hintShow: true },
+      { name: 'currReset', label: 'Meter was replaced or reset', type: 'checkbox', full: true, hidden: true },
+      { name: 'currOldFinal', label: 'Old meter\'s final reading', type: 'number', min: 0, step: 0.1, full: true, hidden: true },
+      { name: 'send', label: 'Send bills on WhatsApp after saving', type: 'checkbox', value: true, full: true },
     ],
-    onChange: (vals, form, changedField) => {
-      if (changedField === 'photo' && vals.photo && vals.photo[0]) {
-        const file = vals.photo[0];
-        const prevEl = form.querySelector('#mprev');
-        if (prevEl) {
-          const reader = new FileReader();
-          reader.onload = ev => {
-            const dataUrl = ev.target.result;
-            prevEl.innerHTML = `<div style="text-align:center;margin:8px 0"><img src="${dataUrl}" style="max-height:140px;border-radius:var(--r);border:1px solid var(--line)" alt="Meter Preview"><div class="xs muted" style="margin-top:4px">${esc(file.name)} (${(file.size / 1024).toFixed(1)} KB)</div></div>`;
-            const ocr = typeof parseMeterOcrText === 'function' ? parseMeterOcrText(file.name) : null;
-            if (ocr && ocr.value && !vals.curr) {
-              setField(form, 'curr', ocr.value);
-            }
-          };
-          reader.readAsDataURL(file);
-        }
-      }
-    },
+    onChange: (v, form, ch) => { if (ch === 'curr' || ch === 'currReset') meterGuard(form, v, 'curr', room.id, true); },
+    preview: v => { const p = roomBillPreview(room.id, v.curr, v.date); return p && !v.currReset ? t('{u} units · bills {t}', { u: num(p.units), t: inr(p.total) }) : ''; },
     onSubmit: v => {
-      const room = roomById(v.roomId);
-      if (!room) return 'Room not found';
-      const last = lastMeter(v.roomId);
-      const prev = last ? last.curr : 0;
-      const curr = +v.curr;
-      if (isNaN(curr)) return 'Enter valid reading';
-
-      const fraud = validateMeterReadingFraud({ roomId: v.roomId, curr, prev, meterQr: v.qrCode });
-      if (!fraud.valid) return fraud.flags.join('. ');
-
-      const photoName = (v.photo && v.photo[0]) ? (v.photo[0].name || 'meter-photo.jpg') : null;
-      const m = addReading({ roomId: v.roomId, curr, date: today(), qrCode: v.qrCode, photo: photoName });
-      closeModal();
-      render();
-      toast(t('Meter reading saved: {u} units', { u: num(m.units) }), 'ok');
-    }
+      if (v.curr === '' || v.curr == null || isNaN(v.curr)) return t('Enter the meter reading');
+      if (pendingMeter(room.id)) return t('Room {r}: a reading is already waiting for your approval (Approvals). Approve or reject it first.', { r: room.no });
+      const mp = meterReadingProblem(room.id, v.curr, { reset: v.currReset, oldFinal: v.currOldFinal });
+      if (mp) return mp;
+      if (v.date > today()) return t('The date cannot be in the future');
+      if (last && v.date < last.date) return t('Room {r}: the date cannot be earlier than the last reading ({d})', { r: room.no, d: fmtShort(last.date) });
+      let m = null;
+      try { if (!meterResetNow(room.id, v, 'curr', v.date)) m = addReading({ roomId: room.id, curr: +v.curr, date: v.date }); } catch (e) { return e.message; }
+      const touched = new Set(m && m.status === 'billed' ? m.shares.map(s => s.resId) : []);
+      closeModal(); render();
+      const next = rooms().find(r => r.id !== room.id && bedsOf(r).some(b => b.status === 'occ') && !meters().some(x => x.roomId === r.id && !x.opening && ymOf(x.date) === ymOf(today())));
+      const q = v.send ? [...touched].map(id => resById(id)).filter(r => r && resDue(r.id) > 0).map(r => ({ phone: r.phone, text: billMessage(r).text, label: `${r.name} · ${inr(resDue(r.id))}` })) : [];
+      toast(t('Room {r} saved', { r: room.no }), 'ok', next && !q.length ? { label: t('Next: {r}', { r: next.no }), run: () => A.readroom({ dataset: { id: next.id } }) } : undefined);
+      if (q.length === 1) waOpen(q[0].phone, q[0].text, 'Send bill'); else if (q.length > 1) openBulkMail('bill', { only: touched });
+      return false;
+    },
   });
 };
 // One screen for all rooms: type the meter numbers, bills + WhatsApp queue are created in one go.
 A.readings = () => {
   const list = rooms().filter(r => bedsOf(r).some(b => b.status === 'occ'));
   if (!list.length) return toast('No occupied rooms', 'bad');
-  const fields = list.map(r => { const l = lastMeter(r.id); return { name: 'm_' + r.id, label: `${r.no} · ${t('last')} ${l ? num(l.curr) : '—'}`, type: 'number', step: 0.1, min: l ? l.curr : 0, max: 999999, placeholder: t('Current reading') }; });
+  const fields = list.map(r => { const l = lastMeter(r.id); return { name: 'm_' + r.id, errLabel: t('Room') + ' ' + r.no, label: `${r.no} · ${t('last')} ${l ? num(l.curr) : '—'}`, type: 'number', step: 0.1, min: l ? l.curr : 0, max: 999999, placeholder: t('Current reading') }; });
   formModal({
     title: 'Meter readings', submit: 'Create bills', wide: true,
     note: t('Leave a room empty to skip it. Free units ({f}) are deducted before charging ₹{r}/unit.', { f: S().elec.freeUnits, r: S().elec.rate }),
@@ -2420,28 +2539,56 @@ A.readings = () => {
       for (const r of list) {
         const c = v['m_' + r.id];
         if (!isNaN(c)) {
-          const l = lastMeter(r.id), units = c - (l ? l.curr : 0);
+          const l = lastMeter(r.id), units = c - (l ? l.curr : 0), on = v.date || today();
           if (units > 2000) highWarn.push(`${r.no} (${num(units)}u)`);
           if (units >= 0) {
             n++;
-            tot += sum(splitElectricity(r.id, units, S().elec.rate, activeRes().filter(x => x.roomId === r.id).map(x => x.id)), s => s.amount);
+            // the same sharing the saved bill will use: who lived there between the two readings, and the free units for those days
+            const prevDate = l ? l.date : null, occ = on > (prevDate || '') ? meterOccupants(r.id, prevDate, on) : [], ids = occ.length ? occ.map(o => o[0]) : activeRes().filter(x => x.roomId === r.id).map(x => x.id);
+            tot += sum(splitElectricity(r.id, units, S().elec.rate, ids, occ.length && occ.some(o => o[1] < 1) ? occ.map(o => o[1]) : null, freeMonths(prevDate, on)), s => s.amount);
           }
         }
       }
       let txt = n ? t('{n} rooms · total bill {t}', { n, t: inr(tot) }) : '';
-      if (highWarn.length) txt += ` · ⚠️ High: ${highWarn.join(', ')}`;
+      if (highWarn.length) txt += ` · High: ${highWarn.join(', ')}`;
       return txt;
     },
     onSubmit: v => {
       const touched = new Set(); let n = 0;
+      // check every room first, so one bad number never leaves the others half-saved
+      for (const r of list) {
+        const c = v['m_' + r.id]; if (isNaN(c)) continue;
+        const l = lastMeter(r.id);
+        if (pendingMeter(r.id)) return t('Room {r}: a reading is already waiting for your approval (Approvals). Approve or reject it first.', { r: r.no });
+        if (l && c < l.curr) return t('Room {r}: reading cannot be less than previous ({p})', { r: r.no, p: num(l.curr) });
+        if (l && v.date < l.date) return t('Room {r}: the date cannot be earlier than the last reading ({d})', { r: r.no, d: fmtShort(l.date) });
+        if (v.date > today()) return t('The date cannot be in the future');
+      }
       for (const r of list) { const c = v['m_' + r.id]; if (isNaN(c)) continue; const m = addReading({ roomId: r.id, curr: c, date: v.date }); n++; if (m.status === 'billed') m.shares.forEach(s => touched.add(s.resId)); }
       if (!n) return 'Enter at least one reading';
       closeModal(); render(); toast(t('{n} readings saved', { n }));
-      if (v.send) { const q = [...touched].map(id => resById(id)).filter(r => r && resDue(r.id) > 0).map(r => ({ phone: r.phone, text: billMessage(r).text, label: `${r.name} · ${inr(resDue(r.id))}` })); if (q.length) waSheet(q, 'Send bills'); }
+      if (v.send) { const q = [...touched].map(id => resById(id)).filter(r => r && resDue(r.id) > 0); if (q.length === 1) waOpen(q[0].phone, billMessage(q[0]).text, 'Send bill'); else if (q.length > 1) openBulkMail('bill', { only: new Set(q.map(r => r.id)) }); }
       return false;
     },
   });
 };
+// One person's electricity working for one reading: days stayed, share, free units, billable units, rate and amount.
+// Used on the owner's split sheet and on the resident's own electricity sheet.
+function elecShareCard(m, s, o = {}) {
+  const r = resById(s.resId), rate = m.rate || S().elec.rate || 0;
+  const fromDate = m.prevDate || (m.span ? addDays(m.date, -m.span) : null);
+  const spanDays = m.span || (fromDate ? Math.max(1, diffDays(m.date, fromDate)) : 30);
+  const co = r && r.checkIn ? r.checkIn : null, out = r && r.status === 'left' && r.left ? r.left : null;
+  let stay = spanDays;
+  if (co || out) { const cs = fromDate || addDays(m.date, -spanDays), a0 = co && co > cs ? co : cs, b0 = out && out < m.date ? out : m.date; stay = Math.max(1, Math.min(spanDays, diffDays(b0, a0))); }
+  else if (s.weight != null) stay = Math.max(1, Math.round(s.weight * spanDays));
+  const p = Math.min(100, Math.round(stay / spanDays * 100));
+  const head = o.title ? `<span class="prow-ic tn3">${ico('bolt', 'sm')}</span><div><b>${esc(o.title)}</b><span>${esc(o.sub || '')}</span></div>` : `${avatar(r ? r.name : '?')}<div><b>${esc(r ? r.name : t('Resident'))}</b><span>${esc(r && r.bed ? t('Bed') + ' ' + r.bed + ' · ' : '')}${stay}/${spanDays} ${esc(t('days'))}</span></div>`;
+  return `<div class="elsh"><div class="elsh-h">${head}<em>${inr(s.amount)}</em></div>
+      <div class="elsh-b"><i style="width:${p}%"></i></div>
+      <div class="elsh-m"><div><small>${esc(t('Share'))}</small><b>${num(s.units)}</b></div><div><small>${esc(t('Free'))}</small><b class="m-ok">${s.free ? '- ' : ''}${num(s.free)}</b></div><div><small>${esc(t('You pay for'))}</small><b>${num(s.billable)}</b></div><div><small>${esc(t('Rate'))}</small><b>x ${inr(rate)}</b></div></div>
+      <div class="elsh-w">${esc(t('{u} units in the room, shared by days stayed ({s} of {t} days), minus {f} free units, charged at {r} a unit.', { u: num(m.units), s: stay, t: spanDays, f: num(s.free), r: inr(rate) }))}</div></div>`;
+}
 A.meterview = el => {
   const m = Store.get(el.dataset.id);
   if (!m) return toast(t('Reading not found'), 'bad');
@@ -2466,94 +2613,20 @@ A.meterview = el => {
   const freePolicyUnits = m.freeUnits ?? S().elec.freeUnits ?? 0;
   const rate = m.rate || S().elec.rate || 0;
 
-  const sharesHtml = shares.length
-    ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;margin-bottom:8px">
-         <div style="font-weight:700;font-size:14px">${esc(t('Room Occupants Split'))} (${shares.length})</div>
-         <button type="button" class="btn xs ghost" data-act="elecsplitinfo" style="gap:5px;font-size:12px;padding:3px 9px;border-radius:16px;border:1px solid var(--line);background:var(--surface)">
-           <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;font-size:11px">i</span>
-           <span>${esc(t('Split Formula'))}</span>
-         </button>
-       </div>
-       <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">${shares.map(s => {
-      const r = resById(s.resId);
-      const bedStr = r && r.bed ? ` · ${t('Bed')} ${r.bed}` : '';
-      const checkInDate = r && r.checkIn ? r.checkIn : null;
-      const checkOutDate = r && r.status === 'left' && r.left ? r.left : null;
-
-      let stayDays = spanDays;
-      if (checkInDate || checkOutDate) {
-        const cycleStart = fromDate || addDays(m.date, -spanDays);
-        const sStart = checkInDate && checkInDate > cycleStart ? checkInDate : cycleStart;
-        const sEnd = checkOutDate && checkOutDate < m.date ? checkOutDate : m.date;
-        stayDays = Math.max(1, Math.min(spanDays, diffDays(sEnd, sStart)));
-      } else if (s.weight != null) {
-        stayDays = Math.max(1, Math.round(s.weight * spanDays));
-      }
-
-      const isMidCheckIn = checkInDate && fromDate && checkInDate > fromDate;
-      const stayPct = Math.min(100, Math.round((stayDays / spanDays) * 100));
-
-      return `
-           <div class="card" style="padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--subtle);box-shadow:none">
-             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-               <div style="display:flex;align-items:center;gap:10px;min-width:0">
-                 ${avatar(r ? r.name : '?')}
-                 <div style="min-width:0">
-                   <div style="font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r ? r.name : t('Resident'))}${esc(bedStr)}</div>
-                   <div class="muted xs" style="margin-top:1px">
-                     ${stayDays}/${spanDays} ${t('days')} (${stayPct}%) · ₹${rate}/${t('unit')}
-                   </div>
-                 </div>
-               </div>
-               <div style="text-align:right;white-space:nowrap">
-                 <b class="ok-t" style="font-size:16px">${inr(s.amount)}</b>
-               </div>
-             </div>
-
-             <div style="margin-top:8px;padding:6px 10px;border-radius:6px;background:var(--surface);font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid var(--line)">
-               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-                 <span class="muted">${num(s.units)} ${t('share')}</span>
-                 <span class="muted">−</span>
-                 <span class="ok-t" style="font-weight:600">${num(s.free)} ${t('free')}</span>
-                 <span class="muted">=</span>
-                 <b>${num(s.billable)} ${t('billable units')}</b>
-               </div>
-               <button type="button" class="btn xs ghost" data-act="resbreakdown" data-resid="${s.resId}" data-units="${s.units}" data-free="${s.free}" data-billable="${s.billable}" data-amount="${s.amount}" data-stay="${stayDays}" data-span="${spanDays}" data-rate="${rate}" title="${esc(t('View step-by-step breakdown'))}" style="padding:2px 7px;font-size:11px;min-height:22px;border-radius:6px;border:1px solid var(--line);color:var(--accent)">
-                 ⓘ ${esc(t('Breakdown'))}
-               </button>
-             </div>
-             ${isMidCheckIn ? `<div class="xs warn-t" style="margin-top:4px;font-size:11px">⚠️ ${esc(t('Joined mid-cycle ({d}): prorated for {n} active days', { d: fmtDate(checkInDate), n: stayDays }))}</div>` : ''}
-           </div>
-         `;
-    }).join('')}</div>`
-    : `<div class="note warn" style="margin-top:12px">${esc(t('No active residents in this room during this reading period. 0 units billed.'))}</div>`;
-
+  const total = (m.total != null && !isNaN(m.total)) ? m.total : sum(shares, s => s.amount);
   const orphanedBanner = isAbnormal
-    ? `<div class="note bad" style="margin-bottom:12px">
-         <b>⚠️ ${esc(t('Erroneous or Orphaned Reading'))}:</b><br>
-         ${!room ? esc(t('This reading is orphaned (room record does not exist).')) : ''}
-         ${m.units > 10000 ? esc(t('Abnormally large units: {u} units ({amt}).', { u: num(m.units), amt: inr(m.total) })) : ''}
-         <div style="margin-top:8px">
-           <button class="btn sm bad" data-act="meterdel" data-id="${m.id}">${ico('trash', 'sm')} ${esc(t('Delete this Invalid Reading Now'))}</button>
-         </div>
-       </div>`
+    ? `<div class="note bad" style="margin-bottom:12px"><b>${esc(t('Erroneous or Orphaned Reading'))}:</b><br>${!room ? esc(t('This reading is orphaned (room record does not exist).')) : ''}${m.units > 10000 ? esc(t('Abnormally large units: {u} units ({amt}).', { u: num(m.units), amt: inr(m.total) })) : ''}<div style="margin-top:8px"><button class="btn sm bad" data-act="meterdel" data-id="${m.id}">${ico('trash', 'sm')} ${esc(t('Delete this Invalid Reading Now'))}</button></div></div>`
     : '';
-
+  const shareRow = s => elecShareCard(m, s);
+  const sub = (a, b) => `<div><small>${esc(t(a))}</small><b>${b}</b></div>`;
   sheet(`${t('Room')} ${roomName(m.roomId)} · ${fmtDate(m.date)}`, `
     ${orphanedBanner}
-    <dl class="kv">
-      <dt>${esc(t('Previous reading'))}</dt><dd>${num(m.prev)}${fromDate ? ` <span class="muted xs">(${fmtDate(fromDate)})</span>` : ''}</dd>
-      <dt>${esc(t('Current reading'))}</dt><dd>${num(m.curr)} <span class="muted xs">(${fmtDate(m.date)})</span></dd>
-      <dt>${esc(t('Reading span'))}</dt><dd>${spanDays} ${esc(t('days'))}</dd>
-      <dt>${esc(t('Units consumed'))}</dt><dd><b class="${m.units > 10000 ? 'bad-t' : ''}">${num(m.units)}</b></dd>
-      <dt>${esc(t('Rate'))}</dt><dd>₹${rate}/unit</dd>
-      <dt>${esc(t('Free units policy'))}</dt><dd>${freePolicyUnits} / ${esc(t((m.freeMode || S().elec.freeMode) === 'room' ? 'room' : 'resident'))} (${(freePolicyUnits / Math.max(1, spanDays)).toFixed(2)} units/day)</dd>
-      ${m.qrCode || reg ? `<dt>${esc(t('Meter QR / Sticker'))}</dt><dd>${esc(m.qrCode || (reg && reg.qrCode) || (room ? 'MTR-' + room.no : '—'))}</dd>` : ''}
-      ${m.photo ? `<dt>${esc(t('Photo audit'))}</dt><dd>${esc(m.photo)}</dd>` : ''}
-      ${m.isReplacement ? `<dt>${esc(t('Meter replaced note'))}</dt><dd><span class="badge info">${esc(m.replaceReason || 'Meter replaced/reset')}</span></dd>` : ''}
-      ${m.submittedBy ? `<dt>${esc(t('Submitted by'))}</dt><dd>${esc(m.submittedBy)}</dd>` : ''}
-    </dl>
-    ${sharesHtml}
+    <div class="elsum">${sub('Units', num(m.units))}${sub('Rate', '₹' + rate)}${sub('Billed', inr(total))}</div>
+    <div class="elrd"><span>${num(m.prev)}</span><i>→</i><span>${num(m.curr)}</span><small>${spanDays} ${esc(t('days'))} · ${esc(t('free'))} ${freePolicyUnits}/${esc(t((m.freeMode || S().elec.freeMode) === 'room' ? 'room' : 'resident'))}</small></div>
+    ${shares.length ? `<div class="group-t" style="display:flex;align-items:center;gap:6px;margin-top:14px">${esc(t('Who pays what'))} · ${shares.length}<button type="button" class="ib" data-act="elecsplitinfo" aria-label="${esc(t('Split Formula'))}">i</button></div><div class="elsl">${shares.map(shareRow).join('')}</div>`
+      : `<div class="note warn" style="margin-top:12px">${esc(t('No active residents in this room during this reading period. 0 units billed.'))}</div>`}
+    ${m.isReplacement ? `<div class="note" style="margin-top:12px">${esc(t('Meter replaced note'))}: ${esc(m.replaceReason || 'Meter replaced/reset')}</div>` : ''}
+    ${m.submittedBy || m.photo ? `<div class="muted xs" style="margin-top:12px">${m.submittedBy ? esc(t('Submitted by')) + ': ' + esc(m.submittedBy) : ''}${m.photo && !m.photoUrl ? ' · ' + esc(t('Photo audit')) + ': ' + esc(m.photo) : ''}${m.photoUrl ? `<div style="margin-top:8px"><a class="btn sm" data-docview data-name="${esc(t('Meter photo'))}" href="${esc(m.photoUrl)}" target="_blank" rel="noopener">${ico('eye', 'sm')} ${esc(t('View meter photo'))}</a></div>` : ''}</div>` : ''}
     ${m.status === 'billed' && !isAbnormal ? `<div class="note ok" style="margin-top:12px">${ico('check', 'sm')} ${esc(t('This reading has been billed to residents\' monthly accounts.'))}</div>` : ''}`,
     { foot: `${m.status === 'review' ? `<button class="btn ok" data-act="meterok" data-id="${m.id}">${ico('check', 'sm')} ${esc(t(m.isReplacement ? 'Approve replacement' : 'Approve & Bill'))}</button><button class="btn bad" data-act="meterreject" data-id="${m.id}">${esc(t('Reject'))}</button>` : `<button class="btn" data-act="meteredit" data-id="${m.id}">${ico('edit', 'sm')} ${esc(t('Correct reading'))}</button><button class="btn bad" data-act="meterdel" data-id="${m.id}">${ico('trash', 'sm')} ${esc(t('Delete reading'))}</button>`}` });
 };
@@ -2564,7 +2637,7 @@ A.meterdel = el => {
     title: t('Delete meter reading'),
     submit: t('Delete reading'),
     danger: true,
-    note: isAbnormal ? t('This reading has abnormal or orphaned data (₹{amt}). Deleting it will remove all related uncollected dues.', { amt: inr(m.total) }) : '',
+    note: isAbnormal ? t('This reading has abnormal or orphaned data ({amt}). Deleting it will remove all related uncollected dues.', { amt: inr(m.total) }) : '',
     fields: [
       { name: 'reason', label: 'Reason for deletion', value: isAbnormal ? t('Erroneous reading entry') : '', required: true, placeholder: t('Duplicate reading, erroneous entry, etc.') }
     ],
@@ -2637,24 +2710,50 @@ A.resbreakdown = el => {
 };
 
 /* ===================================================================== expenses */
+const EXP_IC = { Groceries: 'cart', 'Vegetables & milk': 'utensils', Gas: 'power', 'Electricity bill': 'bolt', Water: 'layers', Internet: 'globe', Salary: 'users', Maintenance: 'wrench', 'Cleaning supplies': 'broom', Rent: 'building' };
+const expIc = c => `<span class="prow-ic ${tone(c)}">${ico(EXP_IC[c] || 'tag', 'sm')}</span>`;
 PAGES.expenses = {
   title: 'Expenses', mod: 'expenses',
   render() {
     const ym = ui.flt.expm || ymOf(today()), cat = curFlt('expc', 'all');
-    const monthList = Store.all('exp').filter(x => ymOf(x.date) === ym);
+    const all = Store.all('exp'), monthList = all.filter(x => ymOf(x.date) === ym);
     const list = monthList.filter(x => (cat === 'all' || (cat === 'credit' ? x.mode === 'credit' && !x.paid : x.cat === cat)) && needle('exp', x.cat, x.vendor, x.note)).sort(by('date', -1));
-    const credit = Store.all('exp').filter(x => x.mode === 'credit' && !x.paid);
-    const byCat = groupBy(monthList, x => x.cat), months = [...new Set([ymOf(today()), ...Store.all('exp').map(x => ymOf(x.date))])].sort().reverse().slice(0, 12);
-    return `${head('Expenses', t('{a} spent in {m}', { a: inr(sum(monthList, x => x.amount)), m: fmtYM(ym) }), btn('Add expense', 'addexp', '', 'primary', 'plus'))}
-      <div class="grid g3 keep2" style="margin-bottom:14px">${kpi('Cash paid', inr(sum(monthList.filter(x => x.mode === 'cash' || x.paid), x => x.amount)), fmtYM(ym), '', null, 'wallet')}${kpi('On credit (unpaid)', inr(sum(credit, x => x.amount)), t('{n} bills', { n: credit.length }), credit.length ? 'warn' : '', null, 'clock')}${kpi('Top category', Object.keys(byCat).length ? esc(t(Object.entries(byCat).sort((a, b) => sum(b[1], x => x.amount) - sum(a[1], x => x.amount))[0][0])) : '—', '', '', null, 'tag')}</div>
+    const credit = all.filter(x => x.mode === 'credit' && !x.paid);
+    const byCat = groupBy(monthList, x => x.cat), months = [...new Set([ymOf(today()), ...all.map(x => ymOf(x.date))])].sort().reverse().slice(0, 12);
+    const total = sum(monthList, x => x.amount), prevYm = ymOf(addDays(ym + '-01', -1)), prev = sum(all.filter(x => ymOf(x.date) === prevYm), x => x.amount);
+    const days = ym === ymOf(today()) ? +today().slice(8) : new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
+    const cats = Object.entries(byCat).map(([c, xs]) => [c, sum(xs, x => x.amount)]).sort((a, b) => b[1] - a[1]);
+    const chg = prev > 0 ? Math.round((total - prev) / prev * 100) : null;
+    const shade = i => Math.max(.22, 1 - i * .17);
+    const hero = total ? `<div class="xhero"><div class="xh-l">${esc(t('Spent in {m}', { m: fmtYM(ym) }))}</div><div class="xh-v">${inr(total)}</div>
+        <div class="xh-s">${chg == null ? esc(t('{n} entries', { n: monthList.length })) : `<span class="${chg > 0 ? 'warn-t' : 'ok-t'}">${chg > 0 ? '▲' : chg < 0 ? '▼' : '='} ${Math.abs(chg)}%</span> ${esc(t('vs {m}', { m: fmtYM(prevYm).split(' ')[0] }))}`}</div>
+        <div class="xbar">${cats.map(([c, v]) => `<i class="${tone(c)}" style="flex:${v}" title="${esc(t(c))}"></i>`).join('')}</div></div>` : '';
+    const stats = `<div class="pstats">${kpi('Paid', inr(sum(monthList.filter(x => x.mode === 'cash' || x.paid), x => x.amount)), t('{n} entries', { n: monthList.length }), '', null, 'wallet')}${kpi('On credit (unpaid)', inr(sum(credit, x => x.amount)), t('{n} bills', { n: credit.length }), credit.length ? 'warn' : '', null, 'clock')}${kpi('Per day', inr(Math.round(total / Math.max(1, days))), t('average'), '', null, 'chart')}</div>`;
+    const breakdown = cats.length > 1 ? `<div class="group-t">${esc(t('Where the money went'))}</div><div class="group">${cats.map(([c, v]) => prow({
+      act: 'expcat', attrs: `data-c="${esc(c)}"`, lead: expIc(c), t: esc(t(c)),
+      s: `<span class="xbl"><i class="${tone(c)}" style="width:${Math.max(3, Math.round(v / cats[0][1] * 100))}%"></i></span>`, amt: inr(v), ms: pct(v, total) + '%'
+    })).join('')}</div>` : '';
+    const rows = list.length ? `<div class="group">${list.map(x => prow({
+      act: 'editexp', attrs: `data-id="${x.id}"`, lead: expIc(x.cat), t: esc(t(x.cat)),
+      s: esc([fmtShort(x.date), x.vendor, x.note].filter(Boolean).join(' · ')),
+      tags: x.mode === 'credit' ? (x.paid ? badge('Credit · paid', 'ok') : `${badge('Unpaid credit', 'warn')}${pillb('Mark paid', 'exppaid', `data-id="${x.id}"`, 'ok')}`) : '', amt: inr(x.amount)
+    })).join('')}</div>` : '';
+    return `${head('Expenses', '', btn('Add expense', 'addexp', '', 'primary', 'plus'))}
+      ${hero}${monthList.length || credit.length ? stats : ''}${breakdown}
       <div class="tool"><select class="hsel" data-flt="expm" aria-label="${esc(t('Month'))}">${months.map(m => `<option value="${m}" ${m === ym ? 'selected' : ''}>${fmtYM(m)}</option>`).join('')}</select>${searchBox('exp', 'Search vendor or note')}</div>
       <div class="tool">${chips('expc', [['all', 'All'], ['credit', 'Unpaid credit'], ...S().expenseCats.filter(c => byCat[c]).map(c => [c, c])], 'all')}</div>
-      ${table([
-      { h: 'Date', f: x => fmtShort(x.date) }, { h: 'Category', f: x => `<b>${esc(t(x.cat))}</b>${x.note ? `<div class="hint">${esc(x.note)}</div>` : ''}` }, { h: 'Vendor', f: x => esc(x.vendor || '—') },
-      { h: 'Amount', f: x => `<b>${inr(x.amount)}</b>` }, { h: 'Payment', f: x => (x.mode === 'credit' ? (x.paid ? badge('Credit · paid', 'ok') : badge('Credit · unpaid', 'warn')) : badge('Cash', '')) },
-      { h: '', acts: true, f: x => `${x.mode === 'credit' && !x.paid ? btn('Mark paid', 'exppaid', `data-id="${x.id}"`, 'sm ok') : ''}${btn('', 'editexp', `data-id="${x.id}" aria-label="${esc(t('Edit'))}"`, 'sm', 'edit')}` },
-    ], list, { key: 'exp', emptyT: 'No expenses', empty: 'Add your first expense for this month.' })}`;
+      ${rows || `<div class="card">${empty('No expenses', 'Add your first expense for this month.')}</div>`}`;
   },
+};
+// Tapping a category shows its entries right there, in a sheet, instead of changing a list far below.
+A.expcat = el => {
+  const c = el.dataset.c, ym = ui.flt.expm || ymOf(today());
+  const list = Store.all('exp').filter(x => ymOf(x.date) === ym && x.cat === c).sort(by('date', -1));
+  const total = sum(list, x => x.amount);
+  sheet(`${t(c)} · ${fmtYM(ym)}`, `<div class="xcs"><div class="xcs-v">${inr(total)}</div><div class="xcs-s">${esc(list.length === 1 ? t('1 entry') : t('{n} entries', { n: list.length }))}</div></div>
+    <div class="group">${list.map(x => prow({ act: 'editexp', attrs: `data-id="${x.id}"`, lead: expIc(x.cat), t: esc([x.vendor, x.note].filter(Boolean).join(' · ') || t(x.cat)),
+      s: esc(fmtShort(x.date) + (x.mode === 'credit' ? ' · ' + (x.paid ? t('Credit · paid') : t('Unpaid credit')) : '')), amt: inr(x.amount) })).join('')}</div>`,
+    { foot: `<button class="btn block" type="button" data-act="flt" data-key="expc" data-v="${esc(c)}">${esc(t('Show only this on the page'))}</button>` });
 };
 function expenseForm(x) {
   const e = x || {};
@@ -2662,26 +2761,153 @@ function expenseForm(x) {
     title: x ? 'Edit expense' : 'Add expense',
     fields: [
       { name: 'cat', label: 'Category', type: 'select', options: S().expenseCats.map(c => ({ v: c, l: t(c) })), value: e.cat, required: true }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, max: 10000000, value: e.amount, required: true },
-      { name: 'date', label: 'Date', type: 'date', value: e.date || today(), required: true }, { name: 'mode', label: 'Payment', type: 'select', options: [{ v: 'cash', l: t('Cash / paid now') }, { v: 'credit', l: t('Credit (pay later)') }], value: e.mode || 'cash' },
+      { name: 'date', label: 'Date', type: 'date', value: e.date || today(), required: true }, { name: 'mode', label: 'Payment', type: 'select', info: t('Cash / paid now is counted as spent today. Credit means the bill is pending - it shows under Unpaid credit until you mark it paid.'), options: [{ v: 'cash', l: t('Cash / paid now') }, { v: 'credit', l: t('Credit (pay later)') }], value: e.mode || 'cash' },
       { name: 'vendor', label: 'Vendor / shop', value: e.vendor, maxlength: 80 }, { name: 'note', label: 'Note', value: e.note, maxlength: 200 },
     ],
     danger: x ? { label: 'Delete', run: () => confirmBox(t('Delete this expense?'), () => { Store.remove(e.id); toast('Deleted'); }, 'Delete', 'bad') } : null,
     onSubmit: v => {
+      if (v.date > today()) return t('The date cannot be in the future');
       Store.put('exp', { ...e, cat: v.cat, amount: v.amount, date: v.date, mode: v.mode, paid: v.mode === 'cash' ? true : e.paid || false, vendor: v.vendor, note: v.note });
       toast('Expense saved');
     },
   });
 }
 A.addexp = () => expenseForm();
-A.editexp = el => expenseForm(Store.get(el.dataset.id));
+A.editexp = el => {
+  const x = Store.get(el.dataset.id);
+  // salary, advance and purchase expenses are written by Staff & Salary / Stock & Purchase; changing them here would put the two books out of step
+  if (x && x.ref) return toast(t('This entry was created automatically (salary / purchase). Change or reverse it where it was made, so the books stay in step.'), 'warn');
+  expenseForm(x);
+};
 A.exppaid = el => { Store.patch(el.dataset.id, { paid: true, paidOn: today() }); toast('Marked paid'); render(); };
 
 /* ===================================================================== reports */
 // One period for the whole page and for every download below it.
 const repNow = () => repRange(ui.flt.repk || 'this_month', ui.flt.repf, ui.flt.rept);
+
+/* ===================================================================== insights (inside Reports) */
+const svgEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const insShort = v => (Math.abs(v) >= 10000000 ? (v / 10000000).toFixed(1) + 'Cr' : Math.abs(v) >= 100000 ? (v / 100000).toFixed(1) + 'L' : Math.abs(v) >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v)));
+const INS_COL = { inc: '#30b567', exp: '#ff9f0a', pro: '#0a84ff', neg: '#ff453a', now: '#9aa3b2' };
+let insGid = 0;
+// Monthly trend: income + expense bars with gradient, profit line with soft area. Works for 3, 6 or 12 months.
+function insightChart(months) {
+  const g = 'ig' + (++insGid), W = (window.innerWidth < 600 ? 380 : 680), H = 270, pl = 50, pr = 14, pt = 22, pb = 34, n = months.length || 1;
+  const mx = Math.max(1, ...months.map(m => Math.max(m.income, m.expense, m.profit)));
+  const mn = Math.min(0, ...months.map(m => m.profit));
+  const span = (mx - mn) || 1, y = v => pt + (H - pt - pb) * (1 - (v - mn) / span), bw = (W - pl - pr) / n, barw = Math.max(5, Math.min(30, bw * .32));
+  const grid = [0, .25, .5, .75, 1].map(f => { const v = mn + span * f; return `<line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1" ${f === 0 || f === 1 ? '' : 'stroke-dasharray="3 4"'}/><text x="${pl - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute,#8a8a8e)">${insShort(v)}</text>`; }).join('');
+  const zero = mn < 0 ? `<line x1="${pl}" x2="${W - pr}" y1="${y(0)}" y2="${y(0)}" stroke="var(--mute,#8a8a8e)" stroke-width="1.2"/>` : '';
+  const bars = months.map((m, i) => {
+    const cx = pl + i * bw + bw / 2, x1 = cx - barw - 1.5, x2 = cx + 1.5, op = m.partial ? .5 : 1;
+    const lab = n <= 6 ? `<text x="${x1 + barw / 2}" y="${y(m.income) - 5}" text-anchor="middle" font-size="10" fill="var(--mute,#8a8a8e)">${insShort(m.income)}</text>` : '';
+    const mname = fmtYM(m.ym).split(' ')[0], showYear = n > 6 && (i === 0 || m.ym.slice(5) === '01');
+    return `<rect x="${x1}" y="${y(m.income)}" width="${barw}" height="${Math.max(0, y(0) - y(m.income))}" rx="${Math.min(6, barw / 2)}" fill="url(#${g}i)" opacity="${op}"><title>${svgEsc(fmtYM(m.ym))} · ${svgEsc(t('Income'))} ${svgEsc(inr(m.income))}</title></rect>
+      <rect x="${x2}" y="${y(m.expense)}" width="${barw}" height="${Math.max(0, y(0) - y(m.expense))}" rx="${Math.min(6, barw / 2)}" fill="url(#${g}e)" opacity="${op}"><title>${svgEsc(fmtYM(m.ym))} · ${svgEsc(t('Expenses'))} ${svgEsc(inr(m.expense))}</title></rect>${lab}
+      <text x="${cx}" y="${H - 14}" text-anchor="middle" font-size="${n > 6 ? 10 : 11.5}" fill="var(--mute,#8a8a8e)">${svgEsc(mname)}${m.partial ? '*' : ''}</text>${showYear ? `<text x="${cx}" y="${H - 2}" text-anchor="middle" font-size="9" fill="var(--mute,#8a8a8e)">${svgEsc(fmtYM(m.ym).split(' ')[1] || '')}</text>` : ''}`;
+  }).join('');
+  const pts = months.map((m, i) => [pl + i * bw + bw / 2, y(m.profit)]);
+  const area = pts.length > 1 ? `<polygon points="${pts.map(p => p.join(',')).join(' ')} ${pts[pts.length - 1][0]},${y(0)} ${pts[0][0]},${y(0)}" fill="url(#${g}p)"/>` : '';
+  const line = `<polyline fill="none" stroke="${INS_COL.pro}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" points="${pts.map(p => p.join(',')).join(' ')}"/>` + pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="${n > 6 ? 3.2 : 4}" fill="var(--surface,#fff)" stroke="${months[i].profit < 0 ? INS_COL.neg : INS_COL.pro}" stroke-width="2.2"><title>${svgEsc(fmtYM(months[i].ym))} · ${svgEsc(t('Profit'))} ${svgEsc(inr(months[i].profit))}</title></circle>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('Income, expenses and profit by month'))}" style="width:100%;height:auto;display:block">
+    <defs><linearGradient id="${g}i" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4cd987"/><stop offset="1" stop-color="#22a35a"/></linearGradient>
+    <linearGradient id="${g}e" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc15a"/><stop offset="1" stop-color="#f08a00"/></linearGradient>
+    <linearGradient id="${g}p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${INS_COL.pro}" stop-opacity=".22"/><stop offset="1" stop-color="${INS_COL.pro}" stop-opacity="0"/></linearGradient></defs>${grid}${zero}${area}${bars}${line}</svg>
+    <div class="row wrap xs muted" style="gap:14px;margin-top:6px"><span><i class="lg" style="background:${INS_COL.inc}"></i> ${esc(t('Income'))}</span><span><i class="lg" style="background:${INS_COL.exp}"></i> ${esc(t('Expenses'))}</span><span><i class="lg ln" style="background:${INS_COL.pro}"></i> ${esc(t('Profit'))}</span><span>* ${esc(t('month still running'))}</span></div>`;
+}
+// What-if charts: (1) this month, now vs scenario; (2) profit added up over the next 12 months, now vs scenario.
+function scnCharts(I, s) {
+  const W = (window.innerWidth < 600 ? 380 : 680), H1 = 210, pl = 52, pr = 12, pt = 22, pb = 30;
+  const groups = [[t('Income'), I.avgIncome, s.income, INS_COL.inc], [t('Costs'), I.avgExpense, s.expense, INS_COL.exp], [t('Profit'), I.avgProfit, s.profit, s.profit >= 0 ? INS_COL.pro : INS_COL.neg]];
+  const mx = Math.max(1, ...groups.flatMap(x => [x[1], x[2]])), mn = Math.min(0, ...groups.flatMap(x => [x[1], x[2]]));
+  const span = (mx - mn) || 1, y = v => pt + (H1 - pt - pb) * (1 - (v - mn) / span), gw = (W - pl - pr) / groups.length, bw = Math.min(54, gw * .3);
+  const grid = [0, .5, 1].map(f => { const v = mn + span * f; return `<line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" ${f === 0 || f === 1 ? '' : 'stroke-dasharray="3 4"'}/><text x="${pl - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute,#8a8a8e)">${insShort(v)}</text>`; }).join('');
+  const bars = groups.map(([l, a, b, col], i) => { const cx = pl + i * gw + gw / 2, xa = cx - bw - 3, xb = cx + 3;
+    const bar = (x, v, fill, op) => `<rect x="${x}" y="${Math.min(y(v), y(0))}" width="${bw}" height="${Math.abs(y(v) - y(0))}" rx="7" fill="${fill}" opacity="${op}"/><text x="${x + bw / 2}" y="${(v >= 0 ? y(v) - 6 : y(v) + 15)}" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--ink,#111)">${insShort(v)}</text>`;
+    return `${bar(xa, a, INS_COL.now, .55)}${bar(xb, b, col, 1)}<text x="${cx}" y="${H1 - 9}" text-anchor="middle" font-size="12" fill="var(--mute,#8a8a8e)">${svgEsc(l)}</text>`; }).join('');
+  const c1 = `<svg viewBox="0 0 ${W} ${H1}" role="img" aria-label="${esc(t('Monthly figures now and in the scenario'))}" style="width:100%;height:auto;display:block">${grid}${bars}</svg>
+    <div class="row wrap xs muted" style="gap:14px;margin-top:4px"><span><i class="lg" style="background:${INS_COL.now}"></i> ${esc(t('Now'))}</span><span><i class="lg" style="background:${INS_COL.pro}"></i> ${esc(t('With your changes'))}</span></div>`;
+  // 12-month running profit
+  const H2 = 190, pts0 = [], pts1 = []; for (let m = 0; m <= 12; m++) { pts0.push(I.avgProfit * m); pts1.push(s.profit * m); }
+  const lo = Math.min(0, ...pts0, ...pts1), hi = Math.max(1, ...pts0, ...pts1), sp2 = (hi - lo) || 1, x = m => pl + (W - pl - pr) * m / 12, y2 = v => pt + (H2 - pt - pb) * (1 - (v - lo) / sp2);
+  const g2 = [0, .5, 1].map(f => { const v = lo + sp2 * f; return `<line x1="${pl}" x2="${W - pr}" y1="${y2(v)}" y2="${y2(v)}" stroke="var(--line)" ${f === 0 || f === 1 ? '' : 'stroke-dasharray="3 4"'}/><text x="${pl - 8}" y="${y2(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute,#8a8a8e)">${insShort(v)}</text>`; }).join('');
+  const poly = (arr, col, w, dash) => `<polyline fill="none" stroke="${col}" stroke-width="${w}" ${dash ? 'stroke-dasharray="6 5"' : ''} stroke-linecap="round" points="${arr.map((v, m) => x(m) + ',' + y2(v)).join(' ')}"/>`;
+  const gain = pts1[12] - pts0[12];
+  const area = `<polygon points="${pts1.map((v, m) => x(m) + ',' + y2(v)).join(' ')} ${[...pts0].reverse().map((v, k) => x(12 - k) + ',' + y2(v)).join(' ')}" fill="${gain >= 0 ? INS_COL.inc : INS_COL.neg}" opacity=".13"/>`;
+  const labs = [0, 3, 6, 9, 12].map(m => `<text x="${x(m)}" y="${H2 - 9}" text-anchor="${m === 12 ? 'end' : m === 0 ? 'start' : 'middle'}" font-size="11" fill="var(--mute,#8a8a8e)">${m === 0 ? t('Now') : t('{n} mo', { n: m })}</text>`).join('');
+  const c2 = `<svg viewBox="0 0 ${W} ${H2}" role="img" aria-label="${esc(t('Profit added up over 12 months'))}" style="width:100%;height:auto;display:block">${g2}${area}${poly(pts0, INS_COL.now, 2.4, true)}${poly(pts1, gain >= 0 ? INS_COL.inc : INS_COL.neg, 3)}<circle cx="${x(12)}" cy="${y2(pts1[12])}" r="4.5" fill="${gain >= 0 ? INS_COL.inc : INS_COL.neg}"/><text x="${x(12) - 6}" y="${y2(pts1[12]) - 10}" text-anchor="end" font-size="12" font-weight="700" fill="var(--ink,#111)">${insShort(pts1[12])}</text>${labs}</svg>
+    <div class="row wrap xs muted" style="gap:14px;margin-top:4px"><span><i class="lg ln" style="background:${INS_COL.now}"></i> ${esc(t('If nothing changes'))}</span><span><i class="lg ln" style="background:${gain >= 0 ? INS_COL.inc : INS_COL.neg}"></i> ${esc(t('With your changes'))}</span><span><b class="${gain >= 0 ? 'ok-t' : 'bad-t'}">${gain >= 0 ? '+' : '-'}${inr(Math.abs(gain))}</b> ${esc(t('over 12 months'))}</span></div>`;
+  return `<div class="grid g2" style="gap:14px;margin-top:14px"><div><div class="xs muted" style="font-weight:600;margin-bottom:4px">${esc(t('One month: now vs your changes'))}</div>${c1}</div><div><div class="xs muted" style="font-weight:600;margin-bottom:4px">${esc(t('Profit added up over the next 12 months'))}</div>${c2}</div></div>`;
+}
+const insCostRow = (c, maxCost) => `<div style="margin:9px 0"><div class="row sb" style="gap:8px"><span class="ell">${esc(t(c.cat))}</span><span><b>${inr(c.last)}</b> <span class="muted xs">${c.share}%</span>${c.change != null && Math.abs(c.change) >= 10 ? ` <span class="${c.change > 0 ? 'bad-t' : 'ok-t'} xs">${c.change > 0 ? '▲' : '▼'} ${Math.abs(c.change)}%</span>` : ''}</span></div><div style="height:6px;border-radius:4px;background:var(--subtle,#eee);margin-top:4px"><div style="height:100%;width:${Math.round(100 * c.last / maxCost)}%;border-radius:4px;background:var(--accent-solid)"></div></div></div>`;
+// Sliders are always symmetric, so zero sits in the middle. "Percent" or an absolute amount (beds / rupees).
+const scnMode = () => (window.__scnMode === 'abs' ? 'abs' : 'pct');
+function scnSpec(I) {
+  if (scnMode() === 'pct') return [['occ', 'Occupancy change', -30, 30, 1, 'pct'], ['rent', 'Rent change', -30, 30, 1, 'pct'], ['cost', 'Cost change', -30, 30, 1, 'pct']];
+  const nb = Math.max(2, Math.round((I.occ.total || 10) * .3)), rr = Math.max(500, Math.round((I.rentPerBed || 5000) * .3 / 100) * 100), cr = Math.max(2000, Math.round((I.avgExpense || 20000) * .3 / 1000) * 1000);
+  return [['occ', 'Beds filled (more / fewer)', -nb, nb, 1, 'beds'], ['rent', 'Rent per bed (₹)', -rr, rr, 100, 'rs'], ['cost', 'Monthly costs (₹)', -cr, cr, 500, 'rs']];
+}
+const scnFmt = (v, u) => (v > 0 ? '+' : v < 0 ? '-' : '') + (u === 'pct' ? Math.abs(v) + '%' : u === 'beds' ? Math.abs(v) + ' ' + t('beds') : inr(Math.abs(v)));
+function insightsView() {
+  const nMonths = +curFlt('insp', '6') || 6;
+  const I = bizInsights(nMonths);
+  window.__insights = I;
+  const tone = { ok: 'ok-t', warn: 'warn-t', bad: 'bad-t', info: 'muted' };
+  const icon = { ok: 'check', warn: 'alert', bad: 'alert', info: 'info' };
+  const fc = I.forecast, maxCost = Math.max(1, ...I.costRows.map(c => c.last)), scn = scenarioCalc(I, {});
+  const watch = I.notes.filter(n => n.tone === 'warn' || n.tone === 'bad').length, good = I.notes.filter(n => n.tone === 'ok').length;
+  const h3 = (title, hint) => `<h3 class="row nw" style="align-items:center;gap:4px;margin-bottom:8px">${esc(t(title))}${hint ? tip(esc(t(hint))) : ''}</h3>`;
+  return `<div class="grid g4 keep2">${kpi('Avg monthly income', inr(I.avgIncome), t('last 3 full months'), 'ok', null, 'rupee')}${kpi('Avg monthly costs', inr(I.avgExpense), t('last 3 full months'), 'warn', null, 'wallet')}${kpi('Avg monthly profit', inr(I.avgProfit), t('{m}% margin', { m: I.margin }), I.avgProfit < 0 ? 'bad' : 'ok', null, 'chart')}${kpi('Occupancy', I.occ.pct + '%', t('{o} of {n} beds', { o: I.occ.occ, n: I.occ.total }), I.occ.pct < 70 ? 'warn' : 'ok', null, 'bed')}</div>
+    <div class="card ins-notes" style="margin-top:14px"><button type="button" class="ins-head" data-act="insnotes" aria-expanded="false"><span class="ins-title">${esc(t('What this means for you'))}</span><span class="ins-sum">${watch ? `<span class="badge warn">${watch} ${esc(t('to look at'))}</span>` : ''}${good ? `<span class="badge ok">${good} ${esc(t('good'))}</span>` : ''}</span><span class="ins-chev">${ico('chev', 'sm')}</span></button>
+      <div class="ins-body" hidden>${I.notes.map(n => `<div class="row nw" style="gap:10px;align-items:flex-start;margin:10px 0"><span class="${tone[n.tone]}" style="flex:none;margin-top:2px">${ico(icon[n.tone] || 'info', 'sm')}</span><span style="line-height:1.45">${esc(n.text)}</span></div>`).join('')}</div></div>
+    <div class="card" style="margin-top:14px"><div class="row sb wrap" style="gap:8px;align-items:center;margin-bottom:8px">${h3('Monthly trend', 'Income and expenses are the bars, profit is the line. The month still running is shown lighter. Pick how far back to look.')}${chips('insp', [['3', 'Quarter'], ['6', 'Half year'], ['12', 'Year']], '6')}</div>${insightChart(I.months)}</div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">${h3('Where the money goes', 'Last full month, compared with the usual level.')}
+        ${I.costRows.length ? `${I.costRows.slice(0, 6).map(c => insCostRow(c, maxCost)).join('')}${I.costRows.length > 6 ? `<div class="fold-more" hidden>${I.costRows.slice(6).map(c => insCostRow(c, maxCost)).join('')}</div><button type="button" class="btn sm ghost block" data-act="foldmore" data-all="${esc(t('View all ({n})', { n: I.costRows.length }))}" data-less="${esc(t('Show less'))}">${esc(t('View all ({n})', { n: I.costRows.length }))}</button>` : ''}` : `<div class="muted">${esc(t('No expenses in the last full month.'))}</div>`}</div>
+      <div class="card">${h3('Next 3 months (forecast)', 'A straight-line projection of your recent months. It is a guide, not a promise.')}
+        <table class="tbl nw-tbl" style="width:100%;font-size:13px"><thead><tr><th style="text-align:left">${esc(t('Month'))}</th><th style="text-align:right">${esc(t('Income'))}</th><th style="text-align:right">${esc(t('Costs'))}</th><th style="text-align:right">${esc(t('Profit'))}</th></tr></thead><tbody>${fc.map(f => `<tr><td>${esc(fmtYM(f.ym))}</td><td style="text-align:right">${inr(f.income)}</td><td style="text-align:right">${inr(f.expense)}</td><td style="text-align:right" class="${f.profit < 0 ? 'bad-t' : 'ok-t'}"><b>${inr(f.profit)}</b></td></tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="row sb nw" style="align-items:center">${h3('What if...? (scenario planner)', t('Move the sliders to see monthly profit change. Costs are treated as {f}% fixed and the rest moves with occupied beds.', { f: Math.round(I.fixedShare * 100) }))}<button type="button" class="btn sm ghost" data-act="scnreset">${ico('repeat', 'sm')} ${esc(t('Reset'))}</button></div>
+      <div class="seg scn-mode" role="tablist">${[['pct', 'Percent'], ['abs', 'Amount']].map(([m, l]) => `<button type="button" role="tab" class="${scnMode() === m ? 'on' : ''}" aria-selected="${scnMode() === m}" data-act="scnmode" data-m="${m}">${esc(t(l))}</button>`).join('')}</div>
+      <div class="grid g3" style="gap:6px 22px">
+        ${scnSpec(I).map(([k, l, a, b, st, u]) => `<div class="scn"><div class="row sb nw"><span class="scn-l">${esc(t(l))}</span><b class="scn-v" id="scn_${k}_v">0</b></div><input class="scn-range" type="range" min="${a}" max="${b}" step="${st}" value="0" data-scn="${k}" data-u="${u}" aria-label="${esc(t(l))}" style="--l:50%;--r:50%"><div class="scn-ends"><span>${scnFmt(a, u)}</span><span>0</span><span>${scnFmt(b, u)}</span></div></div>`).join('')}
+      </div>
+      <div class="grid g3 keep2" style="margin-top:12px">
+        <div class="kpi"><div class="l">${esc(t('Monthly income'))}</div><div class="v" id="scn_inc">${inr(scn.income)}</div><div class="s" id="scn_beds">${scn.beds} ${esc(t('beds'))}</div></div>
+        <div class="kpi"><div class="l">${esc(t('Monthly costs'))}</div><div class="v" id="scn_exp">${inr(scn.expense)}</div><div class="s">&nbsp;</div></div>
+        <div class="kpi"><div class="l">${esc(t('Monthly profit'))}</div><div class="v" id="scn_pro">${inr(scn.profit)}</div><div class="s" id="scn_diff">${esc(t('same as now'))}</div></div>
+      </div>
+      <p class="scn-say" id="scn_say"></p>
+      <div id="scn_charts">${scnCharts(I, scn)}</div></div>
+    ${about('Based on payments, expenses and occupancy already recorded. Nothing here changes your data.')}`;
+}
+function scnApply() {
+  const I = window.__insights; if (!I) return;
+  const v = { occ: 0, rent: 0, cost: 0 };
+  document.querySelectorAll('[data-scn]').forEach(x => {
+    const val = +x.value || 0, a = +x.min, b = +x.max, u = x.dataset.u;
+    v[x.dataset.scn] = u === 'pct' ? val : x.dataset.scn === 'occ' ? (I.occ.occ ? 100 * val / I.occ.occ : 0) : x.dataset.scn === 'rent' ? (I.rentPerBed ? 100 * val / I.rentPerBed : 0) : (I.avgExpense ? 100 * val / I.avgExpense : 0);
+    const pct = 100 * (val - a) / (b - a), z = 100 * (0 - a) / (b - a);
+    x.style.setProperty('--l', Math.min(pct, z) + '%'); x.style.setProperty('--r', Math.max(pct, z) + '%');
+    x.classList.toggle('neg', x.dataset.scn === 'cost' ? val > 0 : val < 0);
+    const lbl = document.getElementById('scn_' + x.dataset.scn + '_v'); if (lbl) lbl.textContent = val === 0 ? '0' : scnFmt(val, u);
+  });
+  const s = scenarioCalc(I, v), set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  const diff = s.profit - I.avgProfit;
+  set('scn_inc', inr(s.income)); set('scn_exp', inr(s.expense)); set('scn_pro', inr(s.profit)); set('scn_beds', s.beds + ' ' + t('beds'));
+  set('scn_diff', diff === 0 ? t('same as now') : (diff > 0 ? '+' : '-') + inr(Math.abs(diff)) + ' ' + t('vs now'));
+  set('scn_say', diff === 0 ? '' : diff > 0 ? t('This change would add about {a} to your yearly profit.', { a: inr(diff * 12) }) : t('This change would cost about {a} a year.', { a: inr(-diff * 12) }));
+  const ch = document.getElementById('scn_charts'); if (ch) ch.innerHTML = scnCharts(I, s);
+}
+document.addEventListener('input', e => { if (e.target && e.target.dataset && e.target.dataset.scn) scnApply(); });
+A.scnmode = el => { window.__scnMode = el.dataset.m; render(); };
+A.scnreset = () => { document.querySelectorAll('[data-scn]').forEach(x => { x.value = 0; }); scnApply(); };
+A.insnotes = el => { const open = el.getAttribute('aria-expanded') !== 'true'; el.setAttribute('aria-expanded', open); const b = el.parentNode.querySelector('.ins-body'); if (b) b.hidden = !open; el.closest('.ins-notes').classList.toggle('open', open); };
+A.foldmore = el => { const box = el.previousElementSibling; if (!box) return; box.hidden = !box.hidden; el.textContent = box.hidden ? el.dataset.all : el.dataset.less; };
 PAGES.reports = {
   title: 'Reports', mod: 'reports',
   render() {
+    if (curTab('rep', 'report') === 'insights') return `${head('Reports', t('Insights, forecast and what-if'))}${seg('rep', [['report', 'Totals'], ['insights', 'Insights']], 'report')}${insightsView()}`;
     const R = repNow(), bl = blockScope();
     const pays = payments().filter(p => repIn(p.date, R) && p.mode !== 'deposit'), exps = Store.all('exp').filter(x => repIn(x.date, R));
     const bills = invoices().filter(i => i.type !== 'deposit' && repIn(i.date, R));
@@ -2689,12 +2915,11 @@ PAGES.reports = {
     const income = sum(pays, p => p.amount), spend = sum(exps, x => x.amount);
     const byType = groupBy(bills, i => i.type), byCat = groupBy(exps, x => x.cat), byMode = groupBy(pays, p => p.mode);
     const rows = (obj, f) => Object.entries(obj).sort((a, b) => f(b[1]) - f(a[1])).map(([k, v]) => `<dt>${esc(t(INV_TYPES[k] || k))}</dt><dd>${inr(f(v))}</dd>`).join('') || `<dt class="muted">${esc(t('Nothing yet'))}</dt><dd></dd>`;
-    return `${head('Reports', `${esc(R.label)}${bl ? ' · ' + esc(blockName(bl)) : ''}`)}
-      <div class="card" style="margin-bottom:14px"><div class="row wrap" style="gap:10px;align-items:center">
-        <b>${esc(t('Period'))}</b>
+    return `${head('Reports', `${esc(R.label)}${bl ? ' · ' + esc(blockName(bl)) : ''}`)}${seg('rep', [['report', 'Totals'], ['insights', 'Insights']], 'report')}
+      <div class="repbar"><b>${esc(t('Period'))}</b>
         <select class="hsel" data-flt="repk" aria-label="${esc(t('Period'))}">${repPresets().map(p => `<option value="${p.k}" ${p.k === R.key ? 'selected' : ''}>${esc(t(p.l))}</option>`).join('')}</select>
-        ${R.key === 'custom' ? `<input type="date" value="${R.from}" data-flt="repf" aria-label="${esc(t('From'))}"><span>${esc(t('to'))}</span><input type="date" value="${R.to}" data-flt="rept" aria-label="${esc(t('To'))}">` : ''}
-      </div><p class="hint" style="margin-top:8px">${esc(t('Every report and download on this page uses this period.'))}</p></div>
+        ${R.key === 'custom' ? `<input type="date" value="${R.from}" data-flt="repf" aria-label="${esc(t('From'))}"><span>${esc(t('to'))}</span><input type="date" value="${R.to}" data-flt="rept" aria-label="${esc(t('To'))}">` : ''}${tip(esc(t('Every report and download on this page uses this period.')))}
+      </div>
       ${bl ? `<div class="note" style="margin-bottom:12px">${ico('alert', 'sm')} ${esc(t('Income and bills below are for this block only. Expenses are kept for the whole hostel and are not split.'))}</div>` : ''}
       <div class="grid g4 keep2">${kpi('Income', inr(income), t('{n} payments', { n: pays.length }), 'ok', null, 'rupee')}${kpi('Expenses', inr(spend), t('{n} entries', { n: exps.length }), 'warn', null, 'wallet')}${kpi('Profit', inr(income - spend), '', income - spend >= 0 ? 'ok' : 'bad', null, 'chart')}${kpi('Collection rate', pct(collectedOfBilled, billed) + '%', t('{a} of {b} billed', { a: inr(collectedOfBilled), b: inr(billed) }), '', null, 'check')}</div>
       <div class="grid g3" style="margin-top:14px">
@@ -2731,7 +2956,7 @@ A.repmonthlyxlsx = async el => {
     title: 'Download Monthly Excel Analytics',
     submit: 'Download 8-Sheet .xlsx',
     fields: [
-      { name: 'ym', label: 'Select Reporting Month', type: 'month', value: ym, required: true }
+      { name: 'ym', label: 'Select Reporting Month', type: 'select', options: monthOpts(ym), value: ym, required: true }
     ],
     onSubmit: async v => {
       toast(t('Generating 8-sheet Excel report…'));
@@ -2755,20 +2980,42 @@ A.repdues = () => download(`dues-${today()}.csv`, csv([['Resident', 'Mobile', 'R
 A.repres = () => { const R = repNow(); download(`residents-${R.from}-to-${R.to}.csv`, csv([['Name', 'Mobile', 'Room', 'Bed', 'Rent', 'Deposit', 'Check-in', 'Left', 'Status', 'Guardian', 'Guardian mobile', 'College'], ...residents().filter(r => r.checkIn <= R.to && (!r.left || r.left >= R.from)).map(r => [r.name, r.phone, roomName(r.roomId), r.bed, r.rent, r.deposit, r.checkIn, r.left || '', r.status, r.guardian, r.guardianPhone, r.college])]), 'text/csv'); };
 
 /* ===================================================================== notices */
+/* Notices: phone-notification style cards. Swipe a card sideways and it flies off and collapses (delete, with a few
+ * seconds to undo). The buttons are still there for anyone who prefers tapping. */
+const relDay = d => { const n = Math.round((parse(today()) - parse(d)) / 864e5); return n <= 0 ? t('Today') : n === 1 ? t('Yesterday') : n < 7 ? t('{n} days ago', { n }) : fmtShort(d); };
 PAGES.notices = {
   title: 'Notices', mod: 'notices',
   render() {
     const list = Store.all('notice').slice().sort((a, b) => (b.pinned - a.pinned) || (b.date > a.date ? 1 : -1));
-    return `${head('Notices', t('Residents see these in their app.'), btn('New notice', 'addnotice', '', 'primary', 'plus'))}
-      ${list.length ? `<div class="stack">${list.map(n => `<div class="card"><div class="row sb"><b style="font-size:17px">${n.pinned ? '📌 ' : ''}${esc(n.title)}</b><span class="muted sm">${fmtDate(n.date)}</span></div><p style="margin:8px 0 12px;white-space:pre-wrap">${esc(n.body)}</p><div class="row">${btn('Send on WhatsApp', 'noticewa', `data-id="${n.id}"`, 'sm wa', 'wa')}${btn('Delete', 'noticedel', `data-id="${n.id}"`, 'sm bad', 'trash')}</div></div>`).join('')}</div>` : `<div class="card">${empty('No notices', 'Post rules, holidays or maintenance updates.')}</div>`}`;
+    const pins = list.filter(n => n.pinned), rest = list.filter(n => !n.pinned), wk = addDays(today(), -6);
+    const card = n => swipeCard({
+      act: 'swnotice', id: n.id, icon: n.pinned ? 'star' : 'megaphone', tone: n.pinned ? 'tn3' : 'tn0', pinned: false, title: n.title, body: n.body, time: relDay(n.date),
+      actions: `${pillb('E-mail all', 'noticewa', `data-id="${n.id}"`)}${pillb(n.pinned ? 'Unpin' : 'Pin', 'noticepin', `data-id="${n.id}"`)}${pillb('Edit', 'noticeedit', `data-id="${n.id}"`)}${pillb('Delete', 'noticedel', `data-id="${n.id}"`, 'bad')}`,
+    });
+    const sect = (title, xs) => xs.length ? `<div class="group-t">${esc(t(title))} · ${xs.length}</div><div class="swp-list fold-list">${xs.map(card).join('')}</div>` : '';
+    return `${head('Notices', '', btn('New notice', 'addnotice', '', 'primary', 'plus'))}
+      ${list.length ? `<div class="pstats">${kpi('Notices', list.length, t('residents see these'))}${kpi('Pinned', pins.length, t('stay on top'), pins.length ? 'warn' : '')}${kpi('This week', list.filter(n => n.date >= wk).length, '')}</div>
+      ${about('Swipe a notice left or right to delete it - you can undo for a few seconds.')}${sect('Pinned', pins)}${sect(pins.length ? 'Recent' : 'All notices', rest)}`
+      : `<div class="card">${empty('No notices yet', 'Post one and every resident sees it in the app.', btn('New notice', 'addnotice', '', 'primary', 'plus'))}</div>`}`;
   },
+};
+A.noticepin = el => { const n = Store.get(el.dataset.id); if (!n) return; Store.patch(n.id, { pinned: !n.pinned }); toast(t(n.pinned ? 'Unpinned' : 'Pinned on top')); render(); };
+A.noticeedit = el => { const n = Store.get(el.dataset.id); if (!n) return; formModal({
+  title: 'Edit notice', submit: 'Save', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100, value: n.title }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500, value: n.body }, { name: 'pinned', label: 'Pin on top', type: 'checkbox', value: !!n.pinned }],
+  onSubmit: v => { const ti = String(v.title || '').trim(), bo = String(v.body || '').trim(); if (ti.length < 3) return t('Give the notice a short title'); if (bo.length < 5) return t('Write the message (a few words at least)'); Store.patch(n.id, { title: ti, body: bo, pinned: !!v.pinned }); toast('Notice updated'); },
+}); };
+A.swnotice = el => {
+  const n = Store.get(el.dataset.id); if (!n) return;
+  const copy = { ...n };
+  Store.remove(n.id); render();
+  toast(t('Notice deleted'), 'ok', { label: 'Undo', run: () => { Store.put('notice', copy); render(); } });
 };
 A.addnotice = () => formModal({
   title: 'New notice', submit: 'Post', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100 }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500 }, { name: 'pinned', label: 'Pin on top', type: 'checkbox' }],
-  onSubmit: v => { Store.put('notice', { ...v, date: today() }); activeRes().forEach(r => notify({ to: 'res', resId: r.id, title: t('New notice'), body: v.title, link: 'r-help' })); toast('Notice posted'); },
+  onSubmit: v => { v.title = String(v.title || '').trim(); v.body = String(v.body || '').trim(); if (v.title.length < 3) return t('Give the notice a short title'); if (v.body.length < 5) return t('Write the message (a few words at least)'); Store.put('notice', { ...v, date: today() }); activeRes().forEach(r => notify({ to: 'res', resId: r.id, title: t('New notice'), body: v.title, link: 'r-help' })); toast('Notice posted'); },
 });
 A.noticedel = el => confirmBox(t('Delete this notice?'), () => Store.remove(el.dataset.id), 'Delete', 'bad');
-A.noticewa = el => { const n = Store.get(el.dataset.id); waSheet(activeRes().map(r => ({ phone: r.phone, text: `${t('Hello')} ${r.name.split(' ')[0]},\n\n${t('A notice from')} *${hostelName()}*\n\n*${n.title}*\n\n${n.body}\n\n${t('Regards')},\n${hostelName()}`, label: r.name, r, resId: r.id })), 'Send notice'); };
+A.noticewa = async el => { const n = Store.get(el.dataset.id); if (!n) return; const r = await sendNoticeMail(n); toast(r.status === 'already' ? t('This notice was already e-mailed to everyone.') : r.demo ? t('Demo hostel: nothing is really e-mailed.') : t('{n} residents e-mailed', { n: r.sent }), r.failed ? 'warn' : 'ok'); render(); };
 
 /* ===================================================================== automation */
 PAGES.automation = {
@@ -2777,9 +3024,9 @@ PAGES.automation = {
     const a = S().auto, logs = Store.all('log').slice().sort(by('ts', -1)).slice(0, 40), od = dueList(true);
     return `${head('Automation', t('These run by themselves once a day when anyone opens the app. Safe to run again — nothing is ever doubled.'), btn('Run now', 'autorun', '', 'primary', 'bot'))}
       <div class="grid g-main">
-        <div>${group('Rules', RULES.map(r => `<div class="li"><span class="ic ${a[r.k] ? 'ok' : 'mute'}">${ico('bot')}</span><span class="body"><span class="t">${esc(t(r.l))}</span><span class="d">${esc(t(r.d))}</span></span><label class="sw"><input type="checkbox" data-rule="${r.k}" ${a[r.k] ? 'checked' : ''} aria-label="${esc(t(r.l))}"><span></span></label></div>`).join(''))}</div>
+        ${isSuper() ? `<div>${group('Rules', visibleRules().map(r => `<div class="li"><span class="ic ${a[r.k] ? 'ok' : 'mute'}">${ico('bot')}</span><span class="body"><span class="t">${esc(t(r.l))}</span><span class="d">${esc(t(r.d))}</span></span><label class="sw"><input type="checkbox" data-rule="${r.k}" ${a[r.k] ? 'checked' : ''} aria-label="${esc(t(r.l))}"><span></span></label></div>`).join(''))}</div>` : ''}
         <div class="stack">
-          ${group('One-tap jobs', [li({ icon: 'wa', ic: 'ok', t: t('Monthly Billing & WhatsApp Reminders'), d: t('Generate monthly invoices & prepare personalized WhatsApp messages'), act: 'monthlybatch' }), li({ icon: 'wa', ic: 'ok', t: t('Send due reminders'), d: t('{n} residents overdue', { n: od.length }), act: 'remindall' }), li({ icon: 'wa', ic: 'info', t: t('Send all bills with pay link'), d: t('{n} residents with dues', { n: dueList().length }), act: 'billall' }), li({ icon: 'bolt', ic: 'warn', t: t('Enter meter readings'), act: 'readings' })].join(''))}
+          ${group('One-tap jobs', [li({ icon: 'mail', ic: 'ok', t: t('Monthly billing & e-mail'), d: t('Create this month\'s bills and e-mail everyone in one tap'), act: 'monthlybatch' }), li({ icon: 'wa', ic: 'ok', t: t('Send due reminders'), d: t('{n} residents overdue', { n: od.length }), act: 'remindall' }), li({ icon: 'wa', ic: 'info', t: t('Send all bills with pay link'), d: t('{n} residents with dues', { n: dueList().length }), act: 'billall' }), li({ icon: 'bolt', ic: 'warn', t: t('Enter meter readings'), act: 'readings' })].join(''))}
           ${group('Activity log', logs.map(l => li({ icon: 'check', ic: 'mute', t: l.msg, d: `${t((RULES.find(r => r.k === l.rule) || {}).l || l.rule)} · ${ago(l.ts)}` })).join(''))}
         </div>
       </div>`;
@@ -2788,106 +3035,85 @@ PAGES.automation = {
 A.autorun = () => { const n = runAutomation(true); toast(n ? t('Automation: {n} tasks done', { n }) : t('Everything is already up to date')); render(); };
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.rule; if (!k) return;
+  if (!isSuper()) { e.target.checked = !e.target.checked; return toast('Only the platform admin can change automation rules', 'bad'); }
   Store.saveSettings({ auto: { [k]: e.target.checked } }).catch(err => toast(err.message, 'bad'));
   toast(e.target.checked ? 'Rule on' : 'Rule off'); setTimeout(render, 50);
 });
 
 /* ===================================================================== monthly batch & reminder center */
-A.monthlybatch = () => {
-  const ym = ymOf(today());
-  const h = Store.hostel();
-  const settings = S();
-  // Get preview of monthly batch
-  const preview = runMonthlyBillingBatch({ ym, options: { previewOnly: true } });
-  const waMode = (settings.wa && settings.wa.mode) || 'click_to_chat';
-  const isOfficial = waMode === 'official_api';
-  const camps = Store.all('wa_campaign').filter(c => c.ym === ym);
-  const queuedCount = camps.filter(c => c.status === 'queued').length;
-  const sentCount = camps.filter(c => c.status === 'sent').length;
-  const delivCount = camps.filter(c => c.status === 'delivered').length;
-  const failCount = camps.filter(c => c.status === 'failed').length;
-  const readyCount = activeRes().filter(r => isBillingComplete(r.id, ym).complete).length;
-
-  const modalHtml = `
-    <div style="font-size:13px;color:var(--text-mute,#64748b);margin-bottom:12px">
-      ${esc(t('Generate this month\'s rent, electricity, mess, and recurring charges for all active residents. Invoices are generated safely exactly once. Review and dispatch personalized WhatsApp payment reminders.'))}
-    </div>
-    <div class="grid g4 keep2" style="margin-bottom:12px">
-      ${kpi('Invoices Ready', readyCount, t('of {n} active', { n: activeRes().length }))}
-      ${kpi('WhatsApp Queued', queuedCount, '', queuedCount ? 'info' : '')}
-      ${kpi('Sent / Delivered', sentCount + delivCount, delivCount ? `${delivCount} delivered` : '', 'ok')}
-      ${kpi('Delivery Failed', failCount, '', failCount ? 'bad' : '')}
-    </div>
-    <div class="row" style="gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-      ${btn('Generate Bills Now', 'runbillingbatch', `data-ym="${ym}"`, 'primary', 'bolt')}
-      ${btn('Send Auto WhatsApp (Official API)', 'sendautowa', `data-ym="${ym}"`, 'wa', 'wa')}
-      ${btn('Click-to-Chat Assistant (Free)', 'seq_sender_start', '', 'ghost', 'wa')}
-      ${btn('Preview All Messages', 'preview_all_wa', '', 'ghost', 'eye')}
-      ${isOfficial ? `<span class="badge ok">${ico('wa', 'sm')} Meta Cloud API</span>` : `<span class="badge info">${ico('wa', 'sm')} Free wa.me Mode</span>`}
-    </div>
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
-      <div class="group-t" style="margin:0">${esc(t('Eligible Residents & Prepared Reminders'))} (${preview.residents.length})</div>
-      <div style="font-size:11px">
-        <label style="cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-          <input type="checkbox" id="batch-select-all" checked data-act="batchselectall">
-          ${esc(t('Select All'))}
-        </label>
-      </div>
-    </div>
-    <div style="max-height:380px;overflow-x:auto;overflow-y:auto;border:1px solid var(--border,#e2e8f0);border-radius:8px">
-      <table class="tbl" style="width:100%;font-size:12px;white-space:nowrap">
-        <thead>
-          <tr>
-            <th style="width:30px"></th>
-            <th>${esc(t('Resident'))}</th>
-            <th>${esc(t('Phone'))}</th>
-            <th>${esc(t('Period'))}</th>
-            <th>${esc(t('Rent'))}</th>
-            <th>${esc(t('Elec'))}</th>
-            <th>${esc(t('Mess'))}</th>
-            <th>${esc(t('Other'))}</th>
-            <th>${esc(t('Prev Dues'))}</th>
-            <th>${esc(t('Total Due'))}</th>
-            <th>${esc(t('Status'))}</th>
-            <th>${esc(t('Action'))}</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${preview.residents.map(r => {
-    const hasPhone = !!phone10(r.phone);
-    const logged = Store.all('log').some(l => l.rule === 'remind' && l.resId === r.resId && l.date === today());
-    const statusBadge = logged
-      ? `<span class="badge ok">${esc(t('Opened'))}</span>`
-      : !hasPhone
-        ? `<span class="badge bad">${esc(t('No Phone'))}</span>`
-        : r.totalDue > 0
-          ? `<span class="badge warn">${esc(t('Pending'))}</span>`
-          : `<span class="badge mute">${esc(t('Cleared'))}</span>`;
-
-    return `<tr>
-              <td><input type="checkbox" class="batch-chk" data-id="${esc(r.resId)}" ${hasPhone && r.totalDue > 0 ? 'checked' : ''}></td>
-              <td><b>${esc(r.name)}</b><br><small class="mute">${esc(r.roomNo || '—')}${r.bed ? '-' + esc(r.bed) : ''}</small></td>
-              <td>${esc(phone10(r.phone) || '—')}</td>
-              <td><small class="mute">${esc(fmtYM(ym))}</small></td>
-              <td>${r.rentAmount ? inr(r.rentAmount) : '—'}</td>
-              <td>${r.elecAmount ? inr(r.elecAmount) : '—'}</td>
-              <td>${r.messAmount ? inr(r.messAmount) : '—'}</td>
-              <td>${r.chargesAmount ? inr(r.chargesAmount) : '—'}</td>
-              <td>${r.previousDues ? inr(r.previousDues) : '—'}</td>
-              <td><b>${inr(r.totalDue)}</b></td>
-              <td>${statusBadge}</td>
-              <td>
-                ${hasPhone && r.totalDue > 0 ? `<a class="btn sm ghost" href="${esc(r.waLink)}" target="_blank" rel="noopener">${ico('wa', 'sm')} ${esc(t('Chat'))}</a>` : '<span class="mute">—</span>'}
-              </td>
-            </tr>`;
-  }).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  sheet(t('Monthly Billing & WhatsApp Reminder Center') + ` (${fmtYM(ym)})`, modalHtml);
+/* ---- Monthly billing: ONE panel. Where every bill stands, who got the e-mail and when, what is missing, and the one button to send what is ready. */
+const MB_ORDER = { ready: 0, failed: 1, wait: 2, none: 3, bad: 4, sent: 5 };
+function mbModel() {
+  const plan = bulkMailPlan('bill'), day = plan.day, at = day.at || {}, fail = day.fail || {}, rows = [];
+  const tm = id => (at[id] ? fmtTime(new Date(at[id]).toTimeString().slice(0, 5)) : '');
+  for (const x of plan.done) { const isMail = (day.mailed || []).includes(x.r.id); rows.push({ x, st: isMail ? 'sent' : (emailState(x.r) === 'bad' ? 'bad' : 'none'), time: tm(x.r.id), appNote: !isMail }); }
+  for (const x of plan.todo) rows.push({ x, st: fail[x.r.id] ? 'failed' : 'ready', why: fail[x.r.id] || '' });
+  for (const x of plan.noEmail) rows.push({ x, st: emailState(x.r) === 'bad' ? 'bad' : 'none' });
+  for (const x of plan.blocked) rows.push({ x, st: 'wait', why: x.why, reason: x.reason });
+  rows.sort((a, b) => MB_ORDER[a.st] - MB_ORDER[b.st] || b.x.due - a.x.due);
+  const c = { all: rows.length, sent: rows.filter(r => r.st === 'sent').length, ready: rows.filter(r => r.st === 'ready' || r.st === 'failed').length, wait: rows.filter(r => r.st === 'wait').length, fix: rows.filter(r => r.st === 'none' || r.st === 'bad' || r.st === 'failed').length };
+  c.pending = rows.filter(r => r.st === 'ready' || r.st === 'failed' || r.st === 'wait').length;
+  return { plan, rows, c, reading: rows.filter(r => r.st === 'wait' && r.why === 'reading'), create: billsToCreate() };
+}
+const MB_PILL = { sent: ['ok', 'Sent'], ready: ['info', 'Ready'], failed: ['bad', 'Failed'], wait: ['warn', 'Waiting'], none: ['mute', 'No e-mail'], bad: ['bad', 'Invalid e-mail'] };
+function mbRow(r) {
+  const x = r.x, room = roomName(x.r.roomId), email = String(x.r.email || '').trim();
+  let sub = '', act = '';
+  if (r.st === 'sent') sub = `${t('Sent')} ${r.time} · ${email}`;
+  else if (r.st === 'ready') sub = email;
+  else if (r.st === 'failed') sub = t('Failed: {w}', { w: r.why });
+  else if (r.st === 'none') { sub = r.appNote ? t('No e-mail · app notice sent') : t('No e-mail saved'); act = `<button type="button" class="mb-act" data-act="mbfix" data-id="${x.r.id}">${esc(t('Add e-mail'))}</button>`; }
+  else if (r.st === 'bad') { sub = t('Invalid: {e}', { e: email }); act = `<button type="button" class="mb-act" data-act="mbfix" data-id="${x.r.id}">${esc(t('Fix'))}</button>`; }
+  else if (r.why === 'reading') { sub = t('Meter reading missing'); act = `<button type="button" class="mb-act" data-act="mbread" data-room="${x.r.roomId}">${esc(t('Add reading'))}</button>`; }
+  else if (r.why === 'bill') sub = t('Bill not created yet');
+  else if (r.why === 'rent') { sub = t('Rent amount not set'); act = `<button type="button" class="mb-act" data-act="mbfix" data-id="${x.r.id}">${esc(t('Open'))}</button>`; }
+  else sub = r.reason || t('Incomplete');
+  const [tone, lab] = MB_PILL[r.st];
+  return `<div class="mb-r"><span class="mb-av">${esc(initials(x.r.name))}</span><div class="mb-b"><b>${esc(x.r.name)}<small> · ${esc(t('Room'))} ${esc(room)}</small></b><span class="mb-s">${esc(sub)}</span></div><div class="mb-e"><span class="mb-p ${tone}">${esc(t(lab))}</span>${x.due > 0 ? `<b>${inr(x.due)}</b>` : ''}${act}</div></div>`;
+}
+function paintMb() {
+  const root = $('#mbRoot'), foot = $('#mbFoot'); if (!root) return;
+  const m = mbModel(), f = ui.mbf || 'all', c = m.c;
+  const shown = m.rows.filter(r => f === 'all' || (f === 'sent' && r.st === 'sent') || (f === 'pending' && (r.st === 'ready' || r.st === 'failed' || r.st === 'wait')) || (f === 'fix' && (r.st === 'none' || r.st === 'bad' || r.st === 'failed')));
+  const chip = (k, lab, n) => `<button type="button" class="mb-chip ${f === k ? 'on' : ''}" data-act="mbf" data-f="${k}">${esc(t(lab))}<i>${n}</i></button>`;
+  const pct = c.all ? Math.round(c.sent / c.all * 100) : 0, cr = m.create;
+  const confirm = ui.mbConfirm && cr.count ? `<div class="mb-conf"><b>${esc(cr.count === 1 ? t('Create 1 bill?') : t('Create {n} bills?', { n: cr.count }))}</b><span>${esc([cr.rent ? t('Rent {n}', { n: cr.rent }) : '', cr.mess ? t('Mess {n}', { n: cr.mess }) : '', cr.charges ? t('Extra charges {n}', { n: cr.charges }) : ''].filter(Boolean).join(' · '))} · ${esc(cr.people.length === 1 ? t('1 resident') : t('{n} residents', { n: cr.people.length }))}</span>
+    <em>${esc(cr.people.slice(0, 6).map(p => p.name.split(' ')[0] + ' ' + p.roomNo).join(', '))}${cr.people.length > 6 ? ' +' + (cr.people.length - 6) : ''}</em>
+    <div class="mb-ca"><button type="button" class="btn primary" data-act="mbcreatego">${esc(t('Create'))}</button><button type="button" class="btn" data-act="mbcancel">${esc(t('Cancel'))}</button></div></div>` : '';
+  root.innerHTML = `<div class="mb-sum"><div class="mb-t ok"><b>${c.sent}</b><span>${esc(t('Sent'))}</span></div><div class="mb-t info"><b>${c.ready}</b><span>${esc(t('Ready'))}</span></div><div class="mb-t warn"><b>${c.wait}</b><span>${esc(t('Waiting'))}</span></div></div>
+    <div class="mb-bar"><i style="width:${pct}%"></i></div>${confirm}
+    <div class="mb-chips">${chip('all', 'All', c.all)}${chip('sent', 'Sent', c.sent)}${chip('pending', 'Pending', c.pending)}${chip('fix', 'Needs fixing', c.fix)}</div>
+    <div class="mb-list">${shown.map(mbRow).join('') || `<div class="mb-empty">${esc(t('Nothing here'))}</div>`}</div>`;
+  const sendN = c.ready;
+  foot.innerHTML = `${sendN ? `<button class="btn primary block bm-go" data-act="mbsend">${ico('mail', 'sm')} ${esc(t('Send {n} e-mails', { n: sendN }))}</button>` : ''}
+    <div class="mb-fa">${cr.count && !ui.mbConfirm ? `<button class="btn block" data-act="mbcreate">${esc(cr.count === 1 ? t('Create 1 missing bill') : t('Create {n} missing bills', { n: cr.count }))}</button>` : ''}${m.reading.length ? `<button class="btn block" data-act="mbelec">${ico('bolt', 'sm')} ${esc(t('Update readings ({n})', { n: m.reading.length }))}</button>` : ''}</div>
+    ${WaGw.on() ? `<button class="btn block ghost" data-act="sendautowa" data-ym="${ymOf(today())}">${ico('wa', 'sm')} ${esc(t('Send on WhatsApp (automatic)'))}</button>` : ''}${!sendN && !cr.count && !m.reading.length ? `<button class="btn block" data-act="close">${esc(t('Close'))}</button>` : ''}`;
+}
+A.monthlybatch = () => { ui.mbf = 'all'; ui.mbConfirm = false; sheet(`${t('Monthly billing')} · ${fmtYM(ymOf(today()))}`, '<div id="mbRoot"></div>', { foot: '<div id="mbFoot" class="mb-foot"></div>' }); paintMb(); };
+A.mbf = el => { ui.mbf = el.dataset.f; paintMb(); };
+A.mbcreate = () => { ui.mbConfirm = true; paintMb(); };
+A.mbcancel = () => { ui.mbConfirm = false; paintMb(); };
+// nothing is created until the owner has seen what will be created
+A.mbcreatego = () => {
+  ui.mbConfirm = false;
+  try { const r = runMonthlyBillingBatch({ ym: ymOf(today()) }); toast(r.invoicesCreated ? t('{n} bills created', { n: r.invoicesCreated }) : t('No new bills were needed')); } catch (e) { toast(e.message, 'bad'); }
+  paintMb(); render();
 };
+A.mbsend = async el => {
+  el.disabled = true; el.innerHTML = `<span class="spin sm"></span> ${esc(t('Sending...'))}`;
+  let r; try { r = await sendBulkMail('bill'); } catch (e) { r = { sent: 0, failed: 1, reason: e.message }; }
+  if (r.sent) toast(r.demo ? t('{n} sent (demo: nothing is really e-mailed)', { n: r.sent }) : t('{n} e-mails sent', { n: r.sent }), 'ok');
+  if (r.failed) toast(r.reason === 'not_configured' ? t('E-mail is not set up on the server yet') : t('{n} failed - see Needs fixing', { n: r.failed }), 'bad');
+  paintMb(); render();
+};
+// meter readings that are missing: straight to the room, or to the Electricity page with the list
+A.mbread = el => { closeModal(); A.readroom({ dataset: { id: el.dataset.room } }); };
+A.mbelec = () => {
+  const rows = mbModel().reading, names = rows.slice(0, 4).map(r => `${t('Room')} ${roomName(r.x.r.roomId)}`);
+  closeModal(); go('electricity');
+  toast(t('Readings needed: {r}', { r: [...new Set(names)].join(', ') + (rows.length > 4 ? ' +' + (rows.length - 4) : '') }), 'warn');
+};
+A.mbfix = el => { closeModal(); go(`residents/${el.dataset.id}`); };
 
 A.sendautowa = el => {
   const ym = (el && el.dataset && el.dataset.ym) || ymOf(today());
@@ -2949,10 +3175,10 @@ ${esc(r.messageText)}
 };
 
 A.runbillingbatch = el => {
-  const ym = el.dataset.ym || ymOf(today());
+  const ym = (el && el.dataset && el.dataset.ym) || ymOf(today());
   try {
     const res = runMonthlyBillingBatch({ ym });
-    toast(t('Billing batch complete: {c} invoices created, {s} skipped', { c: res.invoicesCreated, s: res.invoicesSkipped }));
+    toast(res.invoicesCreated ? t('{n} bills created', { n: res.invoicesCreated }) : t('No new bills were needed'));
     closeModal(true);
     render();
   } catch (e) {
@@ -2987,7 +3213,7 @@ A.seq_sender_start = () => {
 
 A.seq_sender_step = () => {
   if (_seqIdx >= _seqQueue.length) {
-    sheet(t('Sending Complete'), `<div style="text-align:center;padding:20px 0"><div style="font-size:32px;margin-bottom:8px">🎉</div><b>${esc(t('All reminders processed!'))}</b><p class="mute">${_seqQueue.length} ${esc(t('residents reached.'))}</p></div>`, { foot: btn('Done', 'closemodal', '', 'primary') });
+    sheet(t('Sending Complete'), `<div style="text-align:center;padding:20px 0"><b>${esc(t('All reminders processed!'))}</b><p class="mute">${_seqQueue.length} ${esc(t('residents reached.'))}</p></div>`, { foot: btn('Done', 'closemodal', '', 'primary') });
     return;
   }
   const item = _seqQueue[_seqIdx];
@@ -3001,7 +3227,7 @@ A.seq_sender_step = () => {
     </div>
     <div class="card" style="margin-bottom:12px">
       <div style="font-weight:700;font-size:15px">${esc(item.r.name)}</div>
-      <div class="mute" style="font-size:12px;margin-bottom:6px">${esc(room ? room.no : '')}-${esc(item.r.bed || '')} · 📱 +91 ${esc(phone10(item.r.phone))}</div>
+      <div class="mute" style="font-size:12px;margin-bottom:6px">${esc(room ? room.no : '')}-${esc(item.r.bed || '')} · +91 ${esc(phone10(item.r.phone))}</div>
       <div style="font-size:13px;font-weight:600;color:var(--bad,#dc2626)">${esc(t('Total Dues'))}: ${inr(item.due)}</div>
     </div>
     <div style="font-size:12px;font-weight:600;margin-bottom:4px">${esc(t('Personalized Message Preview'))}:</div>
@@ -3059,11 +3285,7 @@ A.settlementview = el => {
         <dt>${esc(t('Room & Bed'))}</dt><dd>${esc(s.roomNo)}-${esc(s.bed)}</dd>
         <dt>${esc(t('Check-in Date'))}</dt><dd>${esc(fmtDate(s.checkIn))}</dd>
         <dt>${esc(t('Checkout Date'))}</dt><dd>${esc(fmtDate(s.checkoutDate))}</dd>
-        <dt>${esc(t('Security Deposit Paid'))}</dt><dd>${inr(s.depositPaid)}</dd>
-        ${s.credit > 0 ? `<dt>${esc(t('Eligible Credit Balance'))}</dt><dd>${inr(s.credit)}</dd>` : ''}
-        <dt>${esc(t('Unpaid Rent & Dues Settle'))}</dt><dd>${inr(s.settleFromDeposit)}</dd>
-        ${s.shortfallFee > 0 ? `<dt class="warn-t">${esc(t('Notice Shortfall (' + s.shortfallDays + ' days)'))}</dt><dd class="warn-t">${inr(s.shortfallFee)}</dd>` : ''}
-        <dt>${esc(t('Damage / Other Deductions'))}</dt><dd>${inr(s.deductions)}</dd>
+        ${settleRows(s, s.unpaidDues)}
         <dt style="border-top:1px solid var(--border,#e2e8f0);padding-top:6px"><b>${esc(t('Net Refund Amount'))}</b></dt>
         <dd style="border-top:1px solid var(--border,#e2e8f0);padding-top:6px"><b class="ok-t" style="font-size:16px">${inr(s.refund)}</b></dd>
         ${s.balancePayable > 0 ? `<dt class="bad-t"><b>${esc(t('Balance Payable by Resident'))}</b></dt><dd class="bad-t"><b>${inr(s.balancePayable)}</b></dd>` : ''}
@@ -3090,6 +3312,14 @@ A.reconcilepay = async () => {
 };
 
 /* ===================================================================== PG inquiries */
+// status -> [label, pill colour, progress step (-1 = off the funnel), short filter label]
+const INQ_ST = {
+  new: ['New', 'warn', 0], contacted: ['Contacted', 'info', 1], visit_scheduled: ['Visit scheduled', 'info', 2, 'Visit'],
+  interested: ['Interested', 'ok', 3], converted: ['Converted', 'ok', 4], not_interested: ['Not interested', 'mute', -1], closed: ['Closed', 'mute', -1]
+};
+const INQ_FILTER = ['new', 'contacted', 'visit_scheduled', 'interested', 'converted', 'closed'];
+const INQ_DONE = ['converted', 'not_interested', 'closed'];
+const INQ_NEXT = { new: ['contacted', 'Mark contacted'], contacted: ['visit_scheduled', 'Visit booked'], visit_scheduled: ['interested', 'Mark interested'] };
 PAGES.inquiries = {
   title: 'PG Inquiries', mod: 'inquiries',
   render() {
@@ -3124,75 +3354,54 @@ PAGES.inquiries = {
       return needle('inq', d.name, d.phone, d.roomType, d.email);
     });
 
-    const statusBadge = st => {
-      const map = {
-        new: ['New', 'warn'],
-        contacted: ['Contacted', 'info'],
-        visit_scheduled: ['Visit Scheduled', 'info'],
-        interested: ['Interested', 'ok'],
-        converted: ['Converted', 'ok'],
-        not_interested: ['Not Interested', 'mute'],
-        closed: ['Closed', 'mute']
-      };
-      const [lbl, cls] = map[st] || ['New', 'warn'];
-      return badge(lbl, cls);
-    };
-
     const inqItem = x => {
       const d = x.data || {};
-      const rawPhone = String(d.phone || '').replace(/\D/g, '');
-      const phone10 = rawPhone.slice(-10);
-      const isDup = (phoneCounts[phone10] || 0) > 1;
-      const isLiving = livingPhones.has(phone10);
+      const st = d.status || 'new', [stLbl, stCls, stStep] = INQ_ST[st] || INQ_ST.new;
+      const phone10 = String(d.phone || '').replace(/\D/g, '').slice(-10);
+      const isDup = (phoneCounts[phone10] || 0) > 1, isLiving = livingPhones.has(phone10);
       const assigned = d.staffId ? staffById(d.staffId) : null;
-
+      const moveIn = d.moveInDate || d.moveIn;
+      const fu = d.followUpDate, overdue = fu && fu < today() && !INQ_DONE.includes(st), fuToday = fu === today();
       const hName = (Store.hostel() || {}).name || 'our hostel';
-      const msgLines = [
-        `Hello ${d.name || ''}, thank you for your interest in ${hName}!`,
-        d.roomType ? `Interested in: ${d.roomType}` : '',
-        d.moveIn ? `Expected move-in: ${fmtDate(d.moveIn)}` : '',
-        d.occupants ? `Occupants: ${d.occupants}` : '',
-        d.budget ? `Budget: Rs. ${d.budget}` : '',
-        `When would you like to schedule a visit?`
-      ].filter(Boolean).join('\n');
-      const waUrl = `https://wa.me/91${phone10}?text=${encodeURIComponent(msgLines)}`;
-
-      return `<div class="card" style="margin-bottom:10px">
-        <div class="row sb wrap" style="gap:6px">
-          <div>
-            <b>${esc(d.name || 'Anonymous')}</b>
-            ${isDup ? `<span class="badge warn" style="margin-left:6px">${ico('alert', 'xs')} Duplicate (${phoneCounts[phone10]}x)</span>` : ''}
-            ${isLiving ? `<span class="badge info" style="margin-left:6px">${ico('user', 'xs')} Existing Resident</span>` : ''}
-          </div>
-          <div>${statusBadge(d.status || 'new')}</div>
-        </div>
-        <div class="muted sm" style="margin:4px 0">
-          ${esc(d.phone || '—')}${d.email ? ' · ' + esc(d.email) : ''} · ${esc(d.roomType || 'Any Room')} · ${d.budget ? inr(d.budget) : 'Flexible Budget'} · Received: ${fmtShort(x.day || d.createdAt || today())}
-        </div>
-        ${d.moveIn || d.occupants ? `<div class="xs muted" style="margin:2px 0">${d.moveIn ? `Move-in: <b>${fmtDate(d.moveIn)}</b> · ` : ''}${d.occupants ? `Occupants: <b>${d.occupants}</b> · ` : ''}Consent: ${d.consent ? 'Yes' : 'No'}</div>` : ''}
-        ${d.message ? `<p class="sm" style="margin:6px 0;background:var(--card-subtle,#f8fafc);padding:6px;border-radius:6px">${esc(d.message)}</p>` : ''}
-        <div class="row sb wrap sm muted" style="margin:4px 0">
-          <div>${assigned ? `${ico('user', 'xs')} Assigned: <b>${esc(assigned.name)}</b>` : '<span class="muted">Unassigned</span>'}</div>
-          ${d.followUpDate ? `<div>${ico('clock', 'xs')} Follow-up: <b>${fmtDate(d.followUpDate)}</b></div>` : ''}
-        </div>
-        <div class="row wrap" style="gap:6px;margin-top:8px">
-          <a class="btn sm" href="${esc(waUrl)}" target="_blank" rel="noopener">${ico('chat', 'sm')} WhatsApp Follow-up</a>
-          <button class="btn sm" data-act="inqstatus" data-id="${x.id}">${ico('edit', 'sm')} Status & Staff</button>
-          ${d.status !== 'converted' ? `<button class="btn sm primary" data-act="inqconvert" data-id="${x.id}">${ico('userplus', 'sm')} Convert to Resident</button>` : `<span class="sm ok-t">${ico('check', 'sm')} Converted</span>`}
+      const msg = [`Hello ${d.name || ''}, thank you for your interest in ${hName}!`, d.roomType && d.roomType !== 'Any' ? `Interested in: ${d.roomType}` : '', moveIn ? `Expected move-in: ${fmtDate(moveIn)}` : '', d.occupants ? `Occupants: ${d.occupants}` : '', d.budget ? `Budget: Rs. ${d.budget}` : '', 'When would you like to schedule a visit?'].filter(Boolean).join('\n');
+      const next = INQ_NEXT[st];
+      const tag = (ic, txt) => `<span class="inq-tag">${ico(ic, 'xs')}${txt}</span>`;
+      const lastNote = (d.notes || []).slice(-1)[0];
+      return `<div class="card inq ${overdue ? 'late' : ''}">
+        <div class="inq-h">${avatar(d.name || '?')}
+          <div class="inq-who"><b>${esc(d.name || 'Anonymous')}</b><span class="muted xs">${esc(d.phone || '—')} · ${esc(ago(d.createdAt || (x.day + 'T09:00:00')))}</span></div>
+          <span class="inq-st ${stCls}">${esc(t(stLbl))}</span></div>
+        <div class="inq-steps" aria-hidden="true">${[0, 1, 2, 3, 4].map(i => `<i class="${stStep < 0 ? '' : i <= stStep ? 'on' : ''}"></i>`).join('')}</div>
+        <div class="inq-tags">${tag('bed', esc(d.roomType && d.roomType !== 'Any' ? d.roomType : t('Any room')))}${tag('wallet', d.budget ? inr(d.budget) : esc(t('Flexible budget')))}${moveIn ? tag('cal', esc(t('Move-in')) + ' ' + fmtShort(moveIn)) : ''}${d.occupants > 1 ? tag('users', d.occupants) : ''}${isDup ? `<span class="inq-tag warn">${ico('alert', 'xs')}${esc(t('Duplicate'))} ${phoneCounts[phone10]}×</span>` : ''}${isLiving ? `<span class="inq-tag info">${ico('user', 'xs')}${esc(t('Existing resident'))}</span>` : ''}</div>
+        ${d.message ? `<p class="inq-msg">${esc(d.message)}</p>` : ''}
+        ${lastNote ? `<p class="inq-note">${ico('edit', 'xs')} ${esc(lastNote.text)}</p>` : ''}
+        <div class="inq-meta"><span>${assigned ? `${ico('user', 'xs')} ${esc(assigned.name)}` : `<span class="muted">${esc(t('Unassigned'))}</span>`}</span>${fu ? `<span class="${overdue ? 'bad-t' : fuToday ? 'warn-t' : ''}">${ico('clock', 'xs')} ${esc(overdue ? t('Overdue') : t('Follow-up'))} ${fmtShort(fu)}</span>` : ''}</div>
+        <div class="inq-a">
+          <a class="btn sm" href="tel:+91${phone10}">${ico('phone', 'sm')}${esc(t('Call'))}</a>
+          <a class="btn sm" href="https://wa.me/91${phone10}?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">${ico('chat', 'sm')}WhatsApp</a>
+          <button class="btn sm" data-act="inqstatus" data-id="${x.id}">${ico('edit', 'sm')}${esc(t('Update'))}</button>
+          ${st === 'converted' ? `<span class="inq-done">${ico('check', 'sm')} ${esc(t('Converted'))}</span>`
+            : INQ_DONE.includes(st) ? '' : `${next ? `<button class="btn sm" data-act="inqnext" data-id="${x.id}">${esc(t(next[1]))}</button>` : ''}<button class="btn sm primary" data-act="inqconvert" data-id="${x.id}">${ico('userplus', 'sm')}${esc(t('Check-in'))}</button>`}
         </div>
       </div>`;
     };
 
-    return `${head('PG Inquiries', t('{n} inquiries received', { n: list.length }))}
-      <div class="tool">${searchBox('inq', 'Search name, phone, room')}<span class="sp"></span>${chips('inq', [
-      ['all', 'All Statuses'], ['new', 'New'], ['contacted', 'Contacted'], ['visit_scheduled', 'Visit'],
-      ['interested', 'Interested'], ['converted', 'Converted'], ['closed', 'Closed']
-    ], 'all')}</div>
-      <div class="tool" style="margin-top:-6px"><span class="muted sm">Date:</span>${chips('inqd', [
-      ['all', 'All Time'], ['today', 'Today'], ['week', 'Past 7 Days'], ['month', 'This Month']
-    ], 'all')}</div>
+    const cnt = k => list.filter(x => ((x.data || {}).status || 'new') === k).length;
+    const due = list.filter(x => { const d = x.data || {}; return d.followUpDate && d.followUpDate <= today() && !INQ_DONE.includes(d.status || 'new'); }).length;
+    const won = cnt('converted');
+    const stats = `<div class="inq-stats">${kpi('New', cnt('new'), t('to call'), cnt('new') ? 'warn' : '', '', 'bell')}${kpi('Follow-ups due', due, t('today or late'), due ? 'bad' : '', '', 'clock')}${kpi('Visits', cnt('visit_scheduled'), t('scheduled'), '', '', 'cal')}${kpi('Converted', won, list.length ? pct(won, list.length) + '% ' + t('of all') : '', 'ok', '', 'check')}</div>`;
+
+    return `${head('PG Inquiries', t('{n} inquiries received', { n: list.length }))}${list.length ? stats : ''}
+      <div class="tool">${searchBox('inq', 'Search name, phone, room')}<span class="sp"></span>${chips('inq', [['all', t('All') + ' ' + list.length], ...INQ_FILTER.map(k => [k, t(INQ_ST[k][3] || INQ_ST[k][0]) + (cnt(k) ? ' ' + cnt(k) : '')])], 'all')}</div>
+      <div class="tool inq-date">${chips('inqd', [['all', 'All time'], ['today', 'Today'], ['week', 'Past 7 days'], ['month', 'This month']], 'all')}</div>
       ${shown.length ? `<div class="stack">${shown.map(inqItem).join('')}</div>` : `<div class="card">${empty('No inquiries found', 'When visitors submit the form on your public page, they appear here.')}</div>`}`;
   }
+};
+A.inqnext = el => {
+  const inq = Store.get(el.dataset.id), d = inq && inq.data;
+  if (!d || !INQ_NEXT[d.status || 'new']) return;
+  Store.patch(inq.id, { data: { ...d, status: INQ_NEXT[d.status || 'new'][0] } });
+  toast(t('Inquiry updated ✓'), 'ok'); render();
 };
 
 A.inqstatus = el => {
@@ -3206,15 +3415,7 @@ A.inqstatus = el => {
     fields: [
       {
         name: 'status', label: 'Current Status', type: 'select',
-        options: [
-          { v: 'new', l: 'New' },
-          { v: 'contacted', l: 'Contacted' },
-          { v: 'visit_scheduled', l: 'Visit Scheduled' },
-          { v: 'interested', l: 'Interested' },
-          { v: 'converted', l: 'Converted to Resident' },
-          { v: 'not_interested', l: 'Not Interested' },
-          { v: 'closed', l: 'Closed' }
-        ],
+        options: Object.keys(INQ_ST).map(k => ({ v: k, l: k === 'converted' ? 'Converted to resident' : INQ_ST[k][0] })),
         value: d.status || 'new', required: true
       },
       { name: 'staffId', label: 'Assign to Staff', type: 'select', options: staffOpts, value: d.staffId || '' },
@@ -3255,46 +3456,46 @@ A.inqconvert = el => {
 
 /* ===================================================================== e-mitra / police verification portal */
 PAGES.emitra = {
-  title: 'Police Verification Queue', mod: 'emitra',
+  title: 'Police verification', mod: 'emitra',
   render() {
-    const list = emitraPendingQueue();
-    const pvReq = pvOn();
-    return `${head('E-Mitra Police Verification', t('{n} residents awaiting verification', { n: list.length }))}
-      ${!pvReq ? `<div class="note warn">${ico('alert', 'sm')} ${esc(t('Police Verification Required is switched OFF by owner. Residents are not blocked, but verification records can still be submitted.'))}</div>` : ''}
-      <div class="card" style="margin-bottom:12px">
-        <div class="row sb"><b>${esc(t('External Verification Queue'))}</b><span class="muted sm">${esc(t('Official E-Mitra / Citizen Portal'))}</span></div>
-        <p class="hint" style="margin-top:6px">${esc(t('Authorized operator workflow: download documents, submit details on official state police portal, and upload the resulting acknowledgement / certificate.'))}</p>
-      </div>
-      ${list.length ? `<div class="stack">${list.map(r => {
-      const pv = r.pv || {};
-      const docs = r.docs || [];
-      return `<div class="card" style="margin-bottom:10px">
-          <div class="row sb"><b>${esc(r.name)}</b>${badge(pv.status || 'Pending Docs', pv.status === 'verified' ? 'ok' : 'warn')}</div>
-          <div class="muted sm" style="margin:4px 0">${roomName(r.roomId)} · Checked in ${fmtDate(r.checkIn)}</div>
-          <div class="xs" style="margin:6px 0"><b>Aadhaar (Masked):</b> ${esc(maskAadhaar(r.idNo || ''))}</div>
-          <div class="row wrap" style="gap:6px;margin:8px 0">
-            ${docs.length ? docs.map(d => `<span class="badge ${d.url || d.path ? 'ok' : 'mute'}">${ico('file', 'xs')} ${esc(d.type || 'Doc')}</span>`).join('') : '<span class="muted xs">No KYC docs uploaded yet</span>'}
-          </div>
-          <div class="row wrap" style="gap:8px;margin-top:10px">
-            <button class="btn sm primary" data-act="emitraverify" data-id="${r.id}">${ico('shield', 'sm')} Process Verification</button>
-            ${isAdmin() ? `<button class="btn sm" data-act="go" data-to="residents/${r.id}">${ico('user', 'sm')} ${esc(t('View Resident'))}</button>` : ''}
-          </div>
-        </div>`;
-    }).join('')}</div>` : `<div class="card">${empty('Verification queue clear 🎉', 'No residents currently pending verification.')}</div>`}`;
+    const B0 = pvBoard(), doer = canVerifyPV(), tab = curTab('pvt', 'pending');
+    const B = { pending: [...B0.todo, ...B0.submitted], verified: B0.verified };
+    const total = B.pending.length + B.verified.length, done = B.verified.length;
+    const who = doer ? t('You verify these tenants. Open one, copy the details into the police portal, save the acknowledgement.')
+      : pvByPlatform() ? t('The Sarvlekh team does the police verification for your hostel. You only see how far it has gone.')
+      : t('Your e-Mitra operator does the police verification. You only see how far it has gone.');
+    const list = B[tab] || [];
+    const row = r => { const v = pvSheet(r), pv = r.pv || {}, ok = pv.status === 'verified';
+      return prow({
+        act: doer ? 'emitraverify' : '', attrs: doer ? `data-id="${r.id}"` : '', lead: avatar(r.name), t: esc(r.name),
+        s: esc(`${t('Room')} ${roomName(r.roomId)} · ${t('since')} ${fmtShort(r.checkIn)}${ok && pv.refNo ? ' · ' + t('Ref') + ' ' + pv.refNo : ''}`),
+        tags: `${badge(ok ? 'Verified' : pv.status === 'submitted' ? 'Sent to police - waiting' : pv.status === 'rejected' ? 'Rejected - to redo' : 'Not started', ok ? 'ok' : pv.status === 'submitted' ? 'info' : pv.status === 'rejected' ? 'bad' : 'warn')}${!ok && doer ? (v.docs.length ? `<span class="gate-t">${ico('file', 'xs')} ${esc(t('{n} papers', { n: v.docs.length }))}</span>` : badge('No papers', 'bad')) : ''}${!ok && doer && v.missing.length ? badge(t('{n} details missing', { n: v.missing.length }), 'bad') : ''}${ok && pv.verifiedBy ? `<span class="gate-t">${esc(t('by {w}', { w: pv.verifiedBy }))} · ${esc(fmtShort(pv.date))}</span>` : ''}`,
+        acts: !doer && ok && pv.certificatePath ? `<button type="button" class="btn sm" data-act="opendoc" data-path="${esc(pv.certificatePath)}" data-res="${r.id}" data-type="Police verification">${ico('file', 'sm')} ${esc(t('View Certificate'))}</button>` : ''
+      }); };
+    return `${head('Police verification', total ? t('{a} of {b} tenants verified', { a: done, b: total }) : '')}
+      ${!pvOn() ? `<div class="note warn">${ico('alert', 'sm')} ${esc(t('Police Verification Required is switched OFF by owner. Residents are not blocked, but verification records can still be submitted.'))}</div>` : ''}
+      <div class="pvh"><div class="pvh-ring"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="pvg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22c55e"/><stop offset="1" stop-color="#0ea5a5"/></linearGradient></defs><circle cx="50" cy="50" r="42" class="pvh-tr"/><circle cx="50" cy="50" r="42" class="pvh-fg" style="stroke-dasharray:${(pct(done, total) * 2.639).toFixed(1)} 264"/></svg><div class="pvh-c"><b>${done}<i>/${total}</i></b><small>${esc(t('verified'))}</small></div></div>
+        <div class="pvh-t"><b>${esc(doer ? t('Verification queue') : t('Verification status'))}</b><span>${esc(who)}</span></div></div>
+      <div class="pvh-st"><span class="ok"><b>${done}</b>${esc(t('Verified'))}</span><span class="info"><b>${B0.submitted.length}</b>${esc(t('Waiting'))}</span><span class="warn"><b>${B0.todo.length}</b>${esc(t('To start'))}</span></div>
+      ${seg('pvt', [['pending', 'Pending', B.pending.length], ['verified', 'Verified', B.verified.length]], 'pending')}
+      ${list.length ? `<div class="group">${list.map(row).join('')}</div>` : `<div class="card">${empty(tab === 'pending' ? 'Verification queue clear' : 'Nothing here', tab === 'pending' ? 'No residents currently pending verification.' : 'No tenants in this list.')}</div>`}`;
   }
 };
+// One detail with a copy button, for typing into the police portal
+const pvRow = (label, val) => `<div class="pvr"><div><small>${esc(t(label))}</small><b>${val ? esc(val) : `<i>${esc(t('not entered'))}</i>`}</b></div>${val ? `<button type="button" class="pvc" data-act="pvcopy" data-v="${esc(val)}" aria-label="${esc(t('Copy'))}">${ico('copy', 'sm')}</button>` : ''}</div>`;
+A.pvcopy = async el => { try { await navigator.clipboard.writeText(el.dataset.v); toast(t('Copied')); } catch (e) { toast(t('Could not copy'), 'bad'); } };
 
 A.emitraverify = el => {
+  if (!canVerifyPV()) return toast(t('Police verification is done by the e-Mitra operator or the Sarvlekh team'), 'bad');
   const r = resById(el.dataset.id);
   if (!r) return;
   const pv = r.pv || {};
   const portal = pvPortal(pv.state || S().police.state);
   const portalName = pvStateName(pv.state || S().police.state) || 'State Police';
-  const docs = r.docs || [];
-  const kycDocsHtml = docs.length
-    ? `<div class="row wrap" style="gap:8px;margin-top:6px">${docs.map(d => `<button type="button" class="btn sm" data-act="opendoc" data-path="${esc(d.path || '')}" data-res="${r.id}" data-type="${esc(d.type || 'Document')}">${ico('file', 'sm')} ${esc(d.type || 'Document')}</button>`).join('')}</div>`
-    : `<div class="muted sm" style="margin-top:4px">${esc(t('No KYC documents uploaded yet.'))}</div>`;
-
+  const v = pvSheet(r);
+  const kycDocsHtml = v.docs.length
+    ? `<div class="row wrap" style="gap:8px;margin-top:6px">${v.docs.map(d => `<button type="button" class="btn sm" data-act="opendoc" data-path="${esc(d.path)}" data-res="${r.id}" data-type="${esc(d.type)}">${ico('eye', 'sm')} ${esc(d.type)}</button>`).join('')}</div>`
+    : `<div class="muted sm" style="margin-top:4px">${esc(t('No ID papers uploaded yet.'))}</div>`;
   formModal({
     title: `Police Verification · ${r.name}`,
     submit: 'Save Verification',
@@ -3303,30 +3504,23 @@ A.emitraverify = el => {
       {
         type: 'html',
         html: `
-          <div class="card" style="margin-bottom:12px;background:var(--card-subtle,#f8fafc)">
-            <div style="font-weight:700;font-size:14px;margin-bottom:6px">${esc(r.name)} · <span class="muted">${roomName(r.roomId)}-${esc(r.bed)}</span></div>
-            <div class="grid g2" style="font-size:12px;gap:6px">
-              <div><b>Mobile:</b> ${esc(r.phone)}</div>
-              <div><b>Aadhaar:</b> ${esc(r.idNo || 'Not entered')}</div>
-              <div><b>Father / Guardian:</b> ${esc(r.guardian || '—')} ${r.guardianPhone ? `(${esc(r.guardianPhone)})` : ''}</div>
-              <div><b>Check-in Date:</b> ${fmtDate(r.checkIn)}</div>
-              <div style="grid-column:span 2"><b>Permanent Address:</b> ${esc(r.address || '—')}</div>
-            </div>
-            <div style="margin-top:10px">
-              <b style="font-size:12px">${esc(t('KYC Papers (Aadhaar / Photo):'))}</b>
-              ${kycDocsHtml}
-            </div>
-            ${portal ? `<div style="margin-top:10px"><a class="btn sm primary" href="${esc(portal)}" target="_blank" rel="noopener">${ico('globe', 'sm')} Open ${esc(portalName)} Portal</a></div>` : ''}
-          </div>
+          ${v.missing.length ? `<div class="note warn" style="margin-bottom:10px">${ico('alert', 'sm')} ${esc(t('Missing: {l}. Ask the owner to complete the resident record.', { l: v.missing.map(x => t(x)).join(', ') }))}</div>` : ''}
+          <div class="group-t">${esc(t('Tenant'))}</div><div class="pvg">${v.tenant.map(x => pvRow(x[0], x[0] === 'Staying since' ? fmtDate(x[1]) : x[1])).join('')}</div>
+          <div class="group-t">${esc(t('Stay'))}</div><div class="pvg">${v.stay.map(x => pvRow(x[0], x[0] === 'Staying since' ? fmtDate(x[1]) : x[1])).join('')}</div>
+          <div class="group-t">${esc(t('Property'))}</div><div class="pvg">${v.property.map(x => pvRow(x[0], x[1])).join('')}</div>
+          <div class="group-t">${esc(t('ID papers'))}</div>${kycDocsHtml}
+          ${portal ? `<div style="margin-top:12px"><a class="btn sm primary" href="${esc(portal)}" target="_blank" rel="noopener">${ico('globe', 'sm')} ${esc(t('Open {p} portal', { p: portalName }))}</a></div>` : ''}
         `
       },
       { name: 'refNo', label: 'Police Acknowledgement / Reference Number', value: pv.refNo || '', required: true, maxlength: 60, hint: 'Reference number from the state police portal acknowledgement' },
       { name: 'date', label: 'Verification Date', type: 'date', value: pv.date || today(), required: true },
       { name: 'status', label: 'Verification Status', type: 'select', options: [{ v: 'submitted', l: 'Submitted / Acknowledgement Received' }, { v: 'verified', l: 'Verified / Certificate Issued' }, { v: 'rejected', l: 'Rejected by Police' }], value: pv.status || 'submitted', required: true },
-      { name: 'file', label: 'Upload Police Acknowledgement / Certificate', type: 'file', accept: 'image/*,application/pdf' },
+      { name: 'file', label: 'Upload Police Acknowledgement / Certificate', type: 'file', accept: 'image/*' },
       { name: 'notes', label: 'Operator Notes', value: pv.notes || '', maxlength: 200 }
     ],
     onSubmit: async v => {
+      if (v.date > today()) return t('The date cannot be in the future');
+      if (String(v.refNo || '').trim().length < 4) return t('Enter the acknowledgement / reference number from the police portal');
       try {
         let certPath = pv.certificatePath || null;
         const f = (v.file || [])[0];

@@ -262,7 +262,8 @@
     var logo = imgUrl(pics.logo, 160);
     var hero = pic(pics, 'hero', 1000) || pic(pics, 'g1', 1000);
     var aboutPic = pic(pics, 'about', 800);
-    var gal = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6'].map(function (k) { return pic(pics, k, 700); }).filter(Boolean);
+    var galKeys = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6'].concat(Object.keys(pics).filter(function (k) { return /^g\d+$/.test(k) && +k.slice(1) > 6 && +k.slice(1) <= 24; }).sort(function (a, b) { return +a.slice(1) - +b.slice(1); }));
+    var gal = galKeys.map(function (k) { return pic(pics, k, 700); }).filter(Boolean);
     var mapPic = imgUrl(pics.map, 700);
     var tagline = c.tagline || place;
     var hasLoc = !!(place || address || go);
@@ -294,7 +295,7 @@
         (aboutPic ? '<img class="ab-pic" src="' + esc(aboutPic) + '" alt="" loading="lazy" decoding="async">' : '') +
         '<div class="ab-txt"><div><span class="tag">' + esc(T.aboutTag) + '</span><h2 class="h2">' + esc(c.aboutTitle || (T.welcome + ' ' + d.name)) + '</h2>' +
         (c.about ? '<p class="body">' + esc(c.about) + '</p>' : '') + '</div>' +
-        (rating ? '<div class="rate"><span class="g">G</span><div><b>' + esc(rating.score) + '/5</b><span class="st">★★★★★</span>' +
+        (rating ? '<div class="rate"><span class="g">G</span><div><b>' + esc(rating.score) + '/5</b><span class="st"></span>' +
           (rating.text ? '<small>' + esc(rating.text) + '</small>' : '') + '</div></div>' : '') +
         '</div></div></section>';
     }

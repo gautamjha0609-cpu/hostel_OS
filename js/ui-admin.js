@@ -81,7 +81,18 @@ PAGES.admin = {
     const list = orgs.filter(o => (f === 'all' || o.status === f) && needle('org', o.name, o.owner_name, o.phone, o.city));
     const mrr = sum(orgs.filter(o => o.status === 'active'), o => +o.fee || 0), dueSoon = orgs.filter(o => o.paid_till && o.paid_till < addDays(today(), 5));
     return `${head('Clients & hostels', t('{c} clients · {h} hostels · {r} residents', { c: orgs.length, h: hostels.length, r: sum(hostels, h => +statOf(h.id).residents || 0) }), `${btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync')}${btn('New client', 'addorg', '', 'primary', 'plus')}`)}
-      <div class="grid g4 keep2" style="margin-bottom:14px">${kpi('Active clients', orgs.filter(o => o.status === 'active').length, t('{n} suspended', { n: orgs.filter(o => o.status === 'suspended').length }), 'ok', null, 'building')}${kpi('Yearly revenue', inr(mrr), t('from active clients'), '', null, 'rupee')}${kpi('Renewal due', dueSoon.length, t('in next 5 days'), dueSoon.length ? 'warn' : '', null, 'cal')}${kpi('Database', adm.data.size != null ? adm.data.size + ' MB' : '—', t('of 500 MB free'), adm.data.size > 400 ? 'bad' : '', 'admin-usage', 'chart')}</div>
+      ${homeHero({
+        name: Store.me ? Store.me.full_name.split(' ')[0] : '', sub: esc(t('{c} clients · {h} hostels · {r} residents', { c: orgs.length, h: hostels.length, r: sum(hostels, h => +statOf(h.id).residents || 0) })),
+        cards: [
+          { l: 'Active clients', icon: 'building', v: orgs.filter(o => o.status === 'active').length, tone: 'ok', s: esc(t('{n} suspended', { n: orgs.filter(o => o.status === 'suspended').length })) },
+          { l: 'Yearly revenue', icon: 'rupee', v: inr(mrr), s: esc(t('from active clients')) },
+        ],
+        strip: [
+          { icon: 'building', v: hostels.length, l: 'Hostels' },
+          { icon: 'cal', v: dueSoon.length, l: 'Renewal due' },
+          { icon: 'chart', v: adm.data.size != null ? adm.data.size + ' MB' : '-', l: 'Database', bar: adm.data.size != null ? adm.data.size / 5 : null },
+        ],
+      })}
       <div class="tool">${searchBox('org', 'Search client, owner, city')}${chips('org', [['all', 'All'], ['active', 'Active'], ['suspended', 'Suspended']], 'all')}</div>
       ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/yr', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
   },
@@ -167,6 +178,16 @@ A.edithostel = el => { const h = admHostel(el.dataset.id); if (!h) return; formM
     const live = Store.hostels.find(x => x.id === h.id); if (live) Object.assign(live, patch);
     toast('Saved'); render();
   } }); };
+const BILL_CHANNELS = { whatsapp: 'WhatsApp to all', email: 'E-mail to all', both: 'E-mail and WhatsApp to all', off: 'Nothing automatic (owner sends by hand)' };
+A.admbillchan = el => { const h = admHostel(el.dataset.id); if (!h) return; const cur = ((h.settings || {}).wa || {}).monthly && h.settings.wa.monthly.channel || 'whatsapp'; formModal({
+  title: 'Monthly bill delivery', submit: 'Save',
+  note: t('How the monthly bill (rent + electricity + pay link) is sent in bulk once every meter reading is in. WhatsApp to all costs money per message on the official API.'),
+  fields: [{ name: 'channel', label: 'Send the monthly bill by', type: 'select', value: cur, options: Object.entries(BILL_CHANNELS).map(([v, l]) => ({ v, l: t(l) })), required: true }],
+  onSubmit: async v => {
+    const s = await Backend.saveSettings(h.id, { wa: { monthly: { channel: v.channel } } });
+    h.settings = s || h.settings; const live = Store.hostels.find(x => x.id === h.id); if (live) live.settings = h.settings;
+    toast('Saved'); render();
+  } }); };
 A.openhostel = el => chooseContext('super:' + el.dataset.id);
 A.addowner = el => {
   const hs = adm.data.hostels.filter(h => h.org_id === el.dataset.org);
@@ -223,12 +244,13 @@ const MOD_GROUPS = [
   ['Stay & money', ['electricity', 'expenses']],
   ['Daily operations', ['mess', 'kitchen', 'housekeeping', 'laundry', 'attendance', 'gate', 'complaints']],
   ['Verification & Inquiries', ['emitra', 'inquiries']],
-  ['Team & admin', ['staff', 'notices', 'reports', 'automation']],
+  ['WhatsApp bulk automation', ['automation']],
+  ['Team & admin', ['staff', 'notices', 'reports']],
   ['Getting new residents', ['landing']],
   ['For residents', ['residentApp']],
 ];
 function modNote(k) {
-  if (k === 'automation') return t('Super Admin switch · 1 Consolidated Monthly Bill (Rent + Electricity + UPI QR) per resident');
+  if (k === 'automation') return t('On: this hostel gets the Automation page and the automatic monthly WhatsApp bill (Meta cost per message). Off: all of it is hidden for the owner and staff; 1-tap WhatsApp still works.');
   const needs = modNeeds(k).map(modLabel), used = modNeededBy(k).map(modLabel);
   return [needs.length ? t('Needs {m}', { m: needs.join(', ') }) : '',
     used.length ? t('{m} needs this', { m: used.join(', ') }) : ''].filter(Boolean).join(' · ');
@@ -263,7 +285,9 @@ PAGES['admin-hostel'] = {
           ['mods', 'Modules', offN ? offN + ' off' : ''], ['users', 'Logins', mine_.own.length]], 'info')}
         ${tab === 'info' ? hostelInfoCard(h, o, st) : ''}
         ${tab === 'blocks' ? blocksCard(h) : ''}
-        ${tab === 'mods' ? groups.map(([title, keys]) => group(title, keys.map(row).join(''))).join('')
+        ${tab === 'mods' ? group('Online payments', `<div class="li noic"><span class="body"><span class="t">${esc(modLabel('cashfree'))}</span><span class="d">${esc(t('Off by default. Switch on only for a hostel that has agreed to online UPI collection: its owner then sees the Cashfree settlement setup and residents can pay through the gateway.'))}</span></span><span class="end"><label class="sw"><input type="checkbox" data-hmod="cashfree" data-h="${id}" ${mine.cashfree === true ? 'checked' : ''} aria-label="${esc(modLabel('cashfree'))}"><span></span></label></span></div>`)
+          + group('Police verification', `<div class="li noic"><span class="body"><span class="t">${esc(modLabel('pvPlatform'))}</span><span class="d">${esc(t('Off: the hostel has its own e-Mitra operator login. On: your team verifies this hostel from Police verification in this console. The owner only watches the status either way.'))}</span></span><span class="end"><label class="sw"><input type="checkbox" data-hmod="pvPlatform" data-h="${id}" ${mine.pvPlatform === true ? 'checked' : ''} aria-label="${esc(modLabel('pvPlatform'))}"><span></span></label></span></div>`)
+          + groups.map(([title, keys]) => group(title, keys.map(row).join(''))).join('')
           + about('Core screens — Home, Approvals, Rooms, Residents, Payments and Settings — are always on. Switching a module off hides it for everyone in this hostel; nothing already recorded is deleted, and switching it back on brings it all back.') : ''}
         ${tab === 'users' ? hostelUsersCard(h, o, mine_) : ''}
       </div>`;
@@ -293,6 +317,8 @@ function hostelInfoCard(h, o, st) {
         d: t('Super Admin controls automatic monthly WhatsApp bill dispatch to manage Meta API cost.'),
         chev: false,
         end: `<span class="badge ${(h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? 'ok' : ''}">${(h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? t('Active') : t('Manual')}</span>` }),
+      (h.modules || {}).automation !== false && (o.modules || {}).automation !== false ? li({ icon: 'send', ic: 'teal', t: t('Monthly bill goes out by: {c}', { c: t(BILL_CHANNELS[((h.settings || {}).wa || {}).monthly && h.settings.wa.monthly.channel || 'whatsapp']) }),
+        d: t('Bulk only. Reminders, admission messages and single bills are always sent one by one from the owner screen.'), act: 'admbillchan', attrs: `data-id="${h.id}"` }) : '',
     ].join(''), `${btn('Edit details', 'edithostel', `data-id="${h.id}"`, 'sm', 'edit')}`)}
     ${group('At a glance', [
       li({ icon: 'users', ic: 'info', t: t('{n} residents', { n: st.residents || 0 }), d: t('Counted for the whole hostel — blocks do not change this'), chev: false }),
@@ -610,6 +636,21 @@ document.addEventListener('change', async e => {
     });
   } catch (err) { e.target.checked = !want; toast(err.message, 'bad'); }
 });
+
+// Hostels whose police verification is done by us. One tap enters that hostel on the verification queue.
+PAGES['admin-pv'] = {
+  title: 'Police verification', ...superOnly,
+  render() {
+    if (!adm.data) return admWait('Police verification');
+    if (adm.data.error) return admErr();
+    const hs = (adm.data.hostels || []).filter(h => h.modules && h.modules.pvPlatform === true);
+    return `${head('Police verification', t('{n} hostels use the Sarvlekh team', { n: hs.length }))}
+      ${about('Switch this on for a hostel in its Modules tab. Open its queue here, verify each tenant on the police portal and save the acknowledgement: the owner sees the status and the papers in their own panel.')}
+      ${hs.length ? `<div class="group">${hs.map(h => li({ icon: 'shield', ic: 'info', t: h.name, d: [h.city, t('{n} residents', { n: (statOf(h.id) || {}).residents || 0 })].filter(Boolean).join(' · '), act: 'pvopen', attrs: `data-id="${h.id}"` })).join('')}</div>`
+        : `<div class="card">${empty('No hostel yet', 'Open a hostel, go to Modules and switch on "Police verification done by Sarvlekh team".')}</div>`}`;
+  },
+};
+A.pvopen = async el => { await chooseContext('super:' + el.dataset.id); go('emitra'); };
 
 PAGES['admin-users'] = {
   title: 'All users', ...superOnly,

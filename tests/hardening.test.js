@@ -196,13 +196,13 @@ test('document upload guard: rejects files > 1.5 MB and accepts valid sizes', as
     return json(404, { message: 'not mocked' });
   };
 
-  const invokeDoc = async (size) => {
+  const invokeDoc = async (size, mime = 'image/jpeg') => {
     let status = 0, jsonOut = null;
     const req = {
       method: 'POST',
       query: { sub: 'join' },
       headers: { 'x-forwarded-for': '127.0.0.1' },
-      body: { action: 'doc', h: H1, k: 'join-key-123456', app: APP, label: 'Aadhaar', mime: 'application/pdf', size }
+      body: { action: 'doc', h: H1, k: 'join-key-123456', app: APP, label: 'Aadhaar', mime, size }
     };
     const res = {
       setHeader() {},
@@ -213,15 +213,20 @@ test('document upload guard: rejects files > 1.5 MB and accepts valid sizes', as
     return { status, jsonOut };
   };
 
-  // 1.8 MB PDF should be rejected by 1.5 MB guard
+  // 1.8 MB photo should be rejected by 1.5 MB guard
   const r1 = await invokeDoc(1.8 * 1024 * 1024);
   assert.equal(r1.status, 400);
   assert.match(r1.jsonOut.error, /max 1\.5 MB/i);
 
-  // 1.2 MB PDF should be accepted under 1.5 MB limit
+  // 1.2 MB photo should be accepted under 1.5 MB limit
   const r2 = await invokeDoc(1.2 * 1024 * 1024);
   assert.equal(r2.status, 200);
   assert.ok(r2.jsonOut.url);
+
+  // PDFs are not accepted at all
+  const r3 = await invokeDoc(200 * 1024, 'application/pdf');
+  assert.equal(r3.status, 400);
+  assert.match(r3.jsonOut.error, /PDF/);
 });
 
 // 7. In-Memory Signed URL Cache for Instant Document Viewing

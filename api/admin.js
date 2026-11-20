@@ -18,6 +18,8 @@
 const crypto = require('crypto');
 const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone, sendViaSmtp } = require('./_lib.js');
 const Cashfree = require('./_cashfree.js');
+const Mail = require('./_email.js');
+const Pdf = require('./_pdf.js');
 
 const sbUrl = () => (process.env.SUPABASE_URL || URL_ || '').replace(/\/$/, '');
 const sbKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY || KEY || '';
@@ -869,6 +871,39 @@ const actions = {
     };
   },
 
+  // The resident's whole record as a PDF, mailed to the owner when a checkout is saved. The app
+  // sends the data it already holds; this draws the PDF and the cover mail. Nothing is stored.
+  async send_checkout_report(b, me) {
+    const hostel_id = await assertAdmin(me, b.org_id, b.hostel_id);
+    const to = String(b.to || '').trim().toLowerCase();
+    if (!isValidEmail(to)) throw new HttpError(400, 'A valid owner e-mail is required');
+    const rep = b.report && typeof b.report === 'object' ? b.report : null;
+    if (!rep || !rep.resident) throw new HttpError(400, 'Report data is missing');
+    const cap = (a, n) => (Array.isArray(a) ? a.slice(0, n) : []);
+    const [h] = await rest('hostels', `?id=eq.${hostel_id}&select=name,address,phone`);
+    const data = {
+      hostel: { name: (h && h.name) || (rep.hostel && rep.hostel.name) || 'Hostel', address: (h && h.address) || '', phone: (h && h.phone) || '' },
+      generatedOn: String(rep.generatedOn || '').slice(0, 30), keepDays: 60,
+      resident: rep.resident, settlement: rep.settlement || {}, totals: rep.totals || {}, pv: rep.pv || null,
+      invoices: cap(rep.invoices, 600), payments: cap(rep.payments, 600), docs: cap(rep.docs, 40).map(x => String(x).slice(0, 120)),
+    };
+    const pdf = Pdf.checkoutReport(data);
+    const nm = String((data.resident && data.resident.name) || 'resident').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'resident';
+    const file = `Exit-report-${nm}.pdf`, subject = `Checkout report - ${String(data.resident.name || 'Resident').slice(0, 60)} - ${data.hostel.name}`.slice(0, 150);
+    const html = Mail.checkoutMail(data);
+    if (!process.env.RESEND_API_KEY) return { ok: true, status: 'not_configured', delivered: false, recipient: to };
+    const sender = mailSender(data.hostel.name);
+    let resp;
+    try {
+      resp = await fetch('https://api.resend.com/emails', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: sender, to: [to], subject, html, text: `${data.resident.name || 'The resident'} has checked out of ${data.hostel.name}. The full report is attached as a PDF.`, attachments: [{ filename: file, content: pdf.toString('base64') }] })
+      });
+    } catch (e) { throw new HttpError(502, 'Email service unreachable: ' + e.message); }
+    if (!resp.ok) { let m = ''; try { m = (await resp.json()).message || ''; } catch (e) {} throw new HttpError(502, 'Email provider rejected the message' + (m ? ': ' + m : '')); }
+    return { ok: true, status: 'sent', delivered: true, recipient: to, bytes: pdf.length };
+  },
+
   async send_resident_email(b, me) {
     let hostel_id = optUuid(b.hostel_id, 'hostel');
     if (!hostel_id && me.members && me.members[0]) hostel_id = me.members[0].hostel_id;
@@ -876,80 +911,107 @@ const actions = {
       const orgId = await resolveHostelOrg(hostel_id, b.org_id);
       await assertAdmin(me, orgId, hostel_id);
     }
-    const email = String(b.email || b.to || '').trim().toLowerCase();
-    if (!isValidEmail(email)) throw new HttpError(400, 'Valid recipient email required');
-    const subject = String(b.subject || 'Hostel Notice').slice(0, 150);
-    const messageId = 'email-' + crypto.randomBytes(8).toString('hex');
+    return deliverResidentMail(b, me);
+  },
 
-    // 1. Deliver via Direct SMTP (e.g. Gmail with App Password) if configured
-    if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-      try {
-        const hostelName = b.hostel_name || b.hostelName || '';
-        const sender = hostelName ? `"${hostelName}" <${process.env.SMTP_USER}>` : process.env.SMTP_USER;
-        await sendViaSmtp({
-          host: process.env.SMTP_HOST || 'smtp.gmail.com',
-          port: +(process.env.SMTP_PORT || 465),
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-          from: sender,
-          to: email,
-          subject,
-          html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
-          text: b.text || ''
-        });
-        return { ok: true, status: 'sent', provider: 'smtp', messageId, recipient: email };
-      } catch (e) {
-        console.warn('Direct SMTP email delivery failed:', e.message);
-        throw new HttpError(400, `Email delivery failed via SMTP: ${e.message}`);
+  // Many mails in one request (one login check, one rate-limit hit): the owner's "send to all".
+  async send_bulk_emails(b, me) {
+    let hostel_id = optUuid(b.hostel_id, 'hostel');
+    if (!hostel_id && me.members && me.members[0]) hostel_id = me.members[0].hostel_id;
+    if (hostel_id) { const orgId = await resolveHostelOrg(hostel_id, b.org_id); await assertAdmin(me, orgId, hostel_id); }
+    const items = Array.isArray(b.items) ? b.items.slice(0, 30) : [];
+    if (!items.length) throw new HttpError(400, 'No recipients');
+    const out = new Array(items.length);
+    // The mail service (Resend) allows only ~2 calls a second, so the whole group goes as ONE batch call - never one call per resident.
+    if (!(process.env.SMTP_USER && process.env.SMTP_PASS)) {
+      if (!process.env.RESEND_API_KEY) return { ok: true, results: items.map(() => ({ ok: true, status: 'not_configured', delivered: false })) };
+      const sender = mailSender(b.hostel_name), replyTo = isValidEmail(b.reply_to) ? String(b.reply_to).trim() : undefined, msgs = [], idx = [];
+      items.forEach((it, i) => {
+        const email = String((it && (it.to || it.email)) || '').trim().toLowerCase();
+        if (!isValidEmail(email)) { out[i] = { ok: false, delivered: false, reason: 'invalid_email' }; return; }
+        const html = it.brand && typeof it.brand === 'object' ? Mail.brandMail({ ...it.brand, hostelName: it.brand.hostelName || b.hostel_name }) : (it.html || `<p>${String(it.text || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</p>`);
+        msgs.push({ from: sender, to: [email], subject: String(it.subject || 'Hostel Notice').slice(0, 150), html, text: String(it.text || ''), ...(replyTo ? { reply_to: replyTo } : {}) }); idx.push(i);
+      });
+      if (msgs.length) {
+        let reason = '';
+        try {
+          const resp = await fetch('https://api.resend.com/emails/batch', { method: 'POST', headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msgs) });
+          if (!resp.ok) { let m = ''; try { m = (await resp.json()).message || ''; } catch (e) { /* not json */ } reason = 'Email provider rejected the batch' + (m ? ': ' + m : ''); }
+        } catch (e) { reason = 'Email service unreachable: ' + e.message; }
+        idx.forEach(i => { out[i] = reason ? { ok: false, delivered: false, reason } : { ok: true, delivered: true, status: 'sent' }; });
       }
+      return { ok: true, results: out };
     }
 
-    // 2. Deliver via external email provider if configured (e.g. RESEND_API_KEY)
-    if (process.env.RESEND_API_KEY) {
-      try {
-        const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>';
-        let hostelName = b.hostel_name || b.hostelName || '';
-        if (!hostelName && hostel_id) {
-          const hRow = await rest('hostels', `?id=eq.${hostel_id}&select=name`).catch(() => []);
-          if (hRow && hRow[0] && hRow[0].name) hostelName = hRow[0].name;
-        }
-        if (!hostelName) hostelName = 'Sarvlekh';
-
-        let sender = fromConfig;
-        if (fromConfig.includes('<')) {
-          const m = fromConfig.match(/<([^>]+)>/);
-          if (m) sender = `"${hostelName}" <${m[1]}>`;
-        } else if (fromConfig.includes('@')) {
-          sender = `"${hostelName}" <${fromConfig}>`;
-        }
-
-        const replyTo = b.reply_to || b.replyTo || (me && me.email ? me.email : undefined);
-
-        const resendRes = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            from: sender,
-            to: [email],
-            ...(replyTo ? { reply_to: replyTo } : {}),
-            subject,
-            html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
-            text: b.text || ''
-          })
-        });
-        if (!resendRes.ok) {
-          const errData = await resendRes.json().catch(() => ({}));
-          console.warn('Resend email delivery failed:', resendRes.status, errData);
-          throw new HttpError(resendRes.status >= 500 ? 502 : 400, errData.message || 'Email delivery failed via Resend');
-        }
-      } catch (e) {
-        console.warn('External email delivery warning:', e.message);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++, it = items[i] || {};
+        try { out[i] = await deliverResidentMail({ ...it, hostel_name: b.hostel_name, hostelName: b.hostel_name }, me); }
+        catch (e) { out[i] = { ok: false, delivered: false, reason: e.message || 'failed' }; }
       }
-    }
-
-    return { ok: true, status: 'sent', messageId, recipient: email };
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return { ok: true, results: out };
   },
 };
+
+
+// Sends ONE resident mail (already authorised by the caller): SMTP if configured, otherwise the mail provider.
+async function deliverResidentMail(b, me) {
+  const email = String(b.email || b.to || '').trim().toLowerCase();
+  if (!isValidEmail(email)) throw new HttpError(400, 'Valid recipient email required');
+  const subject = String(b.subject || 'Hostel Notice').slice(0, 150);
+  const messageId = 'email-' + crypto.randomBytes(8).toString('hex');
+  if (b.brand && typeof b.brand === 'object') b.html = Mail.brandMail({ ...b.brand, hostelName: b.brand.hostelName || b.hostel_name || b.hostelName });
+
+  // 1. Deliver via Direct SMTP (e.g. Gmail with App Password) if configured
+  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const hostelName = b.hostel_name || b.hostelName || '';
+      const sender = hostelName ? `"${hostelName}" <${process.env.SMTP_USER}>` : process.env.SMTP_USER;
+      await sendViaSmtp({
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: +(process.env.SMTP_PORT || 465),
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+        from: sender,
+        to: email,
+        subject,
+        html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
+        text: b.text || ''
+      });
+      return { ok: true, status: 'sent', delivered: true, provider: 'smtp', messageId, recipient: email };
+    } catch (e) {
+      console.warn('Direct SMTP email delivery failed:', e.message);
+      throw new HttpError(400, `Email delivery failed via SMTP: ${e.message}`);
+    }
+  }
+
+  // 2. Otherwise the mail provider. Nothing is reported as sent unless it accepted the message.
+  // Deliver via the mail provider. Nothing is reported as sent unless Resend accepted it.
+  if (!process.env.RESEND_API_KEY) return { ok: true, status: 'not_configured', delivered: false, messageId, recipient: email };
+  const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>';
+  const hostelName = String(b.hostel_name || b.hostelName || '').replace(/["<>\r\n]/g, '').slice(0, 60);
+  let sender = fromConfig;
+  if (hostelName && fromConfig.includes('<')) {
+    const m = fromConfig.match(/<([^>]+)>/);
+    if (m) sender = `"${hostelName}" <${m[1]}>`;
+  } else if (hostelName && fromConfig.includes('@')) {
+    sender = `"${hostelName}" <${fromConfig}>`;
+  }
+  const replyTo = b.reply_to || b.replyTo || (me && me.email ? me.email : undefined);
+  let resp;
+  try {
+    resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: sender, to: [email], ...(replyTo ? { reply_to: replyTo } : {}), subject, html: b.html || `<p>${String(b.text || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</p>`, text: b.text || '' })
+    });
+  } catch (e) { throw new HttpError(502, 'Email service unreachable: ' + e.message); }
+  if (!resp.ok) { let m = ''; try { m = (await resp.json()).message || ''; } catch (e) {} throw new HttpError(502, 'Email provider rejected the message' + (m ? ': ' + m : '')); }
+  return { ok: true, status: 'sent', delivered: true, messageId, recipient: email };
+}
 
 /* ---------------------------------------------------------------- document clean-up
  * ID papers are deleted 30 days after a resident checks out or a staff member is removed, and
@@ -968,6 +1030,45 @@ async function sweepFiles(batches = 5) {
     if (names.length < 1000) break;
   }
   return { removed };
+}
+
+// "Hostel name <notifications@...>" using the configured sender address.
+function mailSender(hostelName) {
+  const from = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>', nm = String(hostelName || '').replace(/["<>\r\n]/g, '').slice(0, 60);
+  const m = from.match(/<([^>]+)>/), addr = m ? m[1] : from;
+  return nm ? `"${nm}" <${addr}>` : from;
+}
+
+/* ---------------------------------------------------------------- resident data removal
+ * 60 days after checkout a resident's personal data goes: the login, every personal record
+ * (complaints, leave, laundry, tiffin, attendance, agreements...) and what the resident record
+ * itself says (name, phone, e-mail, ID number, address, guardian, papers). Their ID papers are
+ * already deleted at 30 days by sweepFiles. The owner's accounts stay: bills, payments and the
+ * deposit settlement keep their amounts, so reports and tax records do not change, but they now
+ * belong to "Former resident". Only a resident whose exit report was e-mailed to the owner is
+ * touched, because that PDF is the copy that survives. Nothing runs unless PURGE_ENABLED=1.
+ */
+const PURGE_DAYS = 60;
+const PURGE_KINDS = ['bmail', 'cmp', 'leave', 'laundry', 'tiffin', 'att', 'skip', 'ntf', 'hkf', 'agr', 'rinfo', 'rcall'];
+const KEEP_FIELDS = ['id', 'resId', 'status', 'left', 'checkIn', 'roomId', 'bed', 'rent', 'deposit', 'depositFee', 'depositRule', 'joined', 'createdAt', 'ts'];
+async function purgeLeftResidents(max = 15) {
+  const enabled = process.env.PURGE_ENABLED === '1';
+  const cutoff = new Date(istNow().getTime() - PURGE_DAYS * 86400e3).toISOString().slice(0, 10);
+  const rows = await rest('docs', `?kind=eq.res&deleted=eq.false&data->>status=eq.left&data->>left=lt.${cutoff}&data->>purged=is.null&select=hostel_id,id,data&limit=${max * 3}`);
+  const out = { enabled, cutoff, candidates: 0, purged: 0, waiting_for_report: 0 };
+  for (const row of rows) {
+    const deps = await rest('docs', `?hostel_id=eq.${row.hostel_id}&kind=eq.dep&res_id=eq.${encodeURIComponent(row.id)}&deleted=eq.false&select=data`);
+    if (!deps.some(d => d.data && d.data.reportEmailedAt)) { out.waiting_for_report++; continue; }
+    out.candidates++;
+    if (!enabled || out.purged >= max) continue;
+    const base = `?hostel_id=eq.${row.hostel_id}&res_id=eq.${encodeURIComponent(row.id)}`;
+    await rest('docs', `${base}&kind=in.(${PURGE_KINDS.join(',')})&deleted=eq.false`, { method: 'PATCH', body: { deleted: true, data: {} } });
+    const keep = {}; for (const k of KEEP_FIELDS) if (row.data[k] !== undefined) keep[k] = row.data[k];
+    await rest('docs', `?hostel_id=eq.${row.hostel_id}&id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: { data: { ...keep, name: 'Former resident', purged: true, purgedAt: new Date().toISOString() } } });
+    if (row.data.userId && /^[0-9a-f-]{36}$/i.test(row.data.userId)) { try { await sb(`/auth/v1/admin/users/${row.data.userId}`, { method: 'DELETE' }); } catch (e) { /* login may already be gone */ } }
+    out.purged++;
+  }
+  return out;
 }
 
 /* ---------------------------------------------------------------- payment log sweep
@@ -1162,6 +1263,12 @@ module.exports = async (req, res) => {
       } catch (e) {
         await sendAlert('Document Sweep Failed', e.message);
         throw e;
+      }
+      try {
+        out.purge = await purgeLeftResidents();
+      } catch (e) {
+        out.purge = { error: e.message };
+        console.warn('Resident purge warning:', e.message);
       }
       try {
         out.payment_sweep = await sweepPaymentLogs();

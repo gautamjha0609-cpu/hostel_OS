@@ -612,8 +612,9 @@ const Report = (() => {
     S.freeze = { row: 3 };
     S.head(['Meal Type', 'Eligible Residents', 'Meals Served', 'Tiffins Packed', 'Guest Meals', 'Leaves / Skips', 'Estimated Cost (₹)']);
     const meals = ['Breakfast', 'Lunch', 'Dinner', 'Evening Snacks'];
-    const totalTiffins = typeof Store !== 'undefined' ? Store.all('tiffin').filter(tf => ymOf(tf.date) === ym).length : 0;
-    const totalSkips = typeof Store !== 'undefined' ? Store.all('skip').filter(sk => ymOf(sk.date) === ym).length : 0;
+    const mstat = typeof monthMealStats === 'function' ? monthMealStats(ym) : { tiffins: 0, skips: 0 };
+    const totalTiffins = mstat.tiffins;
+    const totalSkips = mstat.skips;
     const foodRes = typeof activeRes === 'function' ? activeRes().filter(r => r.food !== false).length : D.occ.residents;
     for (const m of meals) {
       const servedEst = Math.max(0, Math.round(foodRes * 28 - Math.round(totalSkips / 3)));

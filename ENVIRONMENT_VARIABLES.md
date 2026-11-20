@@ -36,3 +36,12 @@ a future official-API integration. Do not add those to Vercel until code uses th
   `staging` branch whose `config.js` holds the staging URL/anon key).
 * In Vercel → Project → Settings → Environment Variables, tick **Production** only for the
   production key, and **Preview / Development** only for the staging key.
+
+## E-mail and data removal (server only, set in Vercel -> Settings -> Environment Variables)
+
+| Name | Needed | What it does |
+|---|---|---|
+| `RESEND_API_KEY` | for any e-mail | Resend API key. Never put it in code, chat or git. |
+| `EMAIL_FROM` | optional | Sender, e.g. `Sarvlekh <notifications@sarvlekh.in>`. The domain must be verified in Resend. |
+| `APP_URL` | optional | Link shown in the e-mail footer (default `https://hostel.sarvlekh.in`). |
+| `PURGE_ENABLED` | optional | Set to `1` to let the daily job remove a resident's personal data 60 days after checkout (only if their exit report was e-mailed). Not set = nothing is removed; the job only counts who would be. |

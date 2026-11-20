@@ -34,7 +34,7 @@ const U_SUPER = 'eeeeeeee-3333-4333-8333-eeeeeeeeeeee';
 
 function createMockDb() {
   const store = {
-    hostels: [{ id: H_A, org_id: ORG_A, name: 'Sunrise PG', settings: { pay: { payee: 'Owner A', upiId: 'ownera@okhdfc' } } }],
+    hostels: [{ id: H_A, org_id: ORG_A, name: 'Sunrise PG', modules: { cashfree: true }, settings: { pay: { payee: 'Owner A', upiId: 'ownera@okhdfc' } } }],
     owner_payment_accounts: [{ id: 'acc-a', org_id: ORG_A, vendor_id: 'vnd_ownera_123', account_holder_name: 'Owner A', bank_account_number: '123', bank_ifsc: 'HDFC0001234', upi_vpa: 'ownera@okhdfc', kyc_status: 'ACTIVE', is_settlement_active: true }],
     docs: [
       { hostel_id: H_A, id: RES_A1, kind: 'res', data: { name: 'Aman Sharma', roomId: '101' }, deleted: false },

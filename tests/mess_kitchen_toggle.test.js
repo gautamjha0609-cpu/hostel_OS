@@ -43,6 +43,8 @@ function boot() {
     go = (to) => { lastNav = to; };
     var formModalCalls = [];
     formModal = (opts) => { formModalCalls.push(opts); };
+    var openModalCalls = [];
+    openModal = (opts) => { openModalCalls.push(opts); };
     closeModal = () => {};
     render = () => {};
 
@@ -51,7 +53,8 @@ function boot() {
       getLastToast: () => lastToast,
       getLastNav: () => lastNav,
       getFormModalCalls: () => formModalCalls,
-      clearModalCalls: () => { formModalCalls = []; }
+      getOpenModalCalls: () => openModalCalls,
+      clearModalCalls: () => { formModalCalls = []; openModalCalls = []; }
     };
   `, ctx);
   return ctx.T;
@@ -188,14 +191,14 @@ test('Weekly menu cell: "Dish missing? Add a new dish" prompt only present when 
 
   // With kitchen ON
   T.A.menucell({ dataset: { day: '1', meal: 'breakfast' } });
-  let modal = T.getFormModalCalls().pop();
-  assert.ok(modal.extra.includes('Dish missing?'));
-  assert.ok(modal.extra.includes('data-act="adddish"'));
+  let modal = T.getOpenModalCalls().pop();
+  assert.ok(modal.body.includes('Add a new dish'));
+  assert.ok(modal.body.includes('data-act="adddish"'));
 
   // With kitchen OFF
   T.Store.hostels[0].modules = { kitchen: false };
   T.A.menucell({ dataset: { day: '1', meal: 'breakfast' } });
-  modal = T.getFormModalCalls().pop();
-  assert.equal(modal.extra, '', 'Extra dish missing prompt should be empty when kitchen is off');
+  modal = T.getOpenModalCalls().pop();
+  assert.ok(!modal.body.includes('data-act="adddish"'), 'the add-a-new-dish link must be absent when kitchen is off');
 });
 

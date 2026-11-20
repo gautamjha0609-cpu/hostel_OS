@@ -59,8 +59,8 @@ const U_SUPER = 'eeeeeeee-3333-4333-8333-eeeeeeeeeeee';
 function createMockDb() {
   const store = {
     hostels: [
-      { id: H_A, org_id: ORG_A, name: 'Sunrise PG (Owner A)', settings: { pay: { payee: 'Owner A', upiId: 'ownera@okhdfc' } } },
-      { id: H_B, org_id: ORG_B, name: 'Moonlight PG (Owner B)', settings: { pay: { payee: 'Owner B', upiId: 'ownerb@okaxis' } } }
+      { id: H_A, org_id: ORG_A, name: 'Sunrise PG (Owner A)', modules: { cashfree: true }, settings: { pay: { payee: 'Owner A', upiId: 'ownera@okhdfc' } } },
+      { id: H_B, org_id: ORG_B, name: 'Moonlight PG (Owner B)', modules: { cashfree: true }, settings: { pay: { payee: 'Owner B', upiId: 'ownerb@okaxis' } } }
     ],
     owner_payment_accounts: [
       {
@@ -493,6 +493,20 @@ test('10. Incorrect amount rejection: order creation rejects negative, zero, and
     assert.equal((await callPublic('create_payment_order', { hostel_id: H_A, res_id: RES_A1, amount: -500 })).status, 400);
     assert.equal((await callPublic('create_payment_order', { hostel_id: H_A, res_id: RES_A1, amount: 0 })).status, 400);
     assert.equal((await callPublic('create_payment_order', { hostel_id: H_A, res_id: RES_A1, amount: 100.555 })).status, 400);
+  } finally {
+    db.cleanup();
+  }
+});
+
+test('10b. Online payments are per hostel: a hostel the platform admin has not switched on gets no gateway order', async () => {
+  const db = createMockDb();
+  try {
+    db.store.hostels.find(h => h.id === H_B).modules = {};            // Owner B: not enabled
+    const off = await callPublic('create_payment_order', { hostel_id: H_B, res_id: RES_B1, amount: 500 });
+    assert.equal(off.status, 403);
+    assert.match(JSON.stringify(off.out), /not enabled/i);
+    db.store.hostels.find(h => h.id === H_B).modules = { cashfree: false };
+    assert.equal((await callPublic('create_payment_order', { hostel_id: H_B, res_id: RES_B1, amount: 500 })).status, 403);
   } finally {
     db.cleanup();
   }

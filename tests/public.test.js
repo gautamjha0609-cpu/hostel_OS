@@ -57,10 +57,17 @@ test('visitor QR: a wrong or missing key is refused', async () => {
   assert.equal(ok.status, 200); assert.equal(ok.out.name, 'Sunrise Boys PG');
 });
 
+test('visitor QR: every field is compulsory', async () => {
+  fakeNet();
+  const full = { name: 'Ramesh', phone: '9876543210', meet: 'Aman', roomNo: '102', purpose: 'Meeting', place: 'Kota' };
+  for (const k of ['meet', 'roomNo', 'purpose', 'place', 'phone', 'name']) assert.equal((await call(visit, { action: 'submit', h: H1, k: 'gate-key-123456', entry: { ...full, [k]: '' } })).status, 400, k + ' is compulsory');
+  assert.equal((await call(visit, { action: 'submit', h: H1, k: 'gate-key-123456', entry: full })).status, 200);
+});
+
 test('visitor QR: an entry lands in the gate register with a notification, phone checked, no photo', async () => {
   const { state } = fakeNet();
   assert.equal((await call(visit, { action: 'submit', h: H1, k: 'gate-key-123456', entry: { name: 'Ramesh', phone: '12' } })).status, 400);
-  const r = await call(visit, { action: 'submit', h: H1, k: 'gate-key-123456', entry: { name: 'Ramesh (father)', phone: '+91 98765 43210', meet: 'Aman', roomNo: '102', photoId: 'x'.repeat(20) } });
+  const r = await call(visit, { action: 'submit', h: H1, k: 'gate-key-123456', entry: { name: 'Ramesh (father)', phone: '+91 98765 43210', meet: 'Aman', roomNo: '102', purpose: 'Meeting', place: 'Kota, Rajasthan', photoId: 'x'.repeat(20) } });
   assert.equal(r.status, 200);
   const [g, n] = state.docs;
   assert.equal(g.kind, 'gate'); assert.equal(g.data.self, true); assert.equal(g.data.phone, '9876543210');
@@ -93,10 +100,13 @@ test('join QR: wrong key, bad application id, wrong type or too big is refused',
 test('join QR: the application may only point at papers in its own folder', async () => {
   const { state } = fakeNet();
   const mine = `${H1}/signup/${APP}/aadhaar-card-0a1b2c3d.jpg`;
+  const mine2 = `${H1}/signup/${APP}/passport-photo-1a2b3c4d.jpg`;
+  const full = { name: 'Aman Gupta', phone: '9812300001', email: 'aman@example.com', college: 'IIT', idNo: '234567890123', address: 'Jaipur', guardian: 'Suresh Gupta', guardianPhone: '9812300002' };
   const r = await call(join, { action: 'submit', h: H1, k: 'join-key-123456', app: APP, entry: {
-    name: 'Aman Gupta', phone: '9812300001',
+    ...full,
     docs: [
       { type: 'Aadhaar card', path: mine },
+      { type: 'Passport photo', path: mine2 },
       { type: 'Stolen', path: `${H1}/res/res-1/aadhaar-card-ffffffff.jpg` },
       { type: 'Other hostel', path: `bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb/signup/${APP}/x.jpg` },
       { type: 'Escape', path: `${H1}/signup/${APP}/../../res/x.jpg` },
@@ -105,8 +115,19 @@ test('join QR: the application may only point at papers in its own folder', asyn
   assert.equal(r.status, 200);
   const [s] = state.docs;
   assert.equal(s.kind, 'signup'); assert.equal(s.id, 'signup-' + APP);
-  assert.deepEqual(s.data.docs.map(d => d.path), [mine]);
+  assert.deepEqual(s.data.docs.map(d => d.path), [mine, mine2]);
   assert.equal(s.data.status, 'pending');
+});
+
+test('join QR: every detail and every required paper is compulsory', async () => {
+  fakeNet();
+  const mine = `${H1}/signup/${APP}/aadhaar-card-0a1b2c3d.jpg`, mine2 = `${H1}/signup/${APP}/passport-photo-1a2b3c4d.jpg`;
+  const full = { name: 'Aman Gupta', phone: '9812300001', email: 'aman@example.com', college: 'IIT', idNo: '234567890123', address: 'Jaipur', guardian: 'Suresh Gupta', guardianPhone: '9812300002', docs: [{ type: 'Aadhaar card', path: mine }, { type: 'Passport photo', path: mine2 }] };
+  const send = entry => call(join, { action: 'submit', h: H1, k: 'join-key-123456', app: APP, entry });
+  for (const k of ['email', 'college', 'idNo', 'address', 'guardian', 'guardianPhone']) assert.equal((await send({ ...full, [k]: '' })).status, 400, k + ' is compulsory');
+  assert.equal((await send({ ...full, docs: [{ type: 'Aadhaar card', path: mine }] })).status, 400, 'a missing paper is refused');
+  assert.equal((await send({ ...full, docs: [] })).status, 400);
+  assert.equal((await send(full)).status, 200);
 });
 
 test('join QR: info falls back to the app\'s default papers', async () => {
