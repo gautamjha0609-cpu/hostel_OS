@@ -391,7 +391,7 @@
     }
 
     // 3b. No invoice found and nothing to pay: a wrong or expired link must never claim "paid in full".
-    if (!(Number(amt) > 0) && !(info && info.invoice)) {
+    if (!(Number(amt) > 0) && !(info && info.invoice && Number(info.invoice.total) > 0)) {
       box.innerHTML = '<div class="card" style="text-align:center;padding:28px 16px"><h2 style="margin-bottom:8px">' + esc(T.badLink) + '</h2></div>';
       return;
     }
