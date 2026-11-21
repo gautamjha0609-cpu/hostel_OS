@@ -20,7 +20,7 @@ for (const d of DIRS) {
 }
 // Lets the browser tell the app it is already installed even when it is opened in an ordinary tab
 // (navigator.getInstalledRelatedApps), so the install pop-up never shows after installing.
-const origin = (process.env.SITE_ORIGIN || 'https://vasvanta.sarvlekh.in').replace(/\/$/, '');
+const origin = (process.env.SITE_ORIGIN || 'https://rahomate.sarvlekh.in').replace(/\/$/, '');
 const mp = path.join(out, 'manifest.webmanifest');
 const man = JSON.parse(fs.readFileSync(mp, 'utf8'));
 man.related_applications = [{ platform: 'webapp', url: origin + '/manifest.webmanifest' }];

@@ -8,7 +8,7 @@ compatibility_date = "2026-11-19"
 compatibility_flags = ["nodejs_compat"]
 
 # The app lives here. hostel.sarvlekh.in stays on Vercel until it is switched over (see the cutover note at the end).
-routes = [{ pattern = "vasvanta.sarvlekh.in", custom_domain = true }]
+routes = [{ pattern = "rahomate.sarvlekh.in", custom_domain = true }]
 
 [assets]
 directory = "./dist"
@@ -30,6 +30,7 @@ APP_NAME = "HostelOS"
 enabled = true
 
 [env.staging]
+routes = []   # staging has no custom domain (routes are otherwise inherited from the top level)
 name = "hostelos-staging"
 
 [env.staging.triggers]
