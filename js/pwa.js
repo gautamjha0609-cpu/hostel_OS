@@ -145,7 +145,7 @@ const Pwa = (() => {
     let body, foot;
     if (m === 'prompt') {
       body = lead;
-      foot = `<button class="btn" data-act="pwalater">${esc(tr('Not now'))}</button><button class="btn primary" data-act="pwainstall">${esc(tr('Install app'))}</button>`;
+      foot = `<button class="btn" data-act="pwanever">${esc(tr('Don\'t ask again'))}</button><button class="btn" data-act="pwalater">${esc(tr('Not now'))}</button><button class="btn primary" data-act="pwainstall">${esc(tr('Install app'))}</button>`;
     } else if (m === 'none') {
       body = `${lead}<div class="note">${esc(e.inApp ? tr('This page is open inside another app, which cannot install it. Tap the menu and choose "Open in browser" (Chrome or Safari), then try again.') : tr('This browser cannot install apps. Open Sarvlekh in Chrome or Edge to install it.'))}</div>`;
       foot = `<button class="btn primary" data-act="close">${esc(tr('Got it'))}</button>`;

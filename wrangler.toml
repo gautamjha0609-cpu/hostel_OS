@@ -7,6 +7,9 @@ main = "workers/entry.mjs"
 compatibility_date = "2026-11-19"
 compatibility_flags = ["nodejs_compat"]
 
+# The app lives here. hostel.sarvlekh.in stays on Vercel until it is switched over (see the cutover note at the end).
+routes = [{ pattern = "vasvanta.sarvlekh.in", custom_domain = true }]
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"
@@ -57,3 +60,7 @@ namespace_id = "1002"
   [env.staging.ratelimits.simple]
   limit = 120
   period = 60
+
+# --- DOMAIN CUTOVER (uncomment ONLY after sarvlekh.in is Active in Cloudflare, then run `npm run deploy`) ---
+# routes = [{ pattern = "hostel.sarvlekh.in", custom_domain = true }]
+# and set [triggers] crons = ["30 21 * * *"] above; remove "crons" from vercel.json in the same change.

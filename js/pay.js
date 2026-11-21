@@ -30,6 +30,7 @@
     manualHint: 'If UPI app does not open, pay to UPI ID below and enter UTR.',
     loading: 'Loading payment details...',
     alreadyPaid: 'This invoice has already been paid in full!',
+    badLink: 'This payment link is not valid or has expired. Please ask the hostel for a new link.',
     amountToPay: 'Amount to pay', payUpi: 'Pay with UPI app', opensApps: 'Opens GPay, PhonePe, Paytm and more',
     onComputer: 'Open this page on your phone to pay, or scan the QR with your phone\'s UPI app.', noApp: 'No UPI app opened? Scan the QR or copy the UPI ID.',
     copyAmount: 'Copy amount', utrTitle: 'Your UTR and screenshot', utrSub: 'Enter the UTR from your UPI app and add the screenshot. The owner checks it and sends your receipt.',
@@ -389,8 +390,14 @@
       return;
     }
 
+    // 3b. No invoice found and nothing to pay: a wrong or expired link must never claim "paid in full".
+    if (!(Number(amt) > 0) && !(info && info.invoice)) {
+      box.innerHTML = '<div class="card" style="text-align:center;padding:28px 16px"><h2 style="margin-bottom:8px">' + esc(T.badLink) + '</h2></div>';
+      return;
+    }
+
     // 4. Settled / Already Paid Invoice State (Prevents duplicate payment attempts)
-    if (amt <= 0 || (info?.invoice && Number(info.invoice.total) > 0 && Number(info.invoice.balance || 0) <= 0)) {
+    if (amt <= 0 ||(info?.invoice && Number(info.invoice.total) > 0 && Number(info.invoice.balance || 0) <= 0)) {
       box.innerHTML =
         '<div class="card" style="text-align:center;padding:28px 16px">' +
         '<div style="margin-bottom:12px"><svg viewBox="0 0 24 24" style="width:52px;height:52px;color:#1a8f3c;display:block;margin:0 auto" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +

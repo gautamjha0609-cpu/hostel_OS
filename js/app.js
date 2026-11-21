@@ -422,8 +422,8 @@ A.demologin = el => doLogin(el.dataset.u, el.dataset.p);
 // the pop-up all end up here.
 A.install = () => Pwa.open(true);
 A.pwainstall = () => Pwa.prompt();
-A.pwalater = () => Pwa.snooze(2);
-A.pwanever = () => Pwa.snooze(365);
+A.pwalater = () => Pwa.snooze(14);
+A.pwanever = () => Pwa.snooze(3650);
 
 /* ===================================================================== notifications & palette */
 A.notifs = () => {

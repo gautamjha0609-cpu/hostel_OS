@@ -4,7 +4,7 @@
 // most modern CSS. No dependencies. Files starting with "_" are not routed by Vercel.
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const appUrl = () => String(process.env.APP_URL || 'https://hostel.sarvlekh.in').replace(/\/$/, '');
+const appUrl = () => String(process.env.APP_URL || 'https://vasvanta.sarvlekh.in').replace(/\/$/, '');
 const inr = n => 'Rs. ' + new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(Math.round((+n || 0) * 100) / 100);
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const INK = '#0f172a', MUTED = '#64748b', LINE = '#e5e7f0', BRAND = '#4338ca';
