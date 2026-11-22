@@ -3230,10 +3230,12 @@ PAGES.notices = {
           <div class="nt-top"><span class="nt-ic">${ico(k.i, 'sm')}</span><div class="nt-meta"><span class="nt-cat">${esc(t(k.l))}</span><span class="nt-date">${esc(relDay(n.date))}</span></div>${n.pinned ? `<span class="nt-pin">${ico('bookmark', 'xs')} ${esc(t('Pinned'))}</span>` : ''}</div>
           <h3 class="nt-t">${esc(n.title)}</h3><p class="nt-b">${esc(n.body || '')}</p>${long ? `<button type="button" class="nt-more" data-act="ntexp">${esc(t('Read more'))}</button>` : ''}
           <div class="nt-acts">
-            <button type="button" class="nt-a pillbtn p-blue" data-act="noticewa" data-id="${esc(n.id)}">${ico('mail', 'sm')}<span>${esc(t('E-mail all'))}</span></button>
-            <button type="button" class="nt-a pillbtn p-orange" data-act="noticepin" data-id="${esc(n.id)}">${ico('bookmark', 'sm')}<span>${esc(t(n.pinned ? 'Unpin' : 'Pin'))}</span></button>
-            <button type="button" class="nt-a pillbtn p-green" data-act="noticeedit" data-id="${esc(n.id)}">${ico('edit', 'sm')}<span>${esc(t('Edit'))}</span></button>
-            <button type="button" class="nt-a pillbtn p-red" data-act="noticedel" data-id="${esc(n.id)}">${ico('trash', 'sm')}<span>${esc(t('Delete'))}</span></button>
+            <button type="button" class="nt-mail" data-act="noticewa" data-id="${esc(n.id)}">${ico('mail', 'sm')}<span>${esc(t('E-mail all'))}</span></button>
+            <span class="nt-ic-row">
+              <button type="button" class="nt-i ${n.pinned ? 'on' : ''}" data-act="noticepin" data-id="${esc(n.id)}" aria-label="${esc(t(n.pinned ? 'Unpin' : 'Pin'))}" title="${esc(t(n.pinned ? 'Unpin' : 'Pin'))}">${ico('bookmark', 'sm')}</button>
+              <button type="button" class="nt-i" data-act="noticeedit" data-id="${esc(n.id)}" aria-label="${esc(t('Edit'))}" title="${esc(t('Edit'))}">${ico('edit', 'sm')}</button>
+              <button type="button" class="nt-i del" data-act="noticedel" data-id="${esc(n.id)}" aria-label="${esc(t('Delete'))}" title="${esc(t('Delete'))}">${ico('trash', 'sm')}</button>
+            </span>
           </div></article></div>`;
     };
     return `${head('Notices', '')}${hero}${tpl}

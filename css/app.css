@@ -1827,3 +1827,17 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:0;position:absolute;
 
 .nt-hero-t{flex:1 1 170px}
 @media (max-width:640px){.nt-hero .btn.nt-new{flex:1 1 100%;justify-content:center}.nt-hero-t h2{font-size:20px}}
+
+/* Notice board, flat and quiet: no gradients on the cards, one outlined action and three small icon buttons */
+.nt.is-pin{background:var(--surface)}
+.nt-bar{background:var(--nk);width:4px}
+.nt{box-shadow:0 1px 2px rgba(15,23,42,.06),0 6px 18px rgba(15,23,42,.06)}
+.nt-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;padding-top:0;border-top:0;grid-template-columns:none}
+.nt-mail{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border:1px solid var(--line);border-radius:12px;background:transparent;color:var(--accent);font:700 13px/1 var(--font);cursor:pointer;transition:background .15s,border-color .15s}
+.nt-mail:hover{background:var(--accent-soft);border-color:transparent}
+.nt-ic-row{display:inline-flex;gap:4px}
+.nt-i{width:38px;height:38px;display:grid;place-items:center;border:0;border-radius:12px;background:transparent;color:var(--muted);cursor:pointer;transition:background .15s,color .15s}
+.nt-i:hover{background:var(--line);color:var(--ink,inherit)}
+.nt-i.on{color:var(--warn)}.nt-i.on svg{fill:currentColor}
+.nt-i.del:hover{background:var(--bad-bg);color:var(--bad)}
+.nt-i:active,.nt-mail:active{transform:scale(.95)}
