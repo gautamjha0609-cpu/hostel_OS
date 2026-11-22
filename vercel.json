@@ -128,11 +128,5 @@
       "source": "/((?!api/|h/)[^.]*)",
       "destination": "/index.html"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/admin?cron=sweep",
-      "schedule": "30 21 * * *"
-    }
   ]
 }
