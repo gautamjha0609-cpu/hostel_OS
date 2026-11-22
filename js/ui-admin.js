@@ -1,6 +1,26 @@
 'use strict';
 /* Super admin: clients (orgs) → hostels, module switches, plans, logins, usage & health. */
 
+// Quick contact buttons. The anchors carry data-act="noop" so a tap on them never opens the row they sit in.
+A.noop = () => {};
+const telDigits = p => { const d = String(p || '').replace(/\D/g, ''); return d.length === 10 ? d : d.slice(-10); };
+function contactBtns(phone, email, small = true) {
+  const d = telDigits(phone), c = small ? 'btn sm' : 'btn';
+  return `<span class="row" style="gap:6px;flex-wrap:nowrap">${d.length === 10 ? `<a class="${c}" data-act="noop" href="tel:+91${d}" aria-label="${esc(t('Call'))}" title="${esc(t('Call'))}">${ico('phone', 'sm')}</a><a class="${c}" data-act="noop" href="https://wa.me/91${d}" target="_blank" rel="noopener" aria-label="WhatsApp" title="WhatsApp">${ico('wa', 'sm')}</a>` : ''}${email ? `<a class="${c}" data-act="noop" href="mailto:${esc(email)}" aria-label="${esc(t('Email'))}" title="${esc(t('Email'))}">${ico('mail', 'sm')}</a>` : ''}</span>`;
+}
+// Google Maps with directions to the hostel: exact coordinates when known, else the address.
+const mapsUrl = h => { const dest = h.lat != null && h.lng != null && h.lat !== '' && h.lng !== '' ? `${h.lat},${h.lng}` : [h.name, h.address, h.city].filter(Boolean).join(', '); return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}`; };
+const coordNum = n => (n === '' || n == null || isNaN(n) ? null : +n);
+const geoFields = (lat, lng) => [
+  { name: 'lat', label: 'Latitude', type: 'number', step: 0.000001, min: -90, max: 90, value: lat ?? '', placeholder: 'e.g. 26.912434' },
+  { name: 'lng', label: 'Longitude', type: 'number', step: 0.000001, min: -180, max: 180, value: lng ?? '', placeholder: 'e.g. 75.787270' },
+  { type: 'html', html: `<button type="button" class="btn sm" data-act="geoloc">${ico('globe', 'sm')} ${esc(t('Use my current location'))}</button> <span class="hint">${esc(t('Or copy the numbers from Google Maps (long-press the spot).'))}</span>` },
+];
+A.geoloc = el => {
+  const form = el.closest('form'); if (!form) return;
+  if (!navigator.geolocation) return toast(t('This device cannot give its location'), 'bad');
+  navigator.geolocation.getCurrentPosition(p => { form.elements.lat.value = p.coords.latitude.toFixed(6); form.elements.lng.value = p.coords.longitude.toFixed(6); toast(t('Location filled in'), 'ok'); }, () => toast(t('Could not get the location. Allow location access and try again.'), 'bad'), { enableHighAccuracy: true, timeout: 10000 });
+};
 const superOnly = { when: () => isSuper() && !ctx().hostelId };
 const adm = { data: null, loading: false };
 /* PostgREST answers at most 1000 rows per request and silently stops there, and every row costs
@@ -81,6 +101,7 @@ PAGES.admin = {
     const list = orgs.filter(o => (f === 'all' || o.status === f) && needle('org', o.name, o.owner_name, o.phone, o.city));
     const mrr = sum(orgs.filter(o => o.status === 'active'), o => +o.fee || 0), dueSoon = orgs.filter(o => o.paid_till && o.paid_till < addDays(today(), 5));
     return `${head('Clients & hostels', t('{c} clients · {h} hostels · {r} residents', { c: orgs.length, h: hostels.length, r: sum(hostels, h => +statOf(h.id).residents || 0) }), `${btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync')}${btn('New client', 'addorg', '', 'primary', 'plus')}`)}
+      ${healthBanner()}
       ${homeHero({
         name: Store.me ? Store.me.full_name.split(' ')[0] : '', sub: esc(t('{c} clients · {h} hostels · {r} residents', { c: orgs.length, h: hostels.length, r: sum(hostels, h => +statOf(h.id).residents || 0) })),
         cards: [
@@ -94,7 +115,7 @@ PAGES.admin = {
         ],
       })}
       <div class="tool">${searchBox('org', 'Search client, owner, city')}${chips('org', [['all', 'All'], ['active', 'Active'], ['suspended', 'Suspended']], 'all')}</div>
-      ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/yr', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
+      ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${contactBtns(o.phone, o.email)}${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/yr', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
   },
 };
 /* What the client-level switch shows. The client's switch is the ceiling, and each hostel can be switched off
@@ -110,13 +131,14 @@ function orgDetail(id) {
   const ms = adm.data.members.filter(m => m.org_id === id), prof = uid_ => adm.data.profiles.find(p => p.id === uid_) || {};
   const mods = o.modules || {};
   return `<div class="row" style="margin:6px 0 10px">${btn('Clients', 'go', 'data-to="admin"', 'ghost sm', 'back')}</div>
-    ${head(o.name, `${esc(o.owner_name || '')} · ${esc(o.phone || '')} · ${esc(o.city || '')}`, `${btn('Edit', 'editorg', `data-id="${id}"`, '', 'edit')}${btn(o.status === 'active' ? 'Suspend' : 'Activate', 'orgstatus', `data-id="${id}"`, o.status === 'active' ? 'bad' : 'ok', 'power')}`)}
+    ${head(o.name, `${esc(o.owner_name || '')} · ${esc(o.phone || '')} · ${esc(o.city || '')}${o.address ? '<br>' + esc(o.address) : ''}`, `${btn('Edit', 'editorg', `data-id="${id}"`, '', 'edit')}${btn(o.status === 'active' ? 'Suspend' : 'Activate', 'orgstatus', `data-id="${id}"`, o.status === 'active' ? 'bad' : 'ok', 'power')}`)}
+    <div class="row" style="gap:8px;margin:-2px 0 12px;align-items:center">${contactBtns(o.phone, o.email, false)}<span class="hint">${esc(o.email || t('No client e-mail saved. Add it with Edit.'))}</span></div>
     <div class="grid g2">
       <div class="stack">
         ${group('Hostels / PGs', hs.map(h => { const s = statOf(h.id); return li({
           icon: 'building', ic: h.status === 'active' ? 'info' : 'mute',
           t: h.name, raw: false,
-          d: [h.city, t('{n} residents', { n: s.residents || 0 }), t('{n} records', { n: s.rows || 0 }),
+          d: [h.city, h.warden_phone ? t('Warden {p}', { p: h.warden_phone }) : '', t('{n} residents', { n: s.residents || 0 }), t('{n} records', { n: s.rows || 0 }),
               s.last_activity ? t('active {t}', { t: ago(s.last_activity) }) : ''].filter(Boolean).join(' · '),
           act: 'go', attrs: `data-to="admin-hostel/${h.id}"`,
           end: h.status === 'active' ? '' : badge('Inactive'),
@@ -124,7 +146,6 @@ function orgDetail(id) {
         ${group('Plan & billing', [li({ icon: 'rupee', ic: 'ok', t: `${inr(o.fee)} / ${t('year')}`, d: `${t(o.plan || 'standard')} · ${t('paid till')} ${o.paid_till ? fmtDate(o.paid_till) : '—'}`, act: 'orgpaid', attrs: `data-id="${id}"`, end: badge('Mark paid', 'acc') }), li({ icon: 'cal', ic: 'info', t: t('Change fee or paid-till date'), d: t('Edit the client'), act: 'editorg', attrs: `data-id="${id}"` }), li({ icon: 'bed', ic: 'info', t: t('Max {n} beds', { n: o.max_beds }), d: t('Max {n} hostels', { n: o.max_hostels }) })].join(''))}
       </div>
       <div class="stack">
-        ${group('Modules this client pays for', OPTIONAL_MODULES.map(k => { const st = orgModState(mods, hs, k); const note = [st.offIn ? t(st.offIn === hs.length ? 'Off in every hostel of this client' : 'Off in {a} of {b} hostels', { a: st.offIn, b: hs.length }) : '', modNote(k)].filter(Boolean).join(' · '); return `<div class="li noic"><span class="body"><span class="t">${esc(modLabel(k))}</span>${note ? `<span class="d">${esc(note)}</span>` : ''}</span><label class="sw"><input type="checkbox" data-orgmod="${k}" data-org="${id}" ${st.on ? 'checked' : ''} aria-label="${esc(modLabel(k))}"><span></span></label></div>`; }).join(''), t('This is the ceiling for every hostel of this client. To switch a module off in one hostel only, use Modules on that hostel above.'))}
         ${(() => {
           const wide = ms.filter(m => !m.hostel_id && m.role !== 'resident');
           const perHostel = ms.filter(m => m.hostel_id && m.role !== 'resident').length;
@@ -139,9 +160,10 @@ function orgDetail(id) {
 A.addorg = () => formModal({
   title: 'New client', submit: 'Create client', wide: true, note: t('Creates the client, their first hostel and the owner login in one step.'),
   fields: [
-    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true, maxlength: 80, plain: true }, { name: 'city', label: 'City', maxlength: 60 },
+    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true, maxlength: 80, plain: true }, { name: 'city', label: 'City', maxlength: 60 }, { name: 'oaddr', label: 'Office address', full: true, maxlength: 240, plain: true }, { name: 'oemail', label: 'Client e-mail', type: 'email', maxlength: 100, placeholder: 'name@example.com' },
     { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, max: 10000000, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, max: 100, value: 3 },
     { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true, maxlength: 80, plain: true }, { name: 'haddr', label: 'Address', maxlength: 240 },
+    ...geoFields().map(x => (x.name ? { ...x, name: x.name === 'lat' ? 'hlat' : 'hlng' } : x)), { name: 'hwarden_phone', label: 'Warden contact number', type: 'tel', maxlength: 10, placeholder: '10-digit mobile' },
     { type: 'section', label: 'Owner login' }, { name: 'oname', label: 'Owner name', required: true, maxlength: 80 }, { name: 'ophone', label: 'Owner mobile', type: 'tel', required: true, maxlength: 10, placeholder: '10-digit mobile' },
     { name: 'ouser', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._\-]{2,29}$/,
       info: t('Default is their 10-digit mobile number. They can manage all their hostels under this login.') },
@@ -151,7 +173,7 @@ A.addorg = () => formModal({
   onChange: loginFollow2('oname', 'ophone', 'ouser', 'opass'),
   onSubmit: async v => {
     if (String(v.opass).length < 6) return 'Password must be at least 6 characters';
-    const modules = Object.fromEntries(OPTIONAL_MODULES.filter(k => !v.mods.includes(k)).map(k => [k, false]));
+    const modules = {};
     const r = await Backend.admin('create_org', { org: { name: v.name, city: v.city, fee: v.fee || 0, max_hostels: v.max_hostels || 1, modules }, hostel: { name: v.hname, city: v.city, address: v.haddr }, owner: { full_name: v.oname, phone: v.ophone, username: v.ouser, password: v.opass } });
     closeModal(); adm.data = null; go('admin/' + r.org.id);
     credsSheet(t('{n} can now log in', { n: v.oname.split(' ')[0] }), v.oname, v.ophone, r.owner.username, r.owner.password,
@@ -161,8 +183,8 @@ A.addorg = () => formModal({
 });
 A.editorg = el => {
   const o = adm.data.orgs.find(x => x.id === el.dataset.id);
-  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true, maxlength: 80, plain: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name, maxlength: 80 }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone, maxlength: 10, placeholder: '10-digit mobile' }, { name: 'city', label: 'City', value: o.city, maxlength: 60 }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
-    onSubmit: async v => { if (v.paid_till && (v.paid_till < '2020-01-01' || v.paid_till > addDays(today(), 366 * 5))) return t('Paid till looks wrong ({d}). It can be at most 5 years from today.', { d: fmtDate(v.paid_till) }); const patch = { ...v, phone: phone10(v.phone), paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
+  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true, maxlength: 80, plain: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name, maxlength: 80 }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone, maxlength: 10, placeholder: '10-digit mobile' }, { name: 'city', label: 'City', value: o.city, maxlength: 60 }, { name: 'address', label: 'Office address', value: o.address || '', full: true, maxlength: 240, plain: true }, { name: 'email', label: 'Client e-mail', type: 'email', value: o.email || '', maxlength: 100 }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
+    onSubmit: async v => { if (v.paid_till && (v.paid_till < '2020-01-01' || v.paid_till > addDays(today(), 366 * 5))) return t('Paid till looks wrong ({d}). It can be at most 5 years from today.', { d: fmtDate(v.paid_till) }); if (v.email && !isValidEmail(v.email)) return t('Enter a valid client e-mail'); const patch = { ...v, phone: phone10(v.phone), email: v.email || null, address: v.address || null, paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
 };
 A.orgstatus = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id), next = o.status === 'active' ? 'suspended' : 'active'; confirmBox(next === 'suspended' ? t('Suspend {n}? Their staff and residents cannot log in until you activate again. Data is kept.', { n: o.name }) : t('Activate {n}?', { n: o.name }), async () => { await Backend.update('orgs', o.id, { status: next }); o.status = next; toast(next === 'active' ? 'Activated' : 'Suspended'); }, next === 'active' ? 'Activate' : 'Suspend', next === 'active' ? 'ok' : 'bad'); };
 // The date the client has paid till once `years` more are added (counted from today when nothing is paid ahead). Plans are yearly.
@@ -171,7 +193,7 @@ A.orgpaid = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); f
 A.delorg = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Delete client', submit: 'Delete forever', note: t('This deletes {n}, all their hostels, ALL data and their logins (the user IDs become free again). It cannot be undone. Download backups first.', { n: o.name }), fields: [{ name: 'confirm', label: 'Type the client name to confirm', required: true }], onSubmit: async v => { if (v.confirm.trim() !== o.name) return 'Name does not match'; await Backend.remove('orgs', o.id); adm.data = null; closeModal(); go('admin'); toast('Client deleted'); return false; } }); };
 // One client cannot have two hostels with the same name (case and spacing do not make a new name).
 const sameHostelName = (orgId, name, exceptId) => { const k = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase(); return (adm.data.hostels || []).some(h => h.org_id === orgId && h.id !== exceptId && k(h.name) === k(name)); };
-A.addhostel = el => formModal({ title: 'Add hostel', fields: [{ name: 'name', label: 'Hostel / PG name', required: true, plain: true }, { name: 'city', label: 'City' }, { name: 'address', label: 'Address', full: true }], onSubmit: async v => { if (sameHostelName(el.dataset.org, v.name)) return t('This client already has a hostel called "{n}". Use a different name.', { n: v.name }); await Backend.insert('hostels', { org_id: el.dataset.org, ...v, status: 'active', settings: {} }); adm.data = null; toast('Hostel added'); } });
+A.addhostel = el => formModal({ title: 'Add hostel', fields: [{ name: 'name', label: 'Hostel / PG name', required: true, plain: true }, { name: 'city', label: 'City' }, { name: 'address', label: 'Address', full: true }, ...geoFields(), { name: 'warden_phone', label: 'Warden contact number', type: 'tel', maxlength: 10, placeholder: '10-digit mobile' }], onSubmit: async v => { if (sameHostelName(el.dataset.org, v.name)) return t('This client already has a hostel called "{n}". Use a different name.', { n: v.name }); await Backend.insert('hostels', { org_id: el.dataset.org, ...v, lat: coordNum(v.lat), lng: coordNum(v.lng), warden_phone: phone10(v.warden_phone) || null, status: 'active', settings: {} }); adm.data = null; toast('Hostel added'); } });
 // Only the four columns a browser is allowed to PATCH on a hostel. Status is the platform
 // admin's and has its own switch on the console, through set_hostel_admin.
 A.edithostel = el => { const h = admHostel(el.dataset.id); if (!h) return; formModal({
@@ -179,10 +201,12 @@ A.edithostel = el => { const h = admHostel(el.dataset.id); if (!h) return; formM
   fields: [{ name: 'name', label: 'Hostel / PG name', value: h.name, required: true, full: true, plain: true },
     { name: 'city', label: 'City', value: h.city },
     { name: 'phone', label: 'Phone', type: 'tel', value: h.phone },
-    { name: 'address', label: 'Address', value: h.address, full: true }],
+    { name: 'address', label: 'Address', value: h.address, full: true },
+    ...geoFields(h.lat, h.lng),
+    { name: 'warden_phone', label: 'Warden contact number', type: 'tel', value: h.warden_phone || '', maxlength: 10, placeholder: '10-digit mobile' }],
   onSubmit: async v => {
     if (sameHostelName(h.org_id, v.name, h.id)) return t('This client already has a hostel called "{n}". Use a different name.', { n: v.name });
-    const patch = { name: v.name, city: v.city, phone: phone10(v.phone), address: v.address };
+    const patch = { name: v.name, city: v.city, phone: phone10(v.phone), address: v.address, lat: coordNum(v.lat), lng: coordNum(v.lng), warden_phone: phone10(v.warden_phone) || null };
     await Backend.update('hostels', h.id, patch);
     Object.assign(h, patch);
     const live = Store.hostels.find(x => x.id === h.id); if (live) Object.assign(live, patch);
@@ -322,8 +346,10 @@ function hostelInfoCard(h, o, st) {
   return `${group('This hostel', [
       row('building', 'info', 'Name', h.name, 'edithostel'),
       row('globe', 'teal', 'City', h.city, 'edithostel'),
-      row('door', 'mute', 'Address', h.address, 'edithostel'),
+      li({ icon: 'door', ic: 'mute', t: h.address || t('Not set'), d: t('Address'), act: 'edithostel', attrs: `data-id="${h.id}"`, end: `<a class="btn sm primary" data-act="noop" href="${esc(mapsUrl(h))}" target="_blank" rel="noopener">${ico('globe', 'sm')} ${esc(t('Directions'))}</a>` }),
+      li({ icon: 'globe', ic: 'teal', t: h.lat != null && h.lng != null ? `${h.lat}, ${h.lng}` : t('Not set'), d: t('Map location (latitude, longitude)'), act: 'edithostel', attrs: `data-id="${h.id}"` }),
       row('phone', 'ok', 'Phone', h.phone, 'edithostel'),
+      li({ icon: 'user', ic: 'info', t: h.warden_phone || t('Not set'), d: t('Warden contact number'), chev: false, end: h.warden_phone ? contactBtns(h.warden_phone, '') : '' }),
       li({ icon: 'power', ic: h.status === 'active' ? 'ok' : 'bad',
         t: t(h.status === 'active' ? 'Active' : 'Inactive'),
         d: t(h.status === 'active' ? 'Staff and residents can log in' : 'Nobody can log into this hostel'),
@@ -674,14 +700,36 @@ PAGES['admin-users'] = {
   render() {
     if (!adm.data) return admWait('All users');
     if (adm.data.error) return admErr();
-    const { profiles, members, orgs } = adm.data;
-    const f = curFlt('au', 'staff');
-    if (f !== 'staff' && !adm.res.started) admResidents();
-    const list = profiles.filter(p => { const ms = members.filter(m => m.user_id === p.id); const isRes = ms.length && ms.every(m => m.role === 'resident'); return (f === 'all' || (f === 'res' ? isRes : !isRes)) && needle('au', p.full_name, p.username, p.phone); });
-    return `${head('All users', t('{n} logins', { n: profiles.length }))}<div class="tool">${searchBox('au', 'Search name, user ID, mobile')}${chips('au', [['staff', 'Owners & staff'], ['res', 'Residents'], ['all', 'All']], 'staff')}</div>
-      ${group('', list.slice(0, ui.lim.au || 80).map(p => { const ms = members.filter(m => m.user_id === p.id); return li({ lead: avatar(p.full_name), t: `${p.full_name} · @${p.username}`, d: `${p.is_super ? t('Super admin') : ms.map(m => `${t(ROLES[m.role] ? ROLES[m.role].l : m.role)} @ ${(orgs.find(o => o.id === m.org_id) || {}).name || '?'}`).join(', ') || t('No access')}${p.active === false ? ' · ' + t('Disabled') : ''}`, act: 'admuser', attrs: `data-id="${p.id}"` }); }).join(''))}
-      ${list.length > (ui.lim.au || 80) ? `<div style="text-align:center;margin-top:12px">${btn('Show more', 'more', 'data-key="au" data-per="80"', 'sm')}</div>` : ''}
-      ${f !== 'staff' && !adm.res.done ? `<div style="text-align:center;margin-top:12px">${adm.res.loading ? '<div class="spin"></div>' : btn('Load more resident logins', 'admresmore', '', 'sm')}</div>` : ''}`;
+    const { profiles, members, orgs, hostels } = adm.data;
+    // First choose the client, then (optionally) one of its hostels, then the kind of user: only that group is listed.
+    const org = curFlt('auo', ''), hos = curFlt('auh', ''), role = curFlt('aur', 'owner');
+    const orgHostels = hostels.filter(h => h.org_id === org);
+    const hostel = orgHostels.some(h => h.id === hos) ? hos : '';
+    if (org && role === 'res' && !adm.res.started) admResidents();
+    const kindOf = m => (m.role === 'resident' ? 'res' : m.role === 'owner' || (m.role === 'manager' && !m.hostel_id) ? 'owner' : 'staff');
+    const profOf = id => profiles.find(p => p.id === id);
+    let rows = [];
+    if (org) {
+      const seen = new Set();
+      for (const m of members) {
+        if (m.org_id !== org || kindOf(m) !== role || (hostel && m.hostel_id && m.hostel_id !== hostel)) continue;
+        if (hostel && !m.hostel_id && role !== 'owner') continue;
+        const p = profOf(m.user_id); if (!p || seen.has(p.id)) continue; seen.add(p.id);
+        if (!needle('au', p.full_name, p.username, p.phone)) continue;
+        rows.push({ p, m });
+      }
+      rows.sort((x, y) => String(x.p.full_name).localeCompare(String(y.p.full_name)));
+    }
+    const cnt = k => (org ? new Set(members.filter(m => m.org_id === org && kindOf(m) === k && (!hostel || !m.hostel_id || m.hostel_id === hostel)).map(m => m.user_id)).size : 0);
+    const orgSel = `<select class="hsel" data-flt="auo" aria-label="${esc(t('Client'))}"><option value="">${esc(t('Choose a client…'))}</option>${orgs.slice().sort((x, y) => String(x.name).localeCompare(String(y.name))).map(o => `<option value="${o.id}" ${o.id === org ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>`;
+    const hosSel = org ? `<select class="hsel" data-flt="auh" aria-label="${esc(t('Hostel'))}"><option value="">${esc(t('All hostels'))}</option>${orgHostels.map(h => `<option value="${h.id}" ${h.id === hostel ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select>` : '';
+    return `${head('All users', org ? t('{n} {r}', { n: rows.length, r: t(role === 'res' ? 'residents' : role === 'owner' ? 'owners' : 'staff') }) : t('Choose a client to see its people'))}
+      <div class="tool">${orgSel}${hosSel}</div>
+      ${org ? `<div class="tool">${searchBox('au', 'Search name, user ID, mobile')}${chips('aur', [['owner', t('Owners') + ' ' + cnt('owner')], ['staff', t('Staff') + ' ' + cnt('staff')], ['res', t('Residents') + ' ' + cnt('res')]], 'owner')}</div>` : ''}
+      ${!org ? `<div class="card">${empty('Pick a client first', 'Then pick Owners, Staff or Residents. Only the people of that client are shown, never everyone in one long list.')}</div>`
+        : `${group('', rows.slice(0, ui.lim.au || 80).map(({ p, m }) => li({ lead: avatar(p.full_name), t: `${p.full_name} · @${p.username}`, d: [t(ROLES[m.role] ? ROLES[m.role].l : m.role), m.hostel_id ? (hostels.find(h => h.id === m.hostel_id) || {}).name : t('every hostel'), p.phone || '', p.active === false ? t('Disabled') : ''].filter(Boolean).join(' · '), act: 'admuser', attrs: `data-id="${p.id}"` })).join(''))}
+        ${rows.length > (ui.lim.au || 80) ? `<div style="text-align:center;margin-top:12px">${btn('Show more', 'more', 'data-key="au" data-per="80"', 'sm')}</div>` : ''}
+        ${role === 'res' && !adm.res.done ? `<div style="text-align:center;margin-top:12px">${adm.res.loading ? '<div class="spin"></div>' : btn('Load more resident logins', 'admresmore', '', 'sm')}</div>` : ''}`}`;
   },
 };
 A.admresmore = () => admResidents();
@@ -697,6 +745,76 @@ A.admactive = async el => { const p = adm.data.profiles.find(x => x.id === el.da
 A.admuserdel = el => { const p = adm.data.profiles.find(x => x.id === el.dataset.id); confirmBox(t('Delete login @{u}? Their hostel records stay.', { u: p.username }), async () => { await Backend.admin('delete_user', { user_id: p.id }); adm.data = null; }, 'Delete', 'bad'); };
 A.admmemdel = el => confirmBox(t('Remove this access?'), async () => { await Backend.remove('members', el.dataset.id); adm.data = null; }, 'Remove', 'bad');
 
+
+/* ===================================================================== Usage & health
+ * What can be measured from here is measured (database size, stored papers, records). RAM, CPU and Cloudflare request
+ * counts need an API token the browser must never hold, so they are shown as "not connected" instead of invented.
+ * Each reading is remembered once a day in this browser; from two or more days the growth gives "about N days left". */
+const HEALTH_PLAN = { dbMb: 500, filesMb: 1024 };       // Supabase free plan; change here when the project is upgraded
+const HEALTH_LINKS = {
+  supaPlan: 'https://supabase.com/dashboard/project/_/settings/billing/subscription', supaBill: 'https://supabase.com/dashboard/org/_/billing', supaUsage: 'https://supabase.com/dashboard/org/_/usage',
+  cfPlan: 'https://dash.cloudflare.com/?to=/:account/workers/plans', cfBill: 'https://dash.cloudflare.com/?to=/:account/billing', cfCard: 'https://dash.cloudflare.com/?to=/:account/billing/payment-info',
+};
+function healthSnap(db, files) {
+  try {
+    const k = 'sarv.health.snap', arr = JSON.parse(localStorage.getItem(k) || '[]'), day = today();
+    if (db != null && !arr.some(x => x.d === day)) { arr.push({ d: day, db, files: files || 0 }); localStorage.setItem(k, JSON.stringify(arr.slice(-45))); }
+    return arr;
+  } catch (e) { return []; }
+}
+// days until a limit is reached at the pace of the last readings (null = not enough readings yet / not growing)
+function healthDaysLeft(key, used, limit, snaps) {
+  const pts = snaps.filter(x => x[key] != null); if (pts.length < 2) return null;
+  const a = pts[0], b = pts[pts.length - 1], days = Math.max(1, diffDays(b.d, a.d)), perDay = (b[key] - a[key]) / days;
+  return perDay > 0.001 ? Math.max(0, Math.floor((limit - used) / perDay)) : null;
+}
+function healthMetrics() {
+  const d = adm.data || {}, size = d.size, files = d.files ? Math.round(sum(d.files, r => +r.mb || 0) * 10) / 10 : null;
+  const snaps = healthSnap(size, files), out = [];
+  const add = (o) => { o.pct = o.limit ? Math.round((o.used / o.limit) * 100) : 0; o.level = o.pct >= 85 ? 'bad' : o.pct >= 70 ? 'warn' : 'ok'; out.push(o); };
+  if (size != null) add({ k: 'db', label: 'Database', icon: 'chart', used: size, limit: HEALTH_PLAN.dbMb, unit: 'MB', days: healthDaysLeft('db', size, HEALTH_PLAN.dbMb, snaps),
+    info: t('The space taken by all your clients\' records: residents, bills, payments, readings. Example: 400 of 500 MB means 100 MB is left before the free plan is full.'),
+    after: t('When it is full the app can stop saving new bills and payments. Upgrade to Supabase Pro (8 GB) before that, or archive old logs (Maintenance below).'), up: 'supa' });
+  if (files != null) add({ k: 'files', label: 'Document storage', icon: 'folder', used: files, limit: HEALTH_PLAN.filesMb, unit: 'MB', days: healthDaysLeft('files', files, HEALTH_PLAN.filesMb, snaps),
+    info: t('The photos of Aadhaar cards and other papers. Example: 20 residents a day with 2 photos each is about 5 MB a day.'),
+    after: t('When it is full new papers cannot be uploaded and check-ins with documents will fail. Run "Delete old documents now" or upgrade storage.'), up: 'supa' });
+  return { list: out, snaps };
+}
+const healthOk = () => !!(adm.data && !adm.data.error);
+// Red banner for the super admin home: only what is close to its limit, with the likely date and what to do.
+function healthBanner() {
+  if (!healthOk()) return '';
+  const bad = healthMetrics().list.filter(m => m.pct >= 70); if (!bad.length) return '';
+  return bad.map(m => {
+    const red = m.pct >= 85, dl = m.days;
+    return `<div class="note ${red ? 'bad' : 'warn'}" style="margin-bottom:10px"><b>${ico('alert', 'sm')} ${esc(t(m.label))}: ${m.pct}% ${esc(t('full'))}${dl != null ? ' · ' + esc(t('about {n} days left', { n: dl })) : ''}</b><br>${esc(m.after)}<div style="margin-top:8px"><a class="btn sm primary" data-act="noop" href="${HEALTH_LINKS.supaPlan}" target="_blank" rel="noopener">${esc(t('Upgrade now'))}</a> <button class="btn sm" data-act="go" data-to="admin-usage">${esc(t('See details'))}</button></div></div>`;
+  }).join('');
+}
+function healthCard(m) {
+  const color = m.level === 'bad' ? 'bad' : m.level === 'warn' ? 'warn' : 'ok';
+  const left = Math.max(0, Math.round((m.limit - m.used) * 10) / 10);
+  const rec = m.pct >= 85 ? t('Upgrade now: you are about to run out.') : m.pct >= 70 ? t('Plan an upgrade soon.') : t('Healthy. Nothing to do.');
+  return `<div class="card" style="margin-bottom:10px"><div class="row sb" style="align-items:center">${withTip(`<b>${esc(t(m.label))}</b>`, tip(esc(m.info)))}<span class="badge ${color}">${m.pct}%</span></div>
+    <div class="bar ${color}" style="margin:10px 0 6px"><i style="width:${Math.min(100, m.pct)}%"></i></div>
+    <div class="xs muted">${m.used} ${m.unit} ${esc(t('used of'))} ${m.limit} ${m.unit} · ${left} ${m.unit} ${esc(t('left'))}${m.days != null ? ' · ' + esc(t('about {n} days at the current pace', { n: m.days })) : ''}</div>
+    <div class="sm" style="margin-top:6px">${esc(rec)}</div></div>`;
+}
+function healthPanel() {
+  const { list } = healthMetrics(), nc = (label, info) => `<div class="card" style="margin-bottom:10px"><div class="row sb" style="align-items:center">${withTip(`<b>${esc(t(label))}</b>`, tip(esc(info)))}<span class="badge">${esc(t('Not connected'))}</span></div><div class="xs muted" style="margin-top:6px">${esc(t('Shown once a Supabase / Cloudflare API token is added on the server (SUPABASE_ACCESS_TOKEN, CLOUDFLARE_API_TOKEN). Until then open the dashboard link below.'))}</div></div>`;
+  const grow = healthMetrics().snaps.length < 2 ? `<p class="hint">${esc(t('Days-left estimates appear after two days of readings.'))}</p>` : '';
+  return `<div class="group-t">${esc(t('Health at a glance'))}</div>
+    ${list.map(healthCard).join('')}${grow}
+    ${nc('Server memory (RAM)', t('How much working memory the database server is using. Example: if RAM is almost full, pages get slow even when storage is fine.'))}
+    ${nc('Processor (CPU)', t('How busy the database server is. Example: 90% CPU for hours means many people are loading reports at once; the app slows down or times out.'))}
+    ${nc('Cloudflare requests', t('How many times the app was opened or used today. The free Workers plan allows 100,000 a day. Example: 50 hostels using it all day is far below that.'))}
+    ${group('Upgrade & billing', [
+      li({ icon: 'rupee', ic: 'ok', t: t('Supabase: upgrade plan'), d: t('Pro plan gives 8 GB database and 100 GB storage.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaPlan}" target="_blank" rel="noopener"` }),
+      li({ icon: 'wallet', ic: 'info', t: t('Supabase: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaBill}" target="_blank" rel="noopener"` }),
+      li({ icon: 'chart', ic: 'info', t: t('Supabase: usage dashboard'), d: t('RAM, CPU and egress in detail.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaUsage}" target="_blank" rel="noopener"` }),
+      li({ icon: 'rupee', ic: 'ok', t: t('Cloudflare: Workers plan'), d: t('Paid plan removes the daily request limit.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfPlan}" target="_blank" rel="noopener"` }),
+      li({ icon: 'wallet', ic: 'info', t: t('Cloudflare: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfBill}" target="_blank" rel="noopener"` }),
+    ].join(''))}`;
+}
 PAGES['admin-usage'] = {
   title: 'Usage & health', ...superOnly,
   render() {
@@ -704,6 +822,7 @@ PAGES['admin-usage'] = {
     if (adm.data.error) return admErr();
     const { hostels, orgs, size } = adm.data, rows = sum(adm.data.stats, s => +s.rows || 0);
     return `${head('Usage & health', t('Free tier: Supabase 500 MB database · Vercel 100 GB bandwidth.'), btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync'))}
+      ${healthBanner()}${healthPanel()}
       <div class="grid g3 keep2" style="margin-bottom:14px">${kpi('Database size', size != null ? size + ' MB' : '—', `${pct(size || 0, 500)}% ${t('of free limit')}`, size > 400 ? 'bad' : 'ok', null, 'chart')}${kpi('Records', rows.toLocaleString('en-IN'), t('across {n} hostels', { n: hostels.length }), '', null, 'layers')}${kpi('Avg per hostel', hostels.length ? Math.round(rows / hostels.length).toLocaleString('en-IN') : 0, t('≈ 1 KB each'), '', null, 'building')}</div>
       <div class="bar ${size > 400 ? 'bad' : 'ok'}" style="margin-bottom:8px"><i style="width:${Math.min(100, pct(size || 0, 500))}%"></i></div>
       ${adm.data.usage && adm.data.usage.data != null ? `<p class="hint" style="margin-bottom:14px">${esc(t('Your clients’ data: {a} MB. The other {b} MB is Supabase’s own tables (logins, storage, migrations) — they are there from day one and do not grow with the business.', { a: adm.data.usage.data, b: Math.max(0, Math.round((adm.data.usage.total - adm.data.usage.data) * 10) / 10) }))}</p>` : '<div style="margin-bottom:14px"></div>'}

@@ -34,11 +34,22 @@ function cleanPhone(s) {
   let d = str.replace(/\D/g, '');
   if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
   else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-  if (d.length === 10 && /^[5-9]/.test(d)) return d;
+  if (d.length === 10 && /^[0-9]{10}$/.test(d)) return d;
   return null;
 }
+// The photos asked for each required document (one, or Front + Back ...), from Settings > Documents.
+const docSlots = (docs) => {
+  const d0 = docs || {}, req = d0.required || ['Aadhaar card', 'Passport photo'], ph = d0.photos || {};
+  const aad = d => /aadhaar|aadhar/i.test(d);
+  return req.flatMap(d => {
+    const c = ph[d] || {}, n = +c.count || (aad(d) ? 2 : 1);
+    if (n < 2) return [d];
+    const names = Array.isArray(c.names) ? c.names : [], dflt = aad(d) ? ['Front', 'Back'] : [];
+    return Array.from({ length: Math.min(n, 4) }, (_, i) => `${d} (${String(names[i] || dflt[i] || `Photo ${i + 1}`).trim()})`);
+  });
+};
 const phone10 = s => cleanPhone(s) || digits(s).slice(-10);
-const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 30) || 'user';
+const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 30).replace(/\.+$/, '') || 'user';
 const clone = o => JSON.parse(JSON.stringify(o));
 const isObj = o => o && typeof o === 'object' && !Array.isArray(o);
 function deepMerge(base, over) {
@@ -146,6 +157,7 @@ const IC = {
   box2: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 13h6"/>',
   pack: '<path d="M4 8h16v12H4z"/><path d="M8 8V5a4 4 0 0 1 8 0v3"/>',
   skip: '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+  bookmark: '<path d="M6 3h12v18l-6-4.5L6 21z"/>',
   star: '<path d="m12 3 2.8 5.8 6.2.9-4.5 4.4 1.1 6.2L12 17.4 6.4 20.3l1.1-6.2L3 9.7l6.2-.9z"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
@@ -240,7 +252,7 @@ function fieldHtml(f) {
   const itype = isPhone ? 'tel' : (f.type || 'text');
   const dType = isPhone ? 'data-type="phone"' : isAadhaar ? 'data-type="aadhaar"' : f.plain ? 'data-type="plain"' : isPersonName ? 'data-type="name"' : f.type === 'number' ? 'data-type="number"' : '';
   const imode = isPhone ? 'inputmode="numeric"' : isAadhaar ? 'inputmode="numeric"' : f.type === 'number' ? `inputmode="${f.step && f.step < 1 ? 'decimal' : 'numeric'}"` : f.inputmode ? `inputmode="${f.inputmode}"` : '';
-  const pat = isPhone ? 'pattern="[5-9][0-9]{9}"' : isAadhaar ? 'pattern="[0-9]{12}"' : (f.pattern ? `pattern="${f.pattern.source || f.pattern}"` : '');
+  const pat = isPhone ? 'pattern="[0-9]{10}"' : isAadhaar ? 'pattern="[0-9]{12}"' : (f.pattern ? `pattern="${f.pattern.source || f.pattern}"` : '');
   const ph = f.placeholder || (isPhone ? '10-digit mobile' : isAadhaar ? '12-digit Aadhaar' : '');
 
   const extra = [f.min != null && `min="${f.min}"`, f.max != null && `max="${f.max}"`, f.step && `step="${f.step}"`, mx && `maxlength="${mx}"`,
@@ -263,9 +275,11 @@ function formValues(form, fields) {
 function setField(form, name, value) { const el = form.elements[name]; if (el && document.activeElement !== el) el.value = value ?? ''; }
 function showField(form, name, on) { const w = $(`[data-fw="${name}"]`, form); if (w) w.hidden = !on; }
 // Generic form sheet. onSubmit may return an error string to keep the sheet open, or a promise.
-function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, preview, onChange, extra = '', danger }) {
+function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, preview, onChange, extra = '', danger: dangerOpt }) {
+  // `danger: true` only means "destructive submit" (red button); an object adds an extra left-hand button.
+  const danger = dangerOpt && typeof dangerOpt === 'object' ? dangerOpt : null, dangerSubmit = dangerOpt === true;
   const body = `<form id="mform" novalidate autocomplete="off">${note ? `<div class="note">${note}</div>` : ''}<div class="fgrid">${fields.map(fieldHtml).join('')}</div>${extra}<div class="prev" id="mprev"></div><div class="ferr" id="mferr" role="alert"></div></form>`;
-  openModal({ title, body, wide, foot: `${danger ? `<button class="btn bad" type="button" data-act="mdanger">${esc(t(danger.label))}</button><span class="sp"></span>` : ''}<button class="btn" type="button" data-act="close">${esc(t('Cancel'))}</button><button class="btn primary" type="button" data-act="msubmit">${esc(t(submit))}</button>` });
+  openModal({ title, body, wide, foot: `${danger ? `<button class="btn bad" type="button" data-act="mdanger">${esc(t(danger.label))}</button><span class="sp"></span>` : ''}<button class="btn" type="button" data-act="close">${esc(t('Cancel'))}</button><button class="btn ${dangerSubmit ? 'bad' : 'primary'}" type="button" data-act="msubmit">${esc(t(submit))}</button>` });
   const form = $('#mform');
   const sanitizeField = el => {
     if (!el || !el.name || el.type === 'file') return;
@@ -282,6 +296,12 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
     } else if (isAadhaar) {
       let val = el.value.replace(/\D/g, '');
       if (val.length > 12) val = val.slice(0, 12);
+      if (el.value !== val) el.value = val;
+    } else if (el.name === 'city') {
+      // City: letters, spaces, dots, hyphens only (no digits or symbols)
+      let val = el.value;
+      try { val = val.replace(/[^\p{L}\p{M}\s.\-']/gu, ''); } catch (_) { val = val.replace(/[^a-zA-Z\s.\-']/g, ''); }
+      if (val.length > 40) val = val.slice(0, 40);
       if (el.value !== val) el.value = val;
     } else if (isName) {
       let val = el.value;
@@ -817,8 +837,11 @@ document.addEventListener('click', e => {
 });
 
 /* One phone-notification style card. The wrapper carries the red "delete" backdrop; app.js moves the card with the finger. */
-function swipeCard({ act, id, icon = 'bell', title, body = '', time = '', pinned = false, actions = '', attrs = '', label = 'Delete', tone = '' }) {
-  return `<div class="swp-wrap" data-swact="${act}" data-id="${esc(id)}" ${attrs}><div class="swp-bg"><span>${ico('trash', 'sm')} ${esc(t(label))}</span><span>${esc(t(label))} ${ico('trash', 'sm')}</span></div>
+// With swRight / swLeft the two directions do different things (swipe right: edit, swipe left: delete) and the card springs back
+// instead of disappearing; the action itself (a confirm box for delete) decides what happens next.
+function swipeCard({ act, id, icon = 'bell', title, body = '', time = '', pinned = false, actions = '', attrs = '', label = 'Delete', tone = '', swRight = '', swLeft = '', rightLabel = 'Edit', rightIcon = 'edit' }) {
+  const dual = swRight || swLeft;
+  return `<div class="swp-wrap ${dual ? 'dual' : ''}" data-swact="${act}" ${swRight ? `data-swright="${swRight}"` : ''} ${swLeft ? `data-swleft="${swLeft}"` : ''} data-id="${esc(id)}" ${attrs}><div class="swp-bg"><span>${ico(dual ? rightIcon : 'trash', 'sm')} ${esc(t(dual ? rightLabel : label))}</span><span>${esc(t(label))} ${ico('trash', 'sm')}</span></div>
     <div class="swp ncard"><span class="nc-ic ${tone}">${ico(icon, 'sm')}</span><div class="nc-body"><div class="nc-top"><b class="nc-t">${pinned ? '' : ''}${esc(title)}</b><span class="nc-time">${esc(time)}</span></div>${body ? `<div class="nc-msg">${esc(body)}</div>` : ''}${actions ? `<div class="nc-acts">${actions}</div>` : ''}</div></div></div>`;
 }
 
@@ -912,7 +935,7 @@ function homeHero({ name, sub, cards = [], strip = [] }) {
       <div class="hh-cv${String(c.v).replace(/<[^>]*>/g, '').length > 9 ? ' hh-long' : ''}">${val}</div>
       ${c.pill ? `<div class="hh-cm"><span class="hh-pill ${c.stone || c.tone || ''}">${c.pill}</span><span class="hh-cs2">${c.s || ''}</span></div>` : `<div class="hh-cs ${c.stone || c.tone || ''}">${c.s || '&nbsp;'}</div>`}
       ${seg}${c.area ? areaSvg(c.area, c.areaLabels) : ''}${c.bar != null ? `<i class="hh-cb"><u style="width:${Math.max(4, Math.min(100, c.bar))}%"></u></i>` : ''}${c.action || ''}`;
-    return `<div class="hh-c t-${tn}" style="--i:${i}" ${c.to ? `role="button" tabindex="0" data-act="go" data-to="${c.to}"` : ''}>${inner}</div>`;
+    return `<div class="hh-c t-${tn}" style="--i:${i}" ${c.to ? `role="button" tabindex="0" data-act="go" data-to="${c.to}"` : c.act ? `role="button" tabindex="0" data-act="${c.act}" style="cursor:pointer"` : ''}>${inner}</div>`;
   };
   return `<section class="hh">
     <div class="hh-top"><img class="hh-art" src="${esc(hhPhoto())}" alt="" decoding="async"><p class="hh-hi">${esc(t(greeting()))},</p><h1 class="hh-name">${esc(name)}</h1><p class="hh-sub">${sub}</p><i class="hh-line"></i></div>

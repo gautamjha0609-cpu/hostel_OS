@@ -470,11 +470,22 @@ A.hksched = el => {
     },
   });
   showField(form, 'days', s.freq === 'weekly');
-  form.addEventListener('change', e => {
-    const fl = e.target.dataset.floor, fs = e.target.dataset.floorstaff;
-    if (fl != null) $$(`input[data-fl="${CSS.escape(fl)}"]`, form).forEach(x => { x.checked = e.target.checked; });
-    if (fs != null && e.target.value) $$(`input[data-fl="${CSS.escape(fs)}"]`, form).forEach(x => { x.checked = true; form.elements['as_' + x.value].value = e.target.value; });
+  // A select changed by code does not fire 'change' by itself, so the picker button keeps showing the old name.
+  // setStaff() sets the value AND repaints the picker, so what you see is always what will be saved.
+  const setStaff = (sel, val) => { if (!sel) return; sel.value = val || ''; const w = sel.closest('.pk'); if (w) Picker.paint(w); };
+  // The whole-floor box shows the staff member when every ticked room of that floor has the same one.
+  const syncFloors = () => $$('select[data-floorstaff]', form).forEach(fsel => {
+    const ticked = $$(`input[name="room"][data-fl="${CSS.escape(fsel.dataset.floorstaff)}"]:checked`, form);
+    const vals = [...new Set(ticked.map(x => form.elements['as_' + x.value].value))];
+    setStaff(fsel, vals.length === 1 ? vals[0] : '');
   });
+  form.addEventListener('change', e => {
+    const fl = e.target.dataset.floor, fst = e.target.dataset.floorstaff;
+    if (fl != null) $$(`input[data-fl="${CSS.escape(fl)}"]`, form).forEach(x => { x.checked = e.target.checked; });
+    if (fst != null && e.target.value) $$(`input[data-fl="${CSS.escape(fst)}"]`, form).forEach(x => { x.checked = true; setStaff(form.elements['as_' + x.value], e.target.value); });
+    if (fl != null || fst != null || (e.target.name || '').startsWith('as_') || e.target.name === 'room') syncFloors();
+  });
+  syncFloors();
 };
 
 /* ===================================================================== laundry (two panels: receive | complete) */
@@ -726,10 +737,10 @@ function staffForm(x) {
       const salVal = Number(v.salary) || 0;
       // same care as a resident: valid unique mobile, real Aadhaar, joining date not in the future
       const ph = phone10(v.phone);
-      if (!/^[5-9][0-9]{9}$/.test(ph)) return t('Mobile must be a 10-digit mobile number.');
+      if (!/^[0-9]{10}$/.test(ph)) return t('Mobile must be a 10-digit mobile number.');
       if (staffList().some(z => z.id !== s.id && phone10(z.phone) === ph)) return t('A staff member with this mobile number already exists');
       const aad = String(v.idNo || '').replace(/[^0-9]/g, '');
-      if (aad.length !== 12 || /^[01]/.test(aad)) return t('Aadhaar number must be exactly 12 digits');
+      if (aad.length !== 12) return t('Aadhaar number must be exactly 12 digits');
       if (v.joinDate > today()) return t('The joining date cannot be in the future');
       if (!(salVal > 0)) return t('Enter the monthly salary');
       const rec = Store.put('staff', {

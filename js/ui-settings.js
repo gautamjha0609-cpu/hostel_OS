@@ -41,6 +41,34 @@ const SETTINGS_SECTIONS = [
   ]]
 ];
 
+// Extra words each settings page should be found by (on top of its title and summary).
+const SETTINGS_KEYWORDS = {
+  property: 'hostel name address upi payment qr gst logo phone contact multiple upi floor rent electricity account',
+  site: 'website landing page public slug domain gallery photos',
+  expcats: 'expense category groceries salary spend cost',
+  rent: 'rent billing due date cycle prorate proration joining calendar month late',
+  deposits_late: 'security deposit refund non refundable late fee penalty grace caution money disable',
+  elec_utils: 'electricity power meter unit rate slab free units bijli split',
+  charges_services: 'extra charges wifi wi-fi parking ac maintenance service',
+  laundry: 'laundry clothes pieces washing',
+  checkin_out: 'check in checkout notice period approval kyc admission shortfall',
+  qr: 'self registration qr join scan form',
+  accessories: 'room accessories checklist heater fan bucket cupboard',
+  docs: 'documents aadhaar id proof photo kyc papers',
+  police: 'police verification form c state portal',
+  gate: 'gate visitors guard entry security',
+  attend: 'attendance roll call present absent night',
+  mess_food: 'meals mess food billing breakfast lunch dinner tiffin',
+  dishes: 'dishes menu food items',
+  items: 'stock items units kg litre kitchen inventory',
+  hk: 'housekeeping cleaning rooms missed',
+  staff_perms: 'staff roles permissions punch in attendance manager warden cook',
+  users: 'logins accounts password users residents staff',
+  depts: 'departments kitchen laundry security',
+  agreements_comm: 'agreement whatsapp message templates reminders sms email communication',
+  data: 'backup export download csv excel data'
+};
+
 function activeRulesSummaryCard() {
   const s = S(), h = Store.hostel();
   const eff = effectiveSettings(h ? h.id : null);
@@ -48,7 +76,7 @@ function activeRulesSummaryCard() {
   const rentDesc = s.rent.model === 'joining_date' ? t('Joining-date cycle') : t('Calendar Monthly (Day {d})', { d: s.rent.day });
   const elecDesc = s.elec.pricing === 'slab' ? t('Slab-based tiered pricing') : t('Fixed ₹{r}/unit', { r: s.elec.rate });
   const messDesc = { included: t('Included in rent'), compulsory: t('Compulsory (₹{f}/mo)', { f: s.mess.monthlyFee }), optional: t('Optional (₹{f}/mo)', { f: s.mess.monthlyFee }), per_meal: t('Per-meal billing') }[s.mess.billing || 'included'];
-  const depDesc = s.deposit.mode === 'rent_multiple' ? t('{m}x Monthly rent', { m: s.deposit.rentMultiplier || 1 }) : s.deposit.mode === 'fixed' ? inr(s.deposit.fixedAmount || 0) : s.deposit.mode === 'per_bed' ? t('Set per room / bed') : t('Typed at check-in');
+  const depDesc = s.deposit.enabled === false ? t('No security deposit') : s.deposit.mode === 'rent_multiple' ? t('{m}x Monthly rent', { m: s.deposit.rentMultiplier || 1 }) : s.deposit.mode === 'fixed' ? inr(s.deposit.fixedAmount || 0) : s.deposit.mode === 'per_bed' ? t('Set per room / bed') : t('Typed at check-in');
   const lateDesc = s.lateFee.on ? (s.lateFee.mode === 'daily' ? t('₹{a}/day (cap ₹{c})', { a: s.lateFee.dailyAmount || 50, c: s.lateFee.maxCap || 1000 }) : inr(s.lateFee.amount || 200)) : t('Disabled');
 
   const cell = (l, v) => `<div><small>${esc(t(l))}</small><b>${esc(v)}</b></div>`;
@@ -70,17 +98,27 @@ PAGES.settings = {
   render(sec) {
     if (sec && SETTINGS_PAGES[sec]) return `<div class="narrow settings-pg" style="max-width:720px"><div class="row" style="margin:6px 0 4px">${btn('Settings', 'go', 'data-to="settings"', 'ghost sm', 'back')}</div>${SETTINGS_PAGES[sec]()}</div>`;
     return `<div class="narrow settings-pg" style="max-width:720px">${head('Settings', esc(hostelName()))}
+      <div class="card" style="padding:8px 12px;margin-bottom:10px"><input id="setSearch" type="search" placeholder="${esc(t('Search settings (e.g. deposit, UPI, late fee, units)'))}" autocomplete="off" data-lpignore="true" data-1p-ignore style="width:100%" aria-label="${esc(t('Search settings'))}"></div><div id="setNone" class="hint" hidden style="padding:8px 4px">${esc(t('No setting matches that. Try another word.'))}</div>
       ${activeRulesSummaryCard()}
-      ${SETTINGS_SECTIONS.map(([title, rows]) => { const vis = rows.filter(r => !r[4] || can(r[4])); return vis.length ? group(title, vis.map(([k, l, icn, col]) => li({ icon: icn, ic: col, t: t(l), d: settingSummary(k), act: 'go', attrs: `data-to="settings/${k}"` })).join('')) : ''; }).join('')}</div>`;
+      ${SETTINGS_SECTIONS.map(([title, rows]) => { const vis = rows.filter(r => !r[4] || can(r[4])); return vis.length ? group(title, vis.map(([k, l, icn, col]) => li({ icon: icn, ic: col, t: t(l), d: settingSummary(k), act: 'go', attrs: `data-to="settings/${k}" data-kw="${esc((l + ' ' + t(l) + ' ' + (SETTINGS_KEYWORDS[k] || '') + ' ' + settingSummary(k)).toLowerCase())}"` })).join('')) : ''; }).join('')}</div>`;
   },
 };
+document.addEventListener('input', e => {
+  const inp = e.target; if (!inp || inp.id !== 'setSearch') return;
+  const q = inp.value.trim().toLowerCase(), words = q.split(/\s+/).filter(Boolean), root = inp.closest('.settings-pg'); if (!root) return;
+  let any = false;
+  root.querySelectorAll('[data-kw]').forEach(row => { const ok = !words.length || words.every(w => row.dataset.kw.includes(w)); row.hidden = !ok; if (ok) any = true; });
+  root.querySelectorAll('.group').forEach(g => { const rows = g.querySelectorAll('[data-kw]'); if (!rows.length) return; const show = [...rows].some(r => !r.hidden); g.hidden = !show; const h = g.previousElementSibling; if (h && h.classList.contains('group-t')) h.hidden = !show; });
+  const rc = root.querySelector('.rules-card'); if (rc) rc.hidden = !!words.length;
+  const none = root.querySelector('#setNone'); if (none) none.hidden = any || !words.length;
+});
 function settingSummary(k) {
   const s = S();
   return {
     property: s.pay.upiId ? `UPI: ${s.pay.upiId}` : t('Add your UPI ID to send pay links'),
     pay: s.pay.upiId ? `UPI: ${s.pay.upiId}` : t('Add your UPI ID to send pay links'),
     rent: s.rent.model === 'joining_date' ? t('Joining-date cycle · Due in {d} days', { d: s.rent.dueDays || 5 }) : t('Due on day {d} · late fee {f} after {g} days', { d: s.rent.day, f: s.lateFee.on ? (s.lateFee.mode === 'daily' ? inr(s.lateFee.dailyAmount) + '/d' : inr(s.lateFee.amount)) : t('off'), g: s.lateFee.graceDays ?? 5 }),
-    deposits_late: t('Deposit: {m} · Late fee: {l}', { m: t(DEPOSIT_RULE_LABEL[s.deposit.mode] || 'Entered at check-in'), l: s.lateFee.on ? (s.lateFee.mode === 'daily' ? inr(s.lateFee.dailyAmount) + '/d' : inr(s.lateFee.amount)) : t('off') }),
+    deposits_late: t('Deposit: {m} · Late fee: {l}', { m: s.deposit.enabled === false ? t('off') : t(DEPOSIT_RULE_LABEL[s.deposit.mode] || 'Entered at check-in'), l: s.lateFee.on ? (s.lateFee.mode === 'daily' ? inr(s.lateFee.dailyAmount) + '/d' : inr(s.lateFee.amount)) : t('off') }),
     elec_utils: s.elec.pricing === 'slab' ? t('Tiered slab rates · {s}', { s: t(s.elec.sharing) }) : t('₹{r}/unit · {f} free units per {m}', { r: s.elec.rate, f: s.elec.freeUnits, m: t(s.elec.freeMode === 'room' ? 'room' : 'resident') }),
     elec: t('₹{r}/unit · {f} free units per {m}', { r: s.elec.rate, f: s.elec.freeUnits, m: t(s.elec.freeMode === 'room' ? 'room' : 'resident') }),
     mess_food: { included: t('Included in rent'), compulsory: t('Compulsory (₹{f}/mo)', { f: s.mess.monthlyFee }), optional: t('Optional (₹{f}/mo)', { f: s.mess.monthlyFee }), per_meal: t('Per-meal billing') }[s.mess.billing || 'included'],
@@ -148,7 +186,7 @@ A.savesettings = async el => {
     if (typeof x === 'string' && /[<>]/.test(x)) { err.textContent = t('{f} cannot contain < or > characters.', { f: L }); form.elements[fl.name]?.focus?.(); return; }
     if (fl.pattern instanceof RegExp && x && !fl.pattern.test(String(x))) { err.textContent = t('{f} looks wrong. Please check it.', { f: L }); form.elements[fl.name]?.focus?.(); return; }
     if (fl.maxlength && typeof x === 'string' && x.length > fl.maxlength) { err.textContent = t('{f} is too long (max {n} characters).', { f: L, n: fl.maxlength }); return; }
-    if (fl.type === 'tel' && x && !/^[5-9][0-9]{9}$/.test(phone10(x))) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); form.elements[fl.name]?.focus?.(); return; }
+    if (fl.type === 'tel' && x && !/^[0-9]{10}$/.test(phone10(x))) { err.textContent = t('{f} must be a 10-digit mobile number.', { f: L }); form.elements[fl.name]?.focus?.(); return; }
     if (fl.type === 'email' && x && !isValidEmail(x)) { err.textContent = t('{f} must be a valid email address.', { f: L }); form.elements[fl.name]?.focus?.(); return; }
   }
   const patch = f.toPatch(v, form);
@@ -182,8 +220,8 @@ A.lsadd = async el => {
   if (list.some(x => x.toLowerCase() === v.toLowerCase())) return toast('Already in the list', 'bad');
   list.push(v); await saveList(el.dataset.path, list); render(); const n = $('#ls_' + el.dataset.path.replace('.', '_')); if (n) n.focus();
 };
-A.lsedit = el => { const list = [...(getPath(el.dataset.path) || [])], i = +el.dataset.i; formModal({ title: 'Rename', submit: 'Save', fields: [{ name: 'name', label: 'Name', value: list[i], required: true, maxlength: 60 }], onSubmit: async v => { const nm = String(v.name || '').trim(); if (!nm) return 'Enter a name'; if (list.some((x, k) => k !== i && String(x).toLowerCase() === nm.toLowerCase())) return 'That name is already on the list'; list[i] = nm; await saveList(el.dataset.path, list); render(); toast('Saved'); } }); };
-A.lsdel = async el => { const list = [...(getPath(el.dataset.path) || [])]; list.splice(+el.dataset.i, 1); await saveList(el.dataset.path, list); render(); };
+A.lsedit = el => { const list = [...(getPath(el.dataset.path) || [])], i = +el.dataset.i; formModal({ title: 'Rename', submit: 'Save', fields: [{ name: 'name', label: 'Name', value: list[i], required: true, maxlength: 60 }], onSubmit: async v => { const nm = String(v.name || '').trim(); if (!nm) return 'Enter a name'; if (list.some((x, k) => k !== i && String(x).toLowerCase() === nm.toLowerCase())) return 'That name is already on the list'; const old = list[i]; list[i] = nm; await saveList(el.dataset.path, list); if (el.dataset.path === 'units' && old !== nm) items().filter(x => x.unit === old).forEach(x => Store.patch(x.id, { unit: nm })); render(); toast('Saved'); } }); };
+A.lsdel = async el => { const list = [...(getPath(el.dataset.path) || [])]; if (el.dataset.path === 'units') { const n = items().filter(x => x.unit === list[+el.dataset.i]).length; if (n) return toast(t('"{u}" is used by {n} stock item(s), so it cannot be deleted. You can rename it instead.', { u: list[+el.dataset.i], n }), 'bad'); } list.splice(+el.dataset.i, 1); await saveList(el.dataset.path, list); render(); };
 
 function saveElecUtilsSettings(v, e) {
   let slabs = e.slabs;
@@ -200,24 +238,51 @@ function saveElecUtilsSettings(v, e) {
   return { elec: { ...S().elec, ...v, slabs, scanRole: v.scanRole || 'both' } };
 }
 
+// How many photos each document needs (1 or 2) and what each photo is called (Front / Back ...). Upload only, no camera.
+function docPhotosForm() {
+  const docs = S().docs || {}, req = docs.required || [], ph = docs.photos || {};
+  if (!req.length) return '';
+  const aad = d => /aadhaar|aadhar/i.test(d);
+  const fields = [];
+  req.forEach((d, i) => {
+    const c = ph[d] || {}, n = +c.count || (aad(d) ? 2 : 1), nm = c.names || [], df = aad(d) ? ['Front', 'Back'] : ['Photo 1', 'Photo 2'];
+    fields.push({ type: 'section', label: d, key: 'dps_' + i });
+    fields.push({ name: 'n_' + i, label: 'Photos needed', type: 'select', value: String(Math.min(n, 2)), options: [{ v: '1', l: t('1 photo') }, { v: '2', l: t('2 photos') }] });
+    fields.push({ name: 'a_' + i, label: 'Name of photo 1', value: nm[0] || df[0], maxlength: 30, plain: true, showIf: v => v['n_' + i] === '2' });
+    fields.push({ name: 'b_' + i, label: 'Name of photo 2', value: nm[1] || df[1], maxlength: 30, plain: true, showIf: v => v['n_' + i] === '2' });
+  });
+  return `<div class="group-t">${esc(t('Photos for each document'))}</div>${settingsForm('docphotos', fields, v => {
+    const photos = {};
+    req.forEach((d, i) => { const n = +v['n_' + i] || 1; photos[d] = n > 1 ? { count: n, names: [String(v['a_' + i] || '').trim() || 'Photo 1', String(v['b_' + i] || '').trim() || 'Photo 2'] } : { count: 1, names: [] }; });
+    return { docs: { ...S().docs, photos } };
+  })}<p class="hint">${esc(t('Residents can only upload photos from their gallery or files; the camera is not offered.'))}</p>`;
+}
 const SETTINGS_PAGES = {
   property: () => {
-    const h = Store.hostel(), p = S().pay;
+    const h = Store.hostel(), p = S().pay, floors = [...new Set(rooms().map(x => x.floor).filter(Boolean))], fUpi = p.floorUpi || {};
     return `${head('Property & UPI Payments')}${settingsForm('property', [
-      { name: 'name', label: 'Hostel / PG name', value: h.name, required: true },
+      { name: 'name', label: 'Hostel / PG name', value: h.name, required: true, plain: true },
       { name: 'phone', label: 'Owner mobile (shown to residents)', type: 'tel', value: p.phone },
       { name: 'address', label: 'Property address', value: h.address, full: true },
       { name: 'email', label: 'Owner e-mail', type: 'email', value: p.email || '', placeholder: 'you@example.com', info: t('Checkout reports and other notices are e-mailed here.') },
       { name: 'upiId', label: 'UPI ID (VPA)', value: p.upiId, placeholder: 'name@okhdfcbank' },
       { name: 'payee', label: 'Name on UPI account', value: p.payee || h.name, maxlength: 60, pattern: /^(?=.*[A-Za-zऀ-ॿ]).{2,60}$/ },
       { name: 'bank', label: 'Bank details (optional, shown on bill)', value: p.bank, full: true, maxlength: 160 },
+      { type: 'section', label: 'Different UPI IDs (optional)' },
+      { name: 'multi', label: 'Use different UPI IDs for rent and electricity', type: 'checkbox', full: true, value: !!p.multi, info: t('Off: one UPI ID for everything. On: rent goes to the UPI ID of the resident\'s floor and electricity to its own UPI ID. Residents then get two pay links: Pay Rent and Pay Electricity Bill.') },
+      { name: 'elecUpi', label: 'Electricity UPI ID (all residents)', value: p.elecUpi || '', placeholder: 'electricity@okhdfcbank', full: true, showIf: v => v.multi, hint: t('Leave empty to use the main UPI ID above.') },
+      ...floors.map((fl, i) => ({ name: 'fl_' + i, label: `${fl} · ${t('Rent UPI ID')}`, value: fUpi[fl] || '', placeholder: t('Same as main UPI ID'), full: true, plain: true, showIf: v => v.multi })),
+      ...(floors.length ? [{ type: 'html', key: 'fl_note', html: `<div class="hint">${esc(t('You can paste the same UPI ID on as many floors as you like. A floor left empty uses the main UPI ID.'))}</div>`, showIf: v => v.multi }] : []),
     ], v => {
+      const bad = [v.elecUpi, ...floors.map((_, i) => v['fl_' + i])].find(x => x && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(x));
+      if (v.multi && bad) return `UPI ID looks invalid: ${bad}`;
       if (v.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(v.upiId)) return 'UPI ID looks invalid (example: name@okicici)';
       if (v.name !== h.name || v.address !== h.address) {
         h.name = v.name; h.address = v.address;
         Backend.saveHostel(h.id, { name: v.name, address: v.address }).catch(e => toast(e.message, 'bad'));
       }
-      return { pay: { upiId: v.upiId, payee: v.payee, phone: phone10(v.phone), bank: v.bank, email: String(v.email || '').trim() } };
+      const floorUpi = {}; floors.forEach((fl, i) => { if (v['fl_' + i]) floorUpi[fl] = v['fl_' + i]; });
+      return { pay: { upiId: v.upiId, payee: v.payee, phone: phone10(v.phone), bank: v.bank, email: String(v.email || '').trim(), multi: !!v.multi, elecUpi: v.multi ? String(v.elecUpi || '').trim() : '', floorUpi: v.multi ? floorUpi : {} } };
     }, p.upiId ? `<a class="btn" href="${esc(payLink(1, 'Test'))}" target="_blank" rel="noopener">${ico('qr', 'sm')} ${esc(t('Test pay link'))}</a>` : '')}
     ${orgEnabled('cashfree') ? `    <div class="card" style="margin-top:16px">
       <h3>${ico('rupee', 'sm')} ${esc(t('Cashfree Multi-Owner Settlement (Easy Split)'))}</h3>
@@ -233,6 +298,13 @@ const SETTINGS_PAGES = {
     const prevNov = calcCheckInRent({ checkInDate: '2026-11-15', monthlyRent: 8000, policy: r.prorate, divisor: r.prorateDivisor });
     return `${head('Rent & Billing Configuration', `${esc(t('Choose billing cycles, due dates, and mid-month check-in rules.'))}<br><br><b>${esc(t('Mid-Month Check-in Calculation Preview'))}</b><br>${esc(t('Example'))}: ${esc(t('Monthly rent ₹8,000, Joining 15 November'))} (${prevNov.totalDays} ${esc(t('calendar days'))})<br>           <b>${esc(t('First Bill'))}: ${inr(prevNov.amount)}</b> · ${prevNov.occupiedDays} ${esc(t('days'))} (${inr(prevNov.dailyRate)}/${esc(t('day'))})`)}
       ${settingsForm('rent', [
+        { type: 'section', label: 'When is rent collected?' },
+        { name: 'cycle', label: 'Rent billing cycle', type: 'select', full: true, value: r.cycle === 'arrears' ? 'arrears' : 'advance',
+          options: [
+            { v: 'advance', l: t('Advance (start of month)') },
+            { v: 'arrears', l: t('Arrears (month-end)') }
+          ],
+          info: t('Advance: the bill is made on the bill day and the full month is due then. Arrears: nothing is billed during the month; at month-end the bill is made for the days stayed. Check-in, checkout and what residents see as due follow this.') },
         { type: 'section', label: 'Billing Model' },
         { name: 'model', label: 'Billing cycle model', type: 'select', full: true, value: r.model || 'calendar_monthly',
           options: [
@@ -261,14 +333,15 @@ const SETTINGS_PAGES = {
         { name: 'includeElec', label: 'Add electricity to the monthly bill', type: 'checkbox', value: r.includeElec !== false, full: true, info: t('When monthly bills are made, each resident\'s electricity for that month is shown and added in the same bill. Turn it off if you collect electricity separately.') },
         { name: 'includeMess', label: 'Add mess fee to the monthly bill', type: 'checkbox', value: r.includeMess !== false, full: true, info: t('Adds the monthly mess fee for residents who take food. Works only when Mess is Compulsory or Optional (Settings > Mess & food).') },
         { name: 'includeCharges', label: 'Add extra charges to the monthly bill', type: 'checkbox', value: r.includeCharges !== false, full: true, info: t('Extra charges are things you set up yourself, like Wi-Fi, AC or parking (Settings > Extra charges). When this is on, they are added to every monthly bill.') }
-      ], v => ({ rent: { ...S().rent, ...v, prorate: v.prorate === 'full' ? false : v.prorate } }))}`;
+      ], v => ({ rent: { ...S().rent, ...v, cycleChosen: true, prorate: v.prorate === 'full' ? false : v.prorate } }))}`;
   },
   deposits_late: () => {
     const s = S(), dep = s.deposit || {}, late = s.lateFee || {};
     return `${head('Security Deposits & Late Fees', `${esc(t('Configure refundable deposits, deduction rules, and automated overdue late fees.'))}<br><br><b>${esc(t('Late Fee Calculation Preview'))}</b><br>${esc(t('Example'))}: ${esc(t('Rent ₹8,000, 10 days overdue with 5 days grace period.'))}<br>           <b>Fixed:</b> ₹200 · <b>Daily (₹50/d):</b> ₹250 · <b>Percentage (2%):</b> ₹160 (Capped at ₹1,000)`)}
       ${settingsForm('deposits_late', [
         { type: 'section', label: 'Security Deposit Rules' },
-        { name: 'dep_mode', label: 'Deposit calculation mode', type: 'select', full: true, value: dep.mode || 'rent_multiple',
+        { name: 'dep_on', label: 'Collect a security deposit', type: 'checkbox', full: true, value: dep.enabled !== false, info: t('Turn off if deposits do not apply to this property. No deposit is asked at check-in and none is shown on checkout.') },
+        { name: 'dep_mode', label: 'Deposit calculation mode', type: 'select', full: true, value: dep.mode || 'rent_multiple', showIf: v => v.dep_on,
           options: [
             { v: 'rent_multiple', l: t('Months of rent (1 or 2 months)') },
             { v: 'fixed', l: t('Same amount for everyone') },
@@ -276,12 +349,13 @@ const SETTINGS_PAGES = {
             { v: 'per_bed', l: t('Set per room / bed') }
           ]
         },
-        { name: 'rentMultiplier', label: 'Deposit = monthly rent × how many months?', type: 'number', min: 1, max: 12, value: dep.rentMultiplier || 1, showIf: v => v.dep_mode === 'rent_multiple' },
-        { name: 'fixedAmount', label: 'Fixed deposit amount (₹)', type: 'number', min: 0, max: 1000000, value: dep.fixedAmount || 0, showIf: v => v.dep_mode === 'fixed' },
-        { type: 'html', key: 'dep_note_custom', html: `<div class="hint">${esc(t('The deposit is typed at check-in for each resident. The box starts with one month of rent.'))}</div>`, showIf: v => v.dep_mode === 'custom' },
-        { type: 'html', key: 'dep_note_bed', html: `<div class="hint">${esc(t('Set the deposit per bed in each room (Rooms & Beds > edit room). A room with no amount starts at one month of rent.'))}</div>`, showIf: v => v.dep_mode === 'per_bed' },
-        { name: 'nr_on', label: 'Charge a non-refundable admission / maintenance fee?', type: 'checkbox', value: (dep.nonRefundable || 0) > 0, full: true },
-        { name: 'nonRefundable', label: 'Non-refundable fee amount (₹)', type: 'number', min: 0, max: 1000000, value: dep.nonRefundable || 0, full: true, showIf: v => v.nr_on },
+        { name: 'rentMultiplier', label: 'Deposit = monthly rent × how many months?', type: 'number', min: 1, max: 12, value: dep.rentMultiplier || 1, showIf: v => v.dep_on && v.dep_mode === 'rent_multiple' },
+        { name: 'fixedAmount', label: 'Fixed deposit amount (₹)', type: 'number', min: 0, max: 1000000, value: dep.fixedAmount || 0, showIf: v => v.dep_on && v.dep_mode === 'fixed' },
+        { type: 'html', key: 'dep_note_custom', html: `<div class="hint">${esc(t('The deposit is typed at check-in for each resident. The box starts with one month of rent.'))}</div>`, showIf: v => v.dep_on && v.dep_mode === 'custom' },
+        { type: 'html', key: 'dep_note_bed', html: `<div class="hint">${esc(t('Set the deposit per bed in each room (Rooms & Beds > edit room). A room with no amount starts at one month of rent.'))}</div>`, showIf: v => v.dep_on && v.dep_mode === 'per_bed' },
+        { name: 'refundable', label: 'Deposit is refundable at checkout', type: 'checkbox', full: true, value: dep.refundable !== false, showIf: v => v.dep_on, info: t('Off: the whole deposit is kept at checkout and nothing is returned. The choice is saved on each resident at check-in.') },
+        { name: 'nr_on', label: 'Charge a non-refundable admission / maintenance fee?', type: 'checkbox', value: (dep.nonRefundable || 0) > 0, full: true, showIf: v => v.dep_on },
+        { name: 'nonRefundable', label: 'Non-refundable fee amount (₹)', type: 'number', min: 0, max: 1000000, value: dep.nonRefundable || 0, full: true, showIf: v => v.dep_on && v.nr_on },
         { type: 'section', label: 'Late Fee & Penalty Rules' },
         { name: 'late_on', label: 'Enable automatic late fees on overdue bills', type: 'checkbox', value: late.on !== false, full: true },
         { name: 'late_mode', label: 'Late fee calculation mode', type: 'select', full: true, value: late.mode || 'fixed', showIf: v => v.late_on,
@@ -297,7 +371,7 @@ const SETTINGS_PAGES = {
         { name: 'graceDays', label: 'Late fee starts this many days after the due date', type: 'number', min: 0, max: 30, value: late.graceDays != null ? late.graceDays : 5, showIf: v => v.late_on },
         { name: 'maxCap', label: 'Maximum penalty cap (₹)', type: 'number', min: 0, max: 1000000, value: late.maxCap || 1000, showIf: v => v.late_on }
       ], v => ({
-        deposit: { ...S().deposit, mode: v.dep_mode, rentMultiplier: +v.rentMultiplier || 1, fixedAmount: +v.fixedAmount || 0, nonRefundable: v.nr_on ? (+v.nonRefundable || 0) : 0 },
+        deposit: { ...S().deposit, enabled: !!v.dep_on, refundable: v.refundable !== false, mode: v.dep_mode, rentMultiplier: +v.rentMultiplier || 1, fixedAmount: +v.fixedAmount || 0, nonRefundable: v.dep_on && v.nr_on ? (+v.nonRefundable || 0) : 0 },
         lateFee: { ...S().lateFee, on: v.late_on, mode: v.late_mode, amount: +v.late_amount || 0, dailyAmount: +v.dailyAmount || 0, percentage: +v.percentage || 0, graceDays: +v.graceDays || 0, maxCap: +v.maxCap || 1000 },
         rent: { ...S().rent, lateOn: v.late_on, lateFee: +v.late_amount || 200 }
       }))}`;
@@ -541,7 +615,7 @@ const SETTINGS_PAGES = {
     ];
     return `${head(can('kitchen') ? 'Dishes, recipes & menu' : 'Weekly menu')}${group('', rows.join(''), can('kitchen') ? t('When you create a dish you also enter its ingredients — they become stock items automatically.') : '')}`;
   },
-  items: () => `${head('Stock items & units')}${group('Items', items().map(i => li({ icon: 'box', ic: 'mute', t: i.name, d: `${num(stockOf(i))} ${i.unit} · ${t('alert below')} ${i.min}`, act: 'edititem', attrs: `data-id="${i.id}"` })).join(''), `<a href="#" data-act="additem">+ ${esc(t('Add item'))}</a>`)}<div class="group-t">${esc(t('Units'))}</div>${listEditor('units', 'New unit (e.g. box)', ['kg', 'L', 'pcs'])}`,
+  items: () => `${head('Stock items & units')}${group('Items', items().map(i => li({ icon: 'box', ic: 'mute', t: i.name, d: `${num(stockOf(i))} ${i.unit} · ${t('alert below')} ${i.min}`, act: 'edititem', attrs: `data-id="${i.id}"` })).join(''), `<a href="#" data-act="additem">+ ${esc(t('Add item'))}</a>`)}<div class="group-t">${esc(t('Units'))}</div>${listEditor('units', 'New unit (e.g. box)')}`,
   kitchen: () => { const k = S().kitchen; return `${head('Kitchen permissions')}${settingsForm('kitchen', [{ name: 'cookCanReceive', label: 'Cook can enter received goods', type: 'checkbox', value: k.cookCanReceive, full: true }], v => ({ kitchen: v }))}${about('Cooks can always raise purchase requests. Only you approve quantities.')}`; },
   accessories: () => {
     const on = (S().accessories || {}).on !== false;
@@ -555,7 +629,7 @@ const SETTINGS_PAGES = {
   // asked for on the Police verification card, so they are not part of this list.
   docs: () => `${head('Documents', t('Saved privately, compressed. Only the owner and manager can open them.'))}
     ${group('', li({ icon: 'lock', ic: 'info', t: t('Deleted {n} days after checkout', { n: DOC_KEEP_DAYS }), d: t('Papers of residents who left, and of removed staff, are removed automatically.'), chev: false }))}
-    <div class="group-t">${esc(t('Residents (asked at check-in)'))}</div>${listEditor('docs.required', 'e.g. Aadhaar card')}<div class="group-t">${esc(t('Staff'))}</div>${listEditor('staffDocs.required', 'e.g. Aadhaar card')}`,
+    <div class="group-t">${esc(t('Residents (asked at check-in)'))}</div>${listEditor('docs.required', 'e.g. Aadhaar card')}${docPhotosForm()}<div class="group-t">${esc(t('Staff'))}</div>${listEditor('staffDocs.required', 'e.g. Aadhaar card')}`,
   hk: () => { const h = S().hk; return `${head('Housekeeping rules')}${settingsForm('hk', [{ name: 'missedAfter', label: 'Mark tasks missed after', type: 'time', value: h.missedAfter },
     { name: 'markBy', label: 'Who can mark a room as cleaned', type: 'multi', full: true, value: h.markBy || ['staff', 'admin'],
       options: [{ v: 'staff', l: t('Assigned housekeeping staff') }, { v: 'admin', l: t('Owner / manager') }, { v: 'guard', l: t('Security guard / supervisor') }, { v: 'resident', l: t('Resident of that room') }] }],
@@ -1126,7 +1200,7 @@ A.adduser = () => formModal({
     const h = Store.hostel();
     if (v.existing) { if (!v.username) return 'Enter their user ID'; await Backend.admin('add_member', { username: v.username, org_id: h.org_id, hostel_id: h.id, role: v.role, perms: v.perms, block: v.block }); toast('Access added'); }
     else {
-      const hSlug = slug((h && h.name) || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+      const hSlug = slug((h && h.name) || 'hostel').slice(0, 6).replace(/\.+$/, '') || 'hostel';
       const ph = phone10(v.phone);
       const wantUser = ph && ph.length === 10 ? (v.role === 'owner' ? ph : `${ph}.${hSlug}`) : undefined;
       const u = await Backend.admin('create_user', { full_name: v.full_name, phone: v.phone, username: wantUser, org_id: h.org_id, hostel_id: h.id, role: v.role, perms: v.perms, block: v.block });

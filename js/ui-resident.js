@@ -39,7 +39,7 @@ PAGES['r-home'] = {
       ${homeHero({
         name: r.name.split(' ')[0], sub: `${esc(hostelName())}<br>${esc(t('Room'))} ${esc(roomName(r.roomId))}-${esc(r.bed)}`,
         cards: [
-          { l: due ? 'Amount due' : 'All paid', icon: 'wallet', v: inr(due), tone: due ? 'bad' : 'ok', s: esc(due ? t('{n} open bills', { n: open.length }) : t('Nothing to pay')) },
+          { l: due ? 'Amount due' : 'All paid', icon: 'wallet', v: inr(due), tone: due ? 'bad' : 'ok', act: 'rdue', s: esc(due ? t('{n} open bills', { n: open.length }) : t('Nothing to pay')) + ` · ${esc(t('Tap for details'))}` },
           { l: 'Next meal', icon: 'utensils', v: next ? esc(mealName(next.k)) : '-', tone: '', s: esc(next ? fmtTime(next.time) : t('No more meals today')), to: 'r-meals' },
         ],
         strip: [
@@ -48,6 +48,7 @@ PAGES['r-home'] = {
           { icon: 'broom', v: task ? esc(task.date === today() ? t('Today') : fmtShort(task.date)) : '-', l: 'Next cleaning' },
         ],
       })}
+      ${r.paidTill && r.paidTill >= today() ? `<div class="note ok">${ico('check', 'sm')} ${esc(t('Your rent is paid till {d}', { d: fmtDate(r.paidTill) }))}</div>` : ''}
       <div class="hero ${due ? '' : 'ok'}"><div class="muted sm">${esc(t(due ? 'Amount due' : 'All paid'))}</div><div class="big">${inr(due)}</div>
         ${pending.length ? `<div class="sm" style="margin-top:6px">${esc(t('{a} payment waiting for owner to verify', { a: inr(sum(pending, c => c.amount)) }))}</div>` : ''}
         ${due ? `<div class="row" style="margin-top:14px"><button class="btn primary" data-act="rcfpay">${ico('rupee', 'sm')} ${esc(t('Pay with UPI'))}</button><button class="btn" data-act="rqr">${ico('qr', 'sm')} QR</button><button class="btn" data-act="rclaim">${ico('check', 'sm')} ${esc(t('I have paid'))}</button></div>` : ''}</div>
@@ -119,39 +120,72 @@ PAGES['r-home'] = {
     </div>`;
   },
 };
-A.rqr = () => {
-  const r = meRes(), due = resDue(r.id);
-  if (!(due > 0)) return toast(t('No dues to pay'), 'ok');
-  if (!S().pay.upiId) return toast(t('The owner has not added a UPI ID yet. Please pay the owner directly.'), 'bad');
-  const note = `${r.name.split(' ')[0]} Rm ${roomName(r.roomId)} ${fmtYM(ymOf(today()))}`, uri = upiUri(due, note);
+A.rqr = el => {
+  const r = meRes(), due0 = resDue(r.id);
+  if (!(due0 > 0)) return toast(t('No dues to pay'), 'ok');
+  const buckets = payBuckets(r);
+  if (!buckets.length || !buckets.every(b => b.upi)) return toast(t('The owner has not added a UPI ID yet. Please pay the owner directly.'), 'bad');
+  const kind = el && el.dataset && el.dataset.kind;
+  // Rent and electricity go to different UPI IDs: pick which one to pay first, each has its own QR and its own proof.
+  if (buckets.length > 1 && !kind) {
+    return sheet(t('What do you want to pay?'), `<div class="group">${buckets.map(b => li({ icon: b.kind === 'elec' ? 'bolt' : 'rupee', ic: b.kind === 'elec' ? 'warn' : 'info', t: t(b.label), d: b.invs.map(i => i.title).join(', '), end: `<b>${inr(b.total)}</b>`, act: 'rqr', attrs: `data-kind="${b.kind}"` })).join('')}</div>
+      <p class="hint" style="margin-top:10px">${esc(t('Rent and electricity are paid to different UPI IDs. Each one is confirmed separately.'))}</p>`);
+  }
+  const bk = buckets.find(b => b.kind === kind) || buckets[0], due = bk.total, upiId = bk.upi;
+  const note = `${r.name.split(' ')[0]} Rm ${roomName(r.roomId)} ${fmtYM(ymOf(today()))}`, uri = upiUri(due, note, upiId);
   const hId = Store.hostelId || (Store.hostel() || {}).id;
   const payUrl = `${location.origin}/pay.html?hostel_id=${hId}&res_id=${r.id}&am=${due}`;
   const open = openInv(r.id);
   sheet(t('Pay {a}', { a: inr(due) }), `<div class="qr">${qrSvg(uri, 6)}</div>
-    <p style="text-align:center;margin:10px 0 2px"><b style="font-size:24px">${inr(due)}</b><br><span class="muted">${esc(S().pay.payee || hostelName())} · ${esc(S().pay.upiId)}</span></p>
-    ${open.length ? `<div class="group" style="margin-top:10px">${open.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : 'rupee', ic: 'tn0', t: i.title, end: `<b>${inr(invBal(i))}</b>`, chev: false })).join('')}</div>` : ''}
+    <p style="text-align:center;margin:10px 0 2px"><b style="font-size:24px">${inr(due)}</b><br><span class="muted">${esc(S().pay.payee || hostelName())} · ${esc(upiId)}</span></p>
+    ${bk.invs.length ? `<div class="group" style="margin-top:10px">${bk.invs.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : 'rupee', ic: 'tn0', t: i.title, end: `<b>${inr(invBal(i))}</b>`, chev: false })).join('')}</div>` : ''}
     <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap;justify-content:center">${/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ? `<a class="btn primary" data-act="rupiopen" href="${esc(uri)}">${ico('rupee', 'sm')} ${esc(t('Open my UPI app'))}</a>` : `<p class="hint" style="width:100%;text-align:center;margin:0">${esc(t('On a computer, scan the QR with your phone\'s UPI app.'))}</p>`}${orgEnabled('cashfree') ? `<a class="btn" href="${esc(payUrl)}" target="_blank" rel="noopener">${esc(t('Online pay page'))}</a>` : ''}</div>
     <p class="hint" style="text-align:center;margin-top:10px">${esc(t('The amount and the UPI ID of the owner are already filled in. After paying, come back here and add the UTR and a screenshot - both are needed so the owner can confirm.'))}</p>`,
-    { foot: `<button class="btn primary block" data-act="rclaim">${esc(t('I have paid'))}</button>` });
+    { foot: `<button class="btn primary block" data-act="rclaim" data-kind="${bk.kind}">${esc(t('I have paid'))}</button>` });
 };
 // Came back from the UPI app: bring up the proof form (UTR + screenshot) straight away
 let upiAwait = null;
-A.rupiopen = () => { upiAwait = { at: Date.now(), amount: resDue((meRes() || {}).id) }; try { LS.set('hostelos.upiwait', JSON.stringify(upiAwait)); } catch (e) { /* ignore */ } };
+A.rupiopen = el => { const k = el && el.closest && el.closest('.modal') && el.closest('.modal').querySelector('[data-act="rclaim"]'); upiAwait = { at: Date.now(), amount: resDue((meRes() || {}).id), kind: k && k.dataset.kind }; try { LS.set('hostelos.upiwait', JSON.stringify(upiAwait)); } catch (e) { /* ignore */ } };
 // the page was unloaded while the UPI app was open: ask once on return
 function resumeUpiAwait() {
   let w; try { w = JSON.parse(LS.get('hostelos.upiwait') || 'null'); } catch (e) { w = null; }
   if (!w) return; LS.set('hostelos.upiwait', '');
   if (Date.now() - w.at > 30 * 60e3 || Date.now() - w.at < 4000 || upiAwait) return;
   if (!(resDue((meRes() || {}).id) > 0)) return;
-  setTimeout(() => A.rclaim(null, null, w.amount), 500);
+  setTimeout(() => A.rclaim(null, null, w.amount, w.kind), 500);
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !upiAwait) return;
   const w = upiAwait; upiAwait = null; try { LS.set('hostelos.upiwait', ''); } catch (e) { /* ignore */ }
   if (Date.now() - w.at < 4000) return;           // bounced straight back: nothing was paid
-  setTimeout(() => A.rclaim(null, null, w.amount), 300);
+  setTimeout(() => A.rclaim(null, null, w.amount, w.kind), 300);
 });
 
+// Tap on the red Amount due card: every bill with what is still pending, then every payment made so far.
+A.rdue = () => {
+  const r = meRes(); if (!r) return;
+  const invs = (typeof resInvoices === 'function' ? resInvoices(r.id) : Store.all('inv').filter(i => i.resId === r.id)).slice().sort(by('due', -1));
+  const openI = invs.filter(i => invBal(i) > 0), due = sum(openI, invBal);
+  const pays = Store.all('pay').filter(x => x.resId === r.id).sort(by('date', -1));
+  const claims = Store.all('claim').filter(c => c.resId === r.id && c.status !== 'approved').sort(by('ts', -1));
+  const none = msg => `<div class="li noic"><span class="body muted">${esc(t(msg))}</span></div>`;
+  const billRow = i => li({
+    icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : 'rupee', ic: invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title,
+    d: `${t('Bill')} ${inr(i.amount != null ? i.amount : (invBal(i) + (i.paid || 0)))}${(i.paid || 0) > 0 ? ` · ${t('Paid')} ${inr(i.paid)}` : ''} · ${t('due')} ${fmtShort(i.due)}`,
+    end: `<b class="${invStat(i) === 'overdue' ? 'bad-t' : ''}">${inr(invBal(i))}</b>`, act: 'rviewinv', attrs: `data-id="${i.id}"`
+  });
+  const claimRow = c => li({
+    icon: c.status === 'rejected' ? 'alert' : 'clock', ic: c.status === 'rejected' ? 'bad' : 'warn', t: `${inr(c.amount)} · UTR ${c.utr || ''}`,
+    d: c.status === 'rejected' ? `${t('Not verified')}: ${c.reason || ''}` : t('Waiting for the owner to check the UTR'), chev: false
+  });
+  const payRow = x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: `${fmtDate(x.date)} · ${String(x.mode || '').toUpperCase()}${x.ref ? ' · ' + x.ref : ''}`, act: 'receipt', attrs: `data-id="${x.id}"` });
+  sheet(t('Amount due'), `
+    <div class="hero" style="margin-bottom:12px"><div class="muted sm">${esc(t('Total pending'))}</div><div class="big">${inr(due)}</div></div>
+    ${group('Pending bills', openI.map(billRow).join('') || none('Nothing to pay'))}
+    ${claims.length ? group('Payments waiting for the owner', claims.map(claimRow).join('')) : ''}
+    ${group('Transaction history', pays.map(payRow).join('') || none('No payments yet'))}`,
+    { foot: due ? `<button class="btn primary" data-act="rcfpay">${ico('rupee', 'sm')} ${esc(t('Pay with UPI'))}</button>` : `<button class="btn" data-act="close">${esc(t('Close'))}</button>` });
+};
 A.rviewinv = el => {
   const invId = el.dataset.id;
   const r = meRes();
@@ -340,8 +374,11 @@ A.rcfpay = async () => {
   }
 };
 // Resident reports a UPI payment; owner verifies with one tap in Approvals.
-A.rclaim = (el, ev, amount) => {
+A.rclaim = (el, ev, amount, kind0) => {
   const r = meRes();
+  const kind = (el && el.dataset && el.dataset.kind) || kind0 || '';
+  const bk = payBuckets(r).find(b => b.kind === kind);
+  if (bk && !amount) amount = bk.total;
   formModal({
     title: 'I have paid', submit: 'Send to owner',
     note: t('Both are needed: the 12-digit UPI reference (UTR) from your UPI app, and a screenshot of the successful payment. The owner checks them and you get a receipt.'),
@@ -355,8 +392,8 @@ A.rclaim = (el, ev, amount) => {
       if (!refInfo.valid) return refInfo.reason;
       if (Store.all('claim').some(c => String(c.utr || '').toUpperCase() === utrStr && c.status !== 'rejected') || Store.all('pay').some(p => String(p.ref || '').toUpperCase() === utrStr && !p.reversed)) return 'This UTR was already submitted';
       const saveIt = proofUrl => {
-        Store.put('claim', { resId: r.id, roomId: r.roomId, amount: v.amount, utr: utrStr, refType: refInfo.type, date: v.date, status: 'pending', proofUrl: proofUrl || null, ts: nowIso() });
-        notify({ to: 'admin', title: t('UPI payment to verify'), body: `${r.name} · ${inr(v.amount)} (${refInfo.label})`, link: 'inbox' });
+        Store.put('claim', { resId: r.id, roomId: r.roomId, payKind: bk && bk.kind !== 'all' ? bk.kind : '', upi: bk ? bk.upi : '', amount: v.amount, utr: utrStr, refType: refInfo.type, date: v.date, status: 'pending', proofUrl: proofUrl || null, ts: nowIso() });
+        notify({ to: 'admin', title: t('UPI payment to verify'), body: `${r.name} · ${inr(v.amount)} (${refInfo.label})${bk && bk.kind === 'elec' ? ' · ' + t('Electricity') : bk && bk.kind === 'rent' ? ' · ' + t('Rent') : ''}`, link: 'inbox' });
         toast('Sent. You will get a receipt once verified.');
         closeModal(); render();
       };

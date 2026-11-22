@@ -164,7 +164,7 @@ function cleanPhone(s) {
   let d = str.replace(/\D/g, '');
   if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
   else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-  if (d.length === 10 && /^[5-9]/.test(d)) return d;
+  if (d.length === 10 && /^[0-9]{10}$/.test(d)) return d;
   return null;
 }
 
@@ -176,6 +176,17 @@ function cleanAadhaar(s) {
   return d.length === 12 ? d : null;
 }
 
+// The photos asked for each required document: one per document, or several (Aadhaar: Front + Back).
+const docSlots = (docs) => {
+  const d0 = docs || {}, req = d0.required || ['Aadhaar card', 'Passport photo'], ph = d0.photos || {};
+  const aad = d => /aadhaar|aadhar/i.test(d);
+  return req.flatMap(d => {
+    const c = ph[d] || {}, n = +c.count || (aad(d) ? 2 : 1);
+    if (n < 2) return [d];
+    const names = Array.isArray(c.names) ? c.names : [], dflt = aad(d) ? ['Front', 'Back'] : [];
+    return Array.from({ length: Math.min(n, 4) }, (_, i) => `${d} (${String(names[i] || dflt[i] || `Photo ${i + 1}`).trim()})`);
+  });
+};
 function isValidPersonName(s) {
   if (typeof s !== 'string') return false;
   const str = s.trim();
@@ -237,4 +248,4 @@ function sendViaSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, from, to
   });
 }
 
-module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, readBodyWithRaw, cleanPhone, cleanAadhaar, isValidPersonName, isValidEmail, sendViaSmtp };
+module.exports = { SITE_RESERVED, URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, hostelAccess, isAdminRole, limit, clientIp, readJson, readBodyWithRaw, cleanPhone, cleanAadhaar, isValidPersonName, isValidEmail, sendViaSmtp, docSlots };

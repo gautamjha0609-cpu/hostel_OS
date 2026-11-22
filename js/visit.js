@@ -27,7 +27,7 @@
     var d = s.replace(/\D/g, '');
     if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
     else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-    if (d.length === 10 && /^[5-9]/.test(d)) return d;
+    if (d.length === 10 && /^[0-9]{10}$/.test(d)) return d;
     return null;
   };
   var box = document.getElementById('box');
@@ -42,7 +42,7 @@
     var f = function (id, label, attrs) { return '<div class="full"><label class="f" for="' + id + '">' + esc(label) + '</label><input id="' + id + '" ' + (attrs || '') + ' autocomplete="one-off"></div>'; };
     shell('<form id="vf" class="card" novalidate autocomplete="off"><div class="fgrid">' +
       f('v_name', T.name + ' *', 'type="text" maxlength="80" required') +
-      f('v_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
+      f('v_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[0-9]{10}" required') +
       f('v_meet', T.meet + ' *', 'type="text" maxlength="80" required') +
       f('v_room', T.room + ' *', 'type="text" maxlength="20" required') +
       f('v_purpose', T.purpose + ' *', 'type="text" maxlength="80" required value="' + esc(T.meeting) + '"') +

@@ -613,13 +613,13 @@ const pendingSignups = () => signups().filter(x => x.status !== 'admitted' && x.
 
 // Turning an application into a resident. Everything the applicant typed is carried over;
 // everything about money and the bed comes from the owner, here and nowhere else.
-function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = today(), food = true, accessories = null }) {
+function admitSignup(signupId, { roomId, bed, rent, deposit, checkIn: from = today(), firstRent, food = true, accessories = null }) {
   const a = Store.get(signupId); if (!a) throw new AppError('Application not found');
   if (a.status === 'admitted') throw new AppError('This application is already admitted');
   const r = checkIn({
     name: a.name, phone: a.phone, guardian: a.guardian, guardianPhone: a.guardianPhone,
     email: a.email, idNo: a.idNo, address: a.address, college: a.college, lang: a.lang,
-    roomId, bed, rent, deposit, checkIn: from, food, accessories,
+    roomId, bed, rent, deposit, checkIn: from, food, accessories, ...(firstRent != null ? { firstRent } : {}),
   });
   // the papers they uploaded move with them, so nobody re-asks for an Aadhaar already on file
   if ((a.docs || []).length) Store.patch(r.id, { docs: a.docs.map(d => ({ ...d })) });
@@ -886,7 +886,7 @@ function classifyPaymentRef(ref) {
 // FIFO allocation: oldest dues first, extra money becomes advance credit.
 // `invIds` puts those bills at the front of the queue; `exclude` keeps a bill out of this
 // payment altogether, which is how a penalty the owner is not collecting today stays pending.
-function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(), note = '', claimId = null, invIds = null, exclude = null, idempotencyKey = null }) {
+function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(), note = '', claimId = null, invIds = null, exclude = null, idempotencyKey = null, only = null, silent = false }) {
   const r = resById(resId); if (!r) throw new Error('Resident not found');
   amount = round2(amount);
   if (!isFinite(amount) || isNaN(amount) || !(amount > 0)) throw new Error('Enter an amount');
@@ -906,8 +906,9 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   let left = amount; const alloc = [];
   const skip = new Set(exclude || []);
   const open = openInv(resId).filter(i => !skip.has(i.id));
-  const target = invIds ? open.filter(i => invIds.includes(i.id)) : open;
-  const rest = invIds ? open.filter(i => !invIds.includes(i.id)) : [];
+  // `only`: settle just these bills; whatever is left over goes to the resident's credit, never to other bills
+  const target = only ? open.filter(i => only.includes(i.id)) : invIds ? open.filter(i => invIds.includes(i.id)) : open;
+  const rest = only ? [] : invIds ? open.filter(i => !invIds.includes(i.id)) : [];
   for (const inv of [...target, ...rest]) {
     if (left <= 0) break;
     const take = Math.min(left, invBal(inv));
@@ -920,7 +921,7 @@ function recordPayment({ resId, amount, mode = 'cash', ref = '', date = today(),
   // The id must be 'pay-' + idempotency key: that is the id record_payment_atomic gives the record in the database, so the local copy, the saved copy and any later reversal are one and the same document.
   const pay = Store.put('pay', { id: 'pay-' + idmpKey, resId, roomId: r.roomId, amount, mode, ref, refType, date, note, alloc, credit: left, claimId, no: `R-${no}`, idempotencyKey: idmpKey, by: Store.me && Store.me.full_name, ts: nowIso() });
   alog('payment_recorded', `${r.name}: ${inr(amount)} (${mode})`, { payId: pay.id, resId, amount, mode, ref, claimId });
-  notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}`, category: 'payment' });
+  if (!silent) notify({ to: 'res', resId, title: t('Payment received'), body: `${inr(amount)} · ${t(mode.toUpperCase())}`, category: 'payment' });
   return pay;
 }
 
@@ -1037,7 +1038,7 @@ function recordAdvance({ resId, amount, months, mode = 'cash', ref = '', date = 
   const graceDays = rentDueDays();
   for (const row of plan.rows) {
     if (row.exists) continue;
-    const d = rentDue(row.ym);
+    const d = rentBillDate(row.ym);
     addInvoice({
       id: row.id, resId, roomId: r.roomId, type: 'rent', period: row.ym,
       title: `${t('Rent')} ${fmtYM(row.ym)}`, amount: round2(r.rent || 0), date: d, due: addDays(d, graceDays)
@@ -1074,16 +1075,37 @@ function advPaidAhead(resId) {
 // The app is at the root of its address (https://app.example.com/), whichever page is open.
 const appUrl = () => location.origin + '/';
 const baseUrl = () => location.origin + '/';
-function upiUri(amount, note) {
+// Several UPI accounts (Settings > Hostel details & UPI > "Use different UPI IDs"): rent follows the resident's floor,
+// electricity has its own ID. With the switch off, the one UPI ID is used for everything, as before.
+function upiFor(r, kind = 'rent') {
+  const p = S().pay || {};
+  if (!p.multi) return p.upiId || '';
+  if (kind === 'elec') return p.elecUpi || p.upiId || '';
+  const room = r && roomById(r.roomId), fl = room && room.floor;
+  return (p.floorUpi && fl && p.floorUpi[fl]) || p.upiId || '';
+}
+// What one resident has to pay, grouped by the UPI ID it goes to. One group normally; two (Rent / Electricity)
+// when electricity is paid to a different account than the rent.
+function payBuckets(r) {
+  const open = openInv(r.id), p = S().pay || {};
+  const rentUpi = upiFor(r, 'rent'), elecUpi = upiFor(r, 'elec');
+  const mk = (kind, label, invs, upi) => ({ kind, label, invs, ids: invs.map(i => i.id), total: round2(sum(invs, invBal)), upi });
+  if (p.multi && elecUpi && rentUpi && elecUpi !== rentUpi) {
+    const el = open.filter(i => i.type === 'electricity'), rest = open.filter(i => i.type !== 'electricity');
+    return [rest.length && mk('rent', 'Pay Rent', rest, rentUpi), el.length && mk('elec', 'Pay Electricity Bill', el, elecUpi)].filter(Boolean);
+  }
+  return open.length ? [mk('all', 'Pay now', open, rentUpi)] : [];
+}
+function upiUri(amount, note, upi) {
   const p = S().pay;
-  return `upi://pay?pa=${encodeURIComponent(p.upiId)}&pn=${encodeURIComponent(p.payee || (Store.hostel() || {}).name || '')}&am=${round2(amount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(String(note).slice(0, 60))}`;
+  return `upi://pay?pa=${encodeURIComponent(upi || p.upiId)}&pn=${encodeURIComponent(p.payee || (Store.hostel() || {}).name || '')}&am=${round2(amount).toFixed(2)}&cu=INR&tn=${encodeURIComponent(String(note).slice(0, 60))}`;
 }
 // WhatsApp only links http(s), so we send a link to our static pay page that opens any UPI app + shows QR.
 function payLink(amount, note, extra = {}) {
-  const p = S().pay; if (!p.upiId) return '';
+  const p = S().pay, pa = (extra && extra.upi) || p.upiId; if (!pa) return '';
   const hid = (Store.hostel() || {}).id || (Store.ctx || {}).hostelId || '';
   const q = new URLSearchParams({
-    pa: p.upiId,
+    pa,
     pn: p.payee || (Store.hostel() || {}).name || '',
     am: round2(amount).toFixed(2),
     tn: String(note).slice(0, 60),
@@ -1093,6 +1115,11 @@ function payLink(amount, note, extra = {}) {
     ...(extra && extra.invId ? { inv_id: extra.invId } : {})
   });
   return `${baseUrl()}pay.html?${q}`;
+}
+// One pay link per UPI account the resident has to pay: [{ kind, label, amount, url }]
+function payLinksFor(r) {
+  const note = `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim();
+  return payBuckets(r).map(b => ({ kind: b.kind, label: b.label, amount: b.total, url: payLink(b.total, note, { resId: r.id, invId: b.ids.length === 1 ? b.ids[0] : undefined, upi: b.upi }) })).filter(x => x.url);
 }
 // The pay link for one resident and one invoice, with the note the owner will see in the bank statement.
 function payLinkFor(r, amount, inv) {
@@ -1411,7 +1438,7 @@ async function sendBulkMail(kind = 'bill', opts = {}) {
   let sent = 0, failed = 0, reason = '';
   const mailedIds = [], appIds = [], failedMap = {};
   const items = plan.todo.map(x => ({ x, item: { to: x.r.email, subject: `${h.name || 'Hostel'} · ${t(cfg.title)}`, text: billMessage(x.r, kind === 'reminder' ? 'reminder' : 'bill').text, res_id: x.r.id,
-    brand: { hostelName: h.name || 'Hostel', title: t(cfg.title), headline: t(cfg.head), recipientName: x.r.name, intro: t(cfg.intro, { h: h.name || 'your hostel' }), bodyLines: bmailLines(x.r), amountDue: x.due, payLink: payLinkFor(x.r, x.due, undefined), date: fmtDate(today()) } } }));
+    brand: { hostelName: h.name || 'Hostel', title: t(cfg.title), headline: t(cfg.head), recipientName: x.r.name, intro: t(cfg.intro, { h: h.name || 'your hostel' }), bodyLines: bmailLines(x.r), amountDue: x.due, payLink: payLinkFor(x.r, x.due, undefined), payLinks: payLinksFor(x.r).length > 1 ? payLinksFor(x.r) : undefined, date: fmtDate(today()) } } }));
   const replyTo = (S().pay || {}).email || undefined;
   try {
     // 25 to a request: one login check and one rate-limit hit for 25 mails, and the mail service takes them as one batch
@@ -1466,7 +1493,7 @@ function billMessage(r, kind = 'bill', invs) {
   const lines = open.map(i => `${i.title}: ${rs(invBal(i))}`).join('\n');
   const note = `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim();
   const invId = open.length === 1 ? open[0].id : undefined;
-  return { total, text: tpl(kind, { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, lines, total: rs(total), paylink: payLink(total, note, { resId: r.id, invId }) || t('(ask owner for UPI)'), link: appUrl() }, lang) };
+  return { total, text: tpl(kind, { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, lines, total: rs(total), paylink: (() => { const L = invs ? [] : payLinksFor(r); return L.length > 1 ? L.map(x => `${t(x.label)} (${rs(x.amount)}):\n${x.url}`).join('\n\n') : (L.length === 1 ? L[0].url : payLink(total, note, { resId: r.id, invId })) || t('(ask owner for UPI)'); })(), link: appUrl() }, lang) };
 }
 function receiptMessage(pay) {
   const r = resById(pay.resId);
@@ -1694,6 +1721,90 @@ function reconcileBeds() {
 }
 
 function rentDue(ym) { const d = Math.min(S().rent.day, daysIn(ym)); return `${ym}-${pad(d)}`; }
+/* Rent billing cycle (Settings > Rent & billing):
+ *   advance  the month's rent is billed at the start of the month (the bill day), before the month is lived.
+ *   arrears  the rent is billed once the month is over (its last day), for the days actually stayed.
+ * Nothing is raised before its billing date, so a full month never shows as due early. */
+const rentCycleMode = () => ((S().rent || {}).cycle === 'arrears' ? 'arrears' : 'advance');
+const isArrears = () => rentCycleMode() === 'arrears';
+const rentBillDate = ym => (isArrears() ? `${ym}-${pad(daysIn(ym))}` : rentDue(ym));
+const rentBillable = ym => today() >= rentBillDate(ym);
+// The rent bills that are due to be raised for one resident today (none are raised before their date, none twice).
+function rentBillsToRaise(r, d0 = today()) {
+  const pol = r.billingPolicy || S().rent, joining = pol.model === 'joining_date', arrears = isArrears(), out = [];
+  const build = c => {
+    const id = joining ? `inv-rent-${r.id}-${c.cycleStart}` : `inv-rent-${r.id}-${c.periodKey}`;
+    let amount = r.rent;
+    if (!joining && c.periodKey === ymOf(r.checkIn) && r.checkIn > c.cycleStart) amount = calcCheckInRent({ checkInDate: r.checkIn, monthlyRent: r.rent }).amount;
+    const date = arrears ? c.cycleEnd : c.cycleStart;
+    return { id, model: pol.model, amount, date, due: addDays(date, rentDueDays()), period: joining ? c.periodLabel : c.periodKey, title: joining ? `${t('Rent')} (${c.periodLabel})` : `${t('Rent')} ${fmtYM(c.periodKey)}` };
+  };
+  if (!arrears) {
+    const c = residentCycleFor(r, d0);
+    if (d0 >= c.cycleStart && (joining || !(r.checkIn > c.cycleStart))) { const b = build(c); if (b.amount > 0 && !Store.get(b.id)) out.push(b); }
+    return out;
+  }
+  // arrears: every finished cycle that has no bill yet (this one and up to two before it, in case the app was not opened)
+  let c = residentCycleFor(r, joining ? d0 : ymOf(d0));
+  for (let k = 0; k < 3 && c; k++) {
+    if (c.cycleEnd <= d0 && c.cycleEnd >= r.checkIn) { const b = build(c); if (b.amount > 0 && !Store.get(b.id)) out.push(b); }
+    c = joining ? residentCycleFor(r, addDays(c.cycleStart, -1)) : residentCycleFor(r, addMonths(c.periodKey, -1));
+  }
+  return out.reverse();
+}
+/* Leaving early (or on any day that is not the end of the cycle). Works on the CURRENT books, so running it twice
+ * never charges twice:
+ *   - a bill for the cycle exists (advance): rent for the days not stayed is taken off it. Unpaid part: the bill gets smaller.
+ *     Already paid part: it goes back to the resident as credit, so it comes out in the refund.
+ *   - no bill yet (arrears, or not raised yet): rent for the days stayed is billed now, and so is any finished earlier
+ *     month that was never billed (arrears only). */
+function rentCheckoutAdjust(r, checkoutDate) {
+  const out = { bills: [], cut: null, usedDays: 0, totalDays: 0, label: '' };
+  // Only for hostels whose owner has chosen a billing cycle in Settings > Rent & billing (an untouched hostel keeps its old checkout maths).
+  if (!(S().rent || {}).cycleChosen) return out;
+  if (!r || !(r.rent > 0) || !r.checkIn) return out;
+  const pol = r.billingPolicy || S().rent, joining = pol.model === 'joining_date';
+  const idOf = c => (joining ? `inv-rent-${r.id}-${c.cycleStart}` : `inv-rent-${r.id}-${c.periodKey}`);
+  const cyc = residentCycleFor(r, joining ? checkoutDate : ymOf(checkoutDate));
+  const cycDays = diffDays(cyc.cycleEnd, cyc.cycleStart) + 1, totalDays = (S().rent.prorateDivisor === 'fixed_30' && !joining) ? 30 : cycDays;
+  const from = r.checkIn > cyc.cycleStart ? r.checkIn : cyc.cycleStart;
+  if (checkoutDate >= from) {
+    const stayEnd = checkoutDate < cyc.cycleEnd ? checkoutDate : cyc.cycleEnd;
+    const used = diffDays(stayEnd, from) + 1, share = round2(r.rent * Math.min(used, totalDays) / totalDays);
+    out.usedDays = used; out.totalDays = totalDays; out.label = `${t('Rent')} ${cyc.periodLabel}`;
+    const inv = Store.get(idOf(cyc));
+    if (!inv) { if (share > 0 && !(r.left && r.left < cyc.cycleStart)) out.bills.push({ id: idOf(cyc), title: `${out.label} (${used} ${t('days')})`, period: joining ? cyc.periodLabel : cyc.periodKey, amount: share }); }
+    else {
+      const shouldPay = Math.min(inv.amount, share), excess = round2(inv.amount - shouldPay);
+      if (excess >= 0.5 && checkoutDate < cyc.cycleEnd) { const bal = invBal(inv), unpaidCut = Math.min(bal, excess); out.cut = { invId: inv.id, excess, unpaidCut: round2(unpaidCut), creditBack: round2(excess - unpaidCut) }; }
+    }
+  }
+  if (isArrears()) {
+    let c = joining ? residentCycleFor(r, addDays(cyc.cycleStart, -1)) : residentCycleFor(r, addMonths(cyc.periodKey, -1));
+    for (let k = 0; k < 3 && c; k++) {
+      if (c.cycleEnd >= r.checkIn && !Store.get(idOf(c))) {
+        let amt = r.rent;
+        if (!joining && c.periodKey === ymOf(r.checkIn) && r.checkIn > c.cycleStart) amt = calcCheckInRent({ checkInDate: r.checkIn, monthlyRent: r.rent }).amount;
+        if (amt > 0) out.bills.unshift({ id: idOf(c), title: joining ? `${t('Rent')} (${c.periodLabel})` : `${t('Rent')} ${fmtYM(c.periodKey)}`, period: joining ? c.periodLabel : c.periodKey, amount: round2(amt) });
+      }
+      c = joining ? residentCycleFor(r, addDays(c.cycleStart, -1)) : residentCycleFor(r, addMonths(c.periodKey, -1));
+    }
+  }
+  return out;
+}
+// Writes the adjustment into the books (used by checkout only; previews just read rentCheckoutAdjust).
+function applyRentCheckoutAdjust(r, date) {
+  const adj = rentCheckoutAdjust(r, date);
+  for (const b of adj.bills) addInvoice({ id: b.id, resId: r.id, roomId: r.roomId, type: 'rent', period: b.period, title: b.title, amount: b.amount, date, due: date, noLate: true });
+  if (adj.cut) {
+    const inv = Store.get(adj.cut.invId), newAmt = round2(inv.amount - adj.cut.excess), newPaid = Math.max(0, Math.min(inv.paid || 0, round2(newAmt - (inv.waived || 0))));
+    const oldPaid = inv.paid || 0, oldAmt = inv.amount;   // Store.patch edits the record in place, so read these first
+    Store.patch(inv.id, { amount: newAmt, paid: newPaid, amountBefore: oldAmt, adjustedAtCheckout: date });
+    const back = round2(oldPaid - newPaid);
+    if (back > 0) Store.patch(r.id, { credit: round2(((resById(r.id) || {}).credit || 0) + back) });
+  }
+  return adj;
+}
 
 /* ===================================================================== multi-cycle billing & settlement */
 
@@ -1799,6 +1910,7 @@ function calcCheckInRent({ checkInDate = today(), monthlyRent = 0, policy, divis
 
 function calcDepositAmount({ monthlyRent = 0, bedDeposit = 0, depositSettings } = {}) {
   const cfg = depositSettings || S().deposit || {};
+  if (cfg.enabled === false) return { total: 0, refundable: 0, nonRefundable: 0, mode: cfg.mode || 'custom' };
   const rent = Math.max(0, +monthlyRent || 0);
   let total = 0;
   const nonRefundable = cfg.nonRefundable || 0;
@@ -1833,6 +1945,9 @@ function calcDepositAmount({ monthlyRent = 0, bedDeposit = 0, depositSettings } 
 // A rent bill is due this many days after its bill date. One setting (Rent & billing); graceDays only
 // stands in for hostels saved before that.
 const rentDueDays = () => { const r = S().rent || {}; return +r.dueDays || +r.graceDays || 5; };
+// Rent of one bed: its own price when the owner set one (e.g. 11,000 and 11,500 in the same room), else the room's.
+const bedRent = (room, bedId) => { const b = room && (room.beds || []).find(x => x.id === bedId); return b && +b.rent > 0 ? +b.rent : (room ? +room.rent || 0 : 0); };
+const depositOn = () => (S().deposit || {}).enabled !== false;
 const depositFor = (rent, room) => calcDepositAmount({ monthlyRent: rent, bedDeposit: (S().deposit || {}).mode === 'per_bed' && room ? +room.deposit || 0 : 0 }).total;
 const DEPOSIT_RULE_LABEL = { rent_multiple: 'Multiple of monthly rent', fixed: 'Fixed amount', custom: 'Entered at check-in', per_bed: 'Room / bed specific' };
 function calcLateFee({ invoice, todayDate = today(), lateSettings } = {}) {
@@ -1847,7 +1962,7 @@ function calcLateFee({ invoice, todayDate = today(), lateSettings } = {}) {
   }) || {};
 
   if (!cfg.on && cfg.on !== undefined) return { amount: 0, daysOverdue: 0, mode: 'off', capped: false };
-  if (!invoice || !invoice.due || invoice.due >= todayDate) return { amount: 0, daysOverdue: 0, mode: cfg.mode, capped: false };
+  if (!invoice || !invoice.due || invoice.due >= todayDate || invoice.noLate) return { amount: 0, daysOverdue: 0, mode: cfg.mode, capped: false };
 
   const daysOverdue = diffDays(todayDate, invoice.due);
   const graceDays = cfg.graceDays != null ? cfg.graceDays : 5;
@@ -1898,10 +2013,15 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
   const depPaid = round2(sum(resInvoices(resId).filter(i => i.type === 'deposit'), i => i.paid || 0));
   // The non-refundable fee was fixed for this resident at check-in (r.depositFee), so a later change of the
   // hostel setting never alters an old resident. It is part of the deposit and is kept first.
-  const nonRefundable = Math.min(depPaid, round2(Math.max(0, +r.depositFee || 0)));
+  // Deposit marked not refundable at check-in (Settings > Deposit): all of it is kept, nothing is returned.
+  const nonRefundable = r.depositRefundable === false ? depPaid : Math.min(depPaid, round2(Math.max(0, +r.depositFee || 0)));
   const refundableDeposit = round2(depPaid - nonRefundable);
   const unpaidInvs = openInv(resId).filter(i => i.type !== 'deposit');
   let dues = round2(sum(unpaidInvs, invBal));
+  // Rent for the part month: billed (arrears / not raised yet) or taken off (advance, left early). Already applied = checkout ran it.
+  const rentAdj = opts.rentAdjustApplied || rentCheckoutAdjust(r, checkoutDate);
+  if (!opts.rentAdjustApplied) dues = round2(dues + sum(rentAdj.bills, b => b.amount) - (rentAdj.cut ? rentAdj.cut.unpaidCut : 0));
+  const rentCredit = !opts.rentAdjustApplied && rentAdj.cut ? rentAdj.cut.creditBack : 0;
 
   // Notice period shortfall check
   const requiredNoticeDays = checkoutCfg.noticeDaysRequired != null && !isNaN(+checkoutCfg.noticeDaysRequired) ? +checkoutCfg.noticeDaysRequired : 30;
@@ -1968,7 +2088,7 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     }
   }
 
-  const availableDepositAndCredit = round2(refundableDeposit + (r.credit || 0));
+  const availableDepositAndCredit = round2(refundableDeposit + (r.credit || 0) + rentCredit);
   const totalLiabilities = round2(dues + deductions + shortfallFee);
 
   if (deductions > availableDepositAndCredit) {
@@ -1999,6 +2119,8 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     credit: r.credit || 0,
     availableDepositAndCredit,
     unpaidDues: dues,
+    rentAdjust: rentAdj,
+    rentCycle: rentCycleMode(),
     elecShare,
     deductions,
     totalLiabilities,
@@ -2007,7 +2129,8 @@ function calcSettlement({ resId, checkoutDate = today(), deductions = 0, noticeD
     balancePayable,
     notes,
     unpaidInvoices: [
-      ...unpaidInvs.map(i => ({ id: i.id, title: i.title, type: i.type, amount: i.amount, balance: invBal(i) })),
+      ...unpaidInvs.map(i => ({ id: i.id, title: i.title, type: i.type, amount: i.amount, balance: !opts.rentAdjustApplied && rentAdj.cut && rentAdj.cut.invId === i.id ? Math.max(0, round2(invBal(i) - rentAdj.cut.unpaidCut)) : invBal(i) })),
+      ...(opts.rentAdjustApplied ? [] : rentAdj.bills.map(b => ({ id: b.id, title: b.title, type: 'rent', amount: b.amount, balance: b.amount }))),
       ...(elecShare && elecShare.amount > 0 && !unpaidInvs.some(i => i.type === 'electricity' && (i.date === checkoutDate || (elecShare.invId && i.id === elecShare.invId))) ? [{
         id: elecShare.invId || 'inv-el-checkout-simulated',
         title: `${t('Electricity')} (${num(elecShare.billable)} ${t('units')} · final reading)`,
@@ -2034,7 +2157,7 @@ function checkIn(o) {
   const id = o.id || uid('res-');
   const rent = o.rent === '' || o.rent == null || isNaN(o.rent) ? +room.rent || 0 : Math.max(0, +o.rent || 0);
   const deposit = Math.max(0, +o.deposit || 0);
-  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, depositFee: deposit > 0 ? Math.min(deposit, round2(Math.max(0, +(S().deposit || {}).nonRefundable || 0))) : 0, depositRule: (S().deposit || {}).mode || 'custom', checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '', billingPolicy: o.billingPolicy || null, accessories: Array.isArray(o.accessories) && o.accessories.length ? { given: o.accessories.slice(), at: o.checkIn || today(), returned: null, missing: [] } : null });
+  const r = Store.put('res', { id, resId: id, name, phone, guardian: o.guardian || '', guardianPhone: phone10(o.guardianPhone), email: o.email || '', idNo: o.idNo || '', address: o.address || '', college: o.college || '', roomId: room.id, bed: bed.id, rent, deposit, depositRefundable: (S().deposit || {}).refundable !== false, depositFee: deposit > 0 ? Math.min(deposit, round2(Math.max(0, +(S().deposit || {}).nonRefundable || 0))) : 0, depositRule: (S().deposit || {}).mode || 'custom', checkIn: o.checkIn || today(), status: 'active', credit: 0, food: o.food !== false, docs: [], lang: o.lang || 'en', notes: o.notes || '', billingPolicy: o.billingPolicy || null, accessories: Array.isArray(o.accessories) && o.accessories.length ? { given: o.accessories.slice(), at: o.checkIn || today(), returned: null, missing: [] } : null });
   setBed(room.id, bed.id, { status: 'occ', resId: r.id });
   const ym = ymOf(r.checkIn);
   const rPolicy = (o.billingPolicy) || S(null, r.id).rent || {};
@@ -2061,7 +2184,7 @@ function checkIn(o) {
     formula = checkCalc.formula;
   }
 
-  if (r.rent > 0 && first > 0) {
+  if (r.rent > 0 && first > 0 && !isArrears()) {
     addInvoice({
       id: `inv-rent-${r.id}-${ym}`,
       resId: r.id,
@@ -2078,6 +2201,70 @@ function checkIn(o) {
   if (r.deposit > 0) addInvoice({ id: `inv-dep-${r.id}`, resId: r.id, roomId: room.id, type: 'deposit', title: t('Security deposit'), amount: r.deposit, date: r.checkIn, due: addDays(r.checkIn, 2) });
   notify({ to: 'admin', title: t('New check-in'), body: `${r.name} · ${room.no}-${bed.id}` });
   return r;
+}
+/* ===================================================================== previous entry (resident who was already staying)
+ * The rows of the old-bills table: one per month from the check-in month to this month. 'monthly' = the resident paid
+ * month by month; 'yearly' / 'custom' = one lump sum paid up to a date (months up to then are locked as paid). */
+function prevEntryRows({ checkIn, rent, type = 'monthly', paidTill = '', paidTotal = null, skipYm = null } = {}) {
+  if (!checkIn || !(checkIn <= today())) return [];
+  const cur = ymOf(today()), first = ymOf(checkIn), lump = type !== 'monthly';
+  const lastCov = lump && paidTill ? ymOf(paidTill) : '';
+  const last = lastCov && lastCov > cur ? lastCov : cur;     // an advance can run into the future
+  const monthly = Math.max(0, +rent || 0), rows = [];
+  for (let ym = first, n = 0; ym <= last && n < 120; ym = addMonths(ym, 1), n++) {
+    if (skipYm && skipYm(ym)) continue;
+    const locked = !!lastCov && ym <= lastCov, future = ym > cur;
+    let amt = monthly;
+    if (lump && ym === first) amt = calcCheckInRent({ checkInDate: checkIn, monthlyRent: monthly, policy: S().rent.prorate, divisor: S().rent.prorateDivisor }).amount;
+    rows.push({ ym, rent: amt, elec: '', other: 0, locked, future, rentPaid: !lump || locked, elecPaid: !lump, otherPaid: !lump });
+  }
+  // The lump sum is spread over the paid months in proportion to their rent (a part-month stays smaller);
+  // the monthly amount that comes out is what each month is booked at.
+  const cov = rows.filter(r => r.locked), tot = +paidTotal;
+  if (lump && tot > 0 && cov.length) {
+    const w = sum(cov, r => r.rent); let used = 0;
+    cov.forEach((r, i) => { r.rent = i === cov.length - 1 ? round2(tot - used) : round2(w > 0 ? tot * r.rent / w : tot / cov.length); used = round2(used + r.rent); });
+  }
+  return rows;
+}
+// Creates the old bills of a resident who has just been checked in and records what they already paid.
+// Yearly / custom: the lump sum is booked as rent for every month up to the paid-till date and the resident
+// is marked "paid till" that date, so no bill goes out for that period.
+function applyPreviousEntry(resId, rows, { type = 'monthly', paidTill = '', depositPaid = false } = {}) {
+  const r = resById(resId); if (!r) throw new Error('Resident not found');
+  const out = { invoices: 0, payments: 0, paid: 0 }, payPlan = [];
+  const dateOf = ym => (ym === ymOf(r.checkIn) ? r.checkIn : ym + '-01');
+  for (const row of rows) {
+    const ym = row.ym, date = dateOf(ym), due = addDays(date, 4), ids = [], noExtras = ym > ymOf(today());
+    const mk = (id, kind, title, amount) => {
+      if (!(+amount > 0)) return null;
+      let inv = Store.get(id);
+      if (!inv) { inv = addInvoice({ id, resId, roomId: r.roomId, type: kind, period: ym, title, amount: +amount, date, due }); out.invoices++; }
+      if (!inv.noLate) Store.patch(inv.id, { noLate: true, prev: true });
+      return inv;
+    };
+    const rentInv = mk(`inv-rent-${r.id}-${ym}`, 'rent', `${t('Rent')} ${fmtYM(ym)}`, row.rent);
+    const elInv = noExtras ? null : mk(`inv-el-prev-${r.id}-${ym}`, 'electricity', `${t('Electricity')} ${fmtYM(ym)}`, row.elec);
+    const otInv = noExtras ? null : mk(`inv-other-prev-${r.id}-${ym}`, 'other', `${t('Other charges')} ${fmtYM(ym)}`, row.other);
+    if (rentInv && row.rentPaid) ids.push(rentInv.id);
+    if (elInv && row.elecPaid) ids.push(elInv.id);
+    if (otInv && row.otherPaid) ids.push(otInv.id);
+    if (ids.length) payPlan.push({ date, ids });
+  }
+  const lump = type !== 'monthly' && paidTill && rows.some(x => x.locked);
+  for (const p of payPlan) {
+    const amount = round2(sum(p.ids, id => invBal(Store.get(id) || {})));
+    if (!(amount > 0)) continue;
+    recordPayment({ resId, amount, mode: 'cash', date: p.date > today() ? today() : p.date, note: lump ? `${t('Previous entry')} · ${t('rent paid till {d}', { d: fmtDate(paidTill) })}` : t('Previous entry'), only: p.ids, silent: true });
+    out.payments++; out.paid = round2(out.paid + amount);
+  }
+  if (lump) Store.patch(resId, { paidTill, paidTillAmount: round2(sum(rows.filter(x => x.locked), x => x.rent)) });
+  if (depositPaid) {
+    const dep = Store.get(`inv-dep-${r.id}`);
+    if (dep && invBal(dep) > 0) { recordPayment({ resId, amount: invBal(dep), mode: 'cash', date: r.checkIn, note: t('Previous entry'), only: [dep.id], silent: true }); out.payments++; }
+  }
+  alog('previous_entry', `${r.name}: ${out.invoices} old bills added, ${inr(out.paid)} marked paid`, { resId, ...out });
+  return out;
 }
 function welcomeMessage(r, login) {
   return tpl('welcome', { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, room: roomName(r.roomId), bed: r.bed, rent: rs(r.rent), deposit: rs(r.deposit), link: appUrl(), username: login ? login.username : r.username || '-', password: login ? login.password : t('(your mobile number)') }, waLang(r));
@@ -2450,6 +2637,8 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
     }
   }
 
+  // 1b. Rent for the part month goes into the books first (arrears: billed; advance + left early: unused rent taken off / credited)
+  const rentAdjustApplied = applyRentCheckoutAdjust(r, date);
   const depPaid = round2(sum(resInvoices(resId).filter(i => i.type === 'deposit'), i => i.paid || 0));
   // dues other than the deposit invoice itself (includes any newly generated electricity invoice)
   const dues = round2(sum(openInv(resId).filter(i => i.type !== 'deposit'), invBal));
@@ -2463,6 +2652,7 @@ function checkout(resId, date = today(), deductions = 0, note = '', opts = {}) {
     notes: note,
     elecShare,
     reading,
+    rentAdjustApplied,
     applyShortfall: opts.applyShortfall
   });
 
@@ -3470,16 +3660,19 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
       } else {
         rentCycleId = `inv-rent-${r.id}-${cycle.cycleStart}`;
         rentPeriod = cycle.periodLabel;
-        invDate = cycle.cycleStart;
-        dueDate = cycle.dueDate;
+        invDate = isArrears() ? cycle.cycleEnd : cycle.cycleStart;
+        dueDate = isArrears() ? addDays(cycle.cycleEnd, rentDueDays()) : cycle.dueDate;
+        if (isArrears() && today() < cycle.cycleEnd) rentCycleId = null;
       }
     } else {
       rentCycleId = `inv-rent-${r.id}-${ym}`;
       rentPeriod = ym;
-      invDate = rentDue(ym);
+      invDate = rentBillDate(ym);
       dueDate = addDays(invDate, rentDueDays());
+      if (isArrears() && !rentBillable(ym)) rentCycleId = null;   // rent is billed after the month is over
     }
 
+    const rentAmt = (!isJoiningDate && ym === ymOf(r.checkIn) && r.checkIn > monthStart) ? calcCheckInRent({ checkInDate: r.checkIn, monthlyRent: r.rent }).amount : r.rent;
     if (rentCycleId && r.rent > 0) {
       if (!Store.get(rentCycleId)) {
         if (!options.previewOnly) {
@@ -3490,7 +3683,7 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
             type: 'rent',
             period: rentPeriod,
             title: `${t('Rent')} ${fmtYM(ym)}`,
-            amount: r.rent,
+            amount: rentAmt,
             date: invDate,
             due: dueDate,
             policySnapshot: { model: rPolicy.model, rate: r.rent }
@@ -3500,8 +3693,8 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
           resSummary.invoices.push(rentCycleId);
         }
         results.invoicesCreated++;
-        results.totalBilledAmount += r.rent;
-        resSummary.rentAmount = r.rent;
+        results.totalBilledAmount += rentAmt;
+        resSummary.rentAmount = rentAmt;
       } else {
         results.invoicesSkipped++;
         const existing = Store.get(rentCycleId);
@@ -3514,7 +3707,7 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
     resSummary.elecAmount = inc.includeElec === false ? 0 : sum(elecInvs, i => i.amount || 0);
 
     // 3. Mess bill
-    if (inc.includeMess !== false && settings.mess && (settings.mess.billing === 'compulsory' || (settings.mess.billing === 'optional' && r.food !== false))) {
+    if (!(isArrears() && !rentBillable(ym)) && inc.includeMess !== false && settings.mess && (settings.mess.billing === 'compulsory' || (settings.mess.billing === 'optional' && r.food !== false))) {
       const messFee = settings.mess.monthlyFee || 2500;
       const messInvId = `inv-mess-${r.id}-${ym}`;
       if (!Store.get(messInvId)) {
@@ -3527,8 +3720,8 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
             period: ym,
             title: `${t('Mess fee')} ${fmtYM(ym)}`,
             amount: messFee,
-            date: rentDue(ym),
-            due: addDays(rentDue(ym), 5)
+            date: rentBillDate(ym),
+            due: addDays(rentBillDate(ym), 5)
           });
           resSummary.invoices.push(inv.id);
         } else {
@@ -3548,6 +3741,7 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
       for (const chg of settings.charges) {
         if (!chg.active || chg.frequency !== 'monthly') continue;
         if (chg.effectiveDate && chg.effectiveDate > monthEnd) continue;
+        if (isArrears() && !rentBillable(ym)) continue;
         if (!chargeApplies(chg, r)) continue;
         const chgInvId = `inv-chg-${chg.id}-${r.id}-${ym}`;
         if (!Store.get(chgInvId)) {
@@ -3560,8 +3754,8 @@ function runMonthlyBillingBatch({ ym = ymOf(today()), options = {} } = {}) {
               period: ym,
               title: `${chg.name} ${fmtYM(ym)}`,
               amount: chg.amount,
-              date: rentDue(ym),
-              due: addDays(rentDue(ym), 5)
+              date: rentBillDate(ym),
+              due: addDays(rentBillDate(ym), 5)
             });
             resSummary.invoices.push(inv.id);
           } else {
@@ -4169,33 +4363,9 @@ function runAutomationAll(force) {
   if (admin && A.rent) {
     for (const r of activeRes()) {
       if (!(r.rent > 0)) continue;
-      const rPolicy = r.billingPolicy || S().rent;
-      if (rPolicy.model === 'joining_date') {
-        const cycle = residentCycleFor(r, d0);
-        if (d0 >= cycle.cycleStart) {
-          const id = `inv-rent-${r.id}-${cycle.cycleStart}`;
-          if (!Store.get(id)) {
-            addInvoice({
-              id,
-              resId: r.id,
-              roomId: r.roomId,
-              type: 'rent',
-              period: cycle.periodLabel,
-              title: `${t('Rent')} (${cycle.periodLabel})`,
-              amount: r.rent,
-              date: cycle.cycleStart,
-              due: cycle.dueDate,
-              policySnapshot: { model: 'joining_date', rate: r.rent }
-            });
-            acts++;
-          }
-        }
-      } else {
-        if (d0 >= rentDue(ym)) {
-          if (r.checkIn > rentDue(ym)) continue;
-          const id = `inv-rent-${r.id}-${ym}`; if (Store.get(id)) continue;
-          addInvoice({ id, resId: r.id, roomId: r.roomId, type: 'rent', period: ym, title: `${t('Rent')} ${fmtYM(ym)}`, amount: r.rent, date: rentDue(ym), due: addDays(rentDue(ym), rentDueDays()) }); acts++;
-        }
+      for (const b of rentBillsToRaise(r, d0)) {
+        addInvoice({ id: b.id, resId: r.id, roomId: r.roomId, type: 'rent', period: b.period, title: b.title, amount: b.amount, date: b.date, due: b.due, policySnapshot: { model: b.model, rate: r.rent, cycle: rentCycleMode() } });
+        acts++;
       }
     }
     if (acts) alog('rent', t('{n} rent bills created', { n: acts }));
@@ -4591,7 +4761,7 @@ function seedDemo(hostelId, opts = {}) {
 Store.onEmptyHostel = () => { if (!CLOUD) seedDemo(Store.ctx.hostelId); };
 
 /* ===================================================================== bulk room & bed setup */
-function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = null, defaultRent = 6000, defaultAc = false, block = '' } = {}) {
+function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = null, defaultRent = 6000, defaultAc = false, block = '', dryRun = false } = {}) {
   if (!Array.isArray(floors) || !floors.length) throw new Error('Define at least one floor');
   const hasCustom = Array.isArray(customRooms) && customRooms.length > 0;
   if (!hasCustom && (!Array.isArray(roomPatterns) || !roomPatterns.length)) throw new Error('Define at least one room pattern');
@@ -4674,6 +4844,7 @@ function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = 
     }
   }
 
+  if (dryRun) return { createdRooms: generatedRooms, roomCount: generatedRooms.length, bedCount: generatedRooms.reduce((s, r) => s + r.beds.length, 0) };
   // Atomically commit all generated rooms to store
   for (const r of generatedRooms) {
     Store.put('room', r);
@@ -4689,6 +4860,23 @@ function bulkCreateRooms({ floors = [], roomPatterns = [], rooms: customRooms = 
     roomCount: generatedRooms.length,
     bedCount: generatedRooms.reduce((s, r) => s + r.beds.length, 0)
   };
+}
+
+/* Saves the rooms from bulkCreateRooms({ dryRun: true }) a few at a time so the owner can cancel part-way.
+ * Cancelling stops at once and takes back every room already saved by this run (nothing is left half-built). */
+async function commitRoomsCancellable(created, floorsCount, isCancelled, onProgress) {
+  const done = [];
+  for (let i = 0; i < created.length; i++) {
+    if (isCancelled()) {
+      for (const r of done) { try { Store.delete(r.id); } catch (e) { /* already gone */ } }
+      return { cancelled: true, roomCount: 0, bedCount: 0 };
+    }
+    Store.put('room', created[i]); done.push(created[i]);
+    if (onProgress) onProgress(i + 1, created.length);
+    if (i % 3 === 2) await new Promise(res => setTimeout(res, 0));
+  }
+  alog('bulk_rooms', `Created ${done.length} rooms (${done.reduce((s, r) => s + r.beds.length, 0)} beds)`, { roomsCount: done.length, floors: floorsCount });
+  return { cancelled: false, roomCount: done.length, bedCount: done.reduce((s, r) => s + r.beds.length, 0) };
 }
 
 /* ===================================================================== cook inventory dependencies */
@@ -5286,7 +5474,9 @@ function submitPoliceVerification(resId, { refNo, date = today(), certificatePat
     verifiedBy: (Store.me && Store.me.full_name) || ctx().role || 'emitra'
   };
 
+  const wasVerified = !!(r.pv && r.pv.status === 'verified');
   Store.patch(resId, { pv: pvRecord });
+  if (pvRecord.status === 'verified' && !wasVerified) sendPvConfirmation(resId).catch(e => console.warn('PV confirmation mail:', e.message));
   alog('police_verification', `Police verification for ${r.name}: ${pvRecord.status} (Ref: ${pvRecord.refNo})`, {
     resId, refNo: pvRecord.refNo, status: pvRecord.status
   });
@@ -5301,6 +5491,23 @@ function submitPoliceVerification(resId, { refNo, date = today(), certificatePat
   return { ...pvRecord, pv: pvRecord };
 }
 
+// Once the police verification is completed the resident gets one e-mail: the confirmation, the reference number,
+// their stay details and their rental agreement. The status shows in the hostel's own Police Verification panel too.
+async function sendPvConfirmation(resId) {
+  const r = resById(resId); if (!r || !r.email || !isValidEmail(r.email)) return { ok: false, reason: 'no_email' };
+  const h = Store.hostel() || {}, pv = r.pv || {};
+  let agr = typeof getActiveAgreement === 'function' ? getActiveAgreement(r.id) : null;
+  if (!agr && r.roomId && typeof createAgreement === 'function') { try { agr = createAgreement({ resId: r.id, rent: r.rent, deposit: r.deposit, startDate: r.checkIn || today(), noticeDays: 30 }); } catch (e) { agr = null; } }
+  const lines = [
+    `${t('Police verification')}: ${t('Completed')}`, `${t('Reference / Ack No.')}: ${pv.refNo || '-'}`, `${t('Date')}: ${fmtDate(pv.date || today())}`,
+    `${t('Hostel / PG')}: ${h.name || ''}`, `${t('Room')}: ${roomName(r.roomId)}${r.bed ? '-' + r.bed : ''}`, `${t('Staying since')}: ${fmtDate(r.checkIn)}`, `${t('Monthly rent')}: ${rs(r.rent)}`,
+    agr ? `\n${t('Your rental agreement')}\n${agr.documentText || agr.text || ''}` : ''
+  ].filter(Boolean).join('\n');
+  const html = renderBrandedEmailHtml({ hostelName: h.name || 'Hostel', title: t('Police verification completed'), headline: t('Your police verification is complete'), recipientName: r.name, intro: t('Your police verification for {h} has been completed. Details and your rental agreement are below.', { h: h.name || 'your hostel' }), bodyLines: lines, amountDue: 0, date: fmtDate(today()) });
+  const res = await sendBrandedEmail({ to: r.email, subject: `${h.name || 'Hostel'} · ${t('Police verification completed')}`, html, text: lines, resId: r.id, hostelId: h.id });
+  notify({ to: 'res', resId: r.id, title: t('Police verification completed ✓'), body: t('Reference {n}', { n: pv.refNo || '-' }), category: 'agreement' });
+  return res;
+}
 /* ===================================================================== automatic agreement check & email */
 function checkAndAutoSendAgreement(resId) {
   const r = resById(resId);

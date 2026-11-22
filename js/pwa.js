@@ -139,7 +139,8 @@ const Pwa = (() => {
   function open(manual) {
     if (typeof openModal !== 'function') return;
     const e = env(), m = e.mode;
-    if (installed()) { if (manual && typeof toast === 'function') toast(tr('Sarvlekh is already installed on this device.')); return; }
+    // The menu button works until the app is really running as an app: a remembered "installed" flag from an app that was later removed must not hide it.
+    if (manual ? standalone() : installed()) { if (manual && typeof toast === 'function') toast(tr('Sarvlekh is already installed on this device.')); return; }
     if (manual && m === 'prompt') { prompt(); return; }          // the menu button: go straight to the browser's own dialog
     const lead = `<div class="pwa"><img src="/icons/icon-192.png" alt="" width="64" height="64"><div><b>${esc(tr('Use Sarvlekh like an app'))}</b><p>${esc(tr('Opens full screen from your home screen or desktop, loads faster and keeps you signed in.'))}</p></div></div>`;
     let body, foot;
@@ -170,7 +171,7 @@ const Pwa = (() => {
   function start(delay = 5000) { if (!timer && !installed()) timer = setTimeout(tick, delay); }
 
   // The button in the menu: shown until the app is installed (or can never be).
-  const button = () => (installed() ? '' : `<button class="install-btn" data-act="install">${I.install}<span>${esc(tr('Install app'))}</span></button>`);
+  const button = () => (standalone() ? '' : `<button class="install-btn" data-act="install">${I.install}<span>${esc(tr('Install app'))}</span></button>`);
 
   /* ===================================================================== Web Push Notifications */
   const PUSH_KEY = { sub: 'hostelos.push.sub', status: 'hostelos.push.status', promptDismissed: 'hostelos.push.dismissed' };

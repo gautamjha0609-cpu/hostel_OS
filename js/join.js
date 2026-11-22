@@ -76,7 +76,7 @@
     var d = s.replace(/\D/g, '');
     if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
     else if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-    if (d.length === 10 && /^[5-9]/.test(d)) return d;
+    if (d.length === 10 && /^[0-9]{10}$/.test(d)) return d;
     return null;
   };
   var box = document.getElementById('box');
@@ -136,16 +136,17 @@
   }
 
   function form(info) {
-    var docRows = (info.upload ? (info.docs || []) : []).map(function (d, i) {
+    var docList = info.upload ? (info.docs || []) : [];
+    var docRows = docList.map(function (d, i) {
       return '<div class="full"><label class="f" for="j_doc' + i + '">' + esc(d) + ' *</label>' +
-        '<input id="j_doc' + i + '" type="file" accept="image/*" data-label="' + esc(d) + '"><div class="hint" id="j_docv' + i + '" style="margin-top:4px"></div></div>';
+        '<input id="j_doc' + i + '" type="file" accept="image/jpeg,image/png,image/webp" data-label="' + esc(d) + '"><div class="hint" id="j_docv' + i + '" style="margin-top:4px"></div></div>';
     }).join('');
     var portal = PORTALS[PV.state] || NATIONAL;
 
     shell('<form id="jf" class="card" novalidate autocomplete="off"><div class="fgrid">' +
       sec(T.you) +
       fld('j_name', T.name + ' *', 'type="text" maxlength="80" required') +
-      fld('j_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
+      fld('j_phone', T.phone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[0-9]{10}" required') +
       fld('j_email', T.email + ' *', 'type="email" maxlength="120" required') +
       fld('j_college', T.college + ' *', 'type="text" maxlength="120" required') +
       fld('j_idno', T.idNo + ' *', 'type="text" inputmode="numeric" maxlength="12" placeholder="12-digit Aadhaar" pattern="[0-9]{12}" required') +
@@ -153,7 +154,7 @@
       '<div class="full"><label class="f" for="j_lang">' + esc(T.lang) + '</label><select id="j_lang"><option value="en">English</option><option value="hi"' + (hi ? ' selected' : '') + '>हिन्दी</option></select></div>' +
       sec(T.guardianSec) +
       fld('j_guardian', T.guardian + ' *', 'type="text" maxlength="80" required') +
-      fld('j_gphone', T.guardianPhone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[5-9][0-9]{9}" required') +
+      fld('j_gphone', T.guardianPhone + ' *', 'type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" pattern="[0-9]{10}" required') +
       ((info.docs || []).length
         ? sec(T.docsSec) + (info.upload
           ? '<div class="full"><div class="hint">' + esc(T.docsHint) + '</div></div>' + docRows
@@ -262,7 +263,7 @@
         return;
       }
       var rawId = val('j_idno');
-      if (rawId && rawId.replace(/\D/g, '').length !== 12 || /^[01]/.test(rawId)) {
+      if (rawId && rawId.replace(/\D/g, '').length !== 12) {
         err.textContent = hi ? 'आधार नंबर ठीक 12 अंकों का होना चाहिए।' : 'Aadhaar number must be exactly 12 numeric digits.';
         return;
       }
@@ -298,6 +299,8 @@
     FAILED = [];
     picks.forEach(function (p) {
       chain = chain.then(function (acc) {
+        var sig = p.file.name + '|' + p.file.size + '|' + p.file.lastModified, done = UPLOADED[p.label];
+        if (done && done.sig === sig) { acc.push({ type: p.label, path: done.path }); return acc; }   // same photo, already uploaded
         var isPhoto = /photo|avatar|face/i.test(p.label);
         return compress(p.file, isPhoto ? 360 : 1100, 0.62).then(function (blob) {
           if (!blob) { FAILED.push(p.label); return acc; }
@@ -305,7 +308,7 @@
           return api({ action: 'doc', app: APP, label: p.label, mime: mime, size: blob.size })
             .then(function (s) {
               return fetch(s.url, { method: 'PUT', headers: { 'Content-Type': mime, 'x-upsert': 'false', apikey: CFG.SUPABASE_ANON_KEY }, body: blob })
-                .then(function (r) { if (r.ok) acc.push({ type: p.label, path: s.path }); else FAILED.push(p.label); return acc; });
+                .then(function (r) { if (r.ok) { acc.push({ type: p.label, path: s.path }); UPLOADED[p.label] = { sig: sig, path: s.path }; } else FAILED.push(p.label); return acc; });
             })
             .catch(function () { FAILED.push(p.label); return acc; });
         });
@@ -327,7 +330,7 @@
       return Promise.resolve();
     } catch (e) { return Promise.reject(e); }
   }
-  var FAILED = [];
+  var FAILED = [], UPLOADED = {};
   function finish(entry) {
     var warn = FAILED.length ? '<p class="hint" style="color:#b45309;margin-top:8px">' + esc((hi ? 'ये दस्तावेज़ अपलोड नहीं हो सके, कृपया हॉस्टल को दोबारा दें: ' : 'These documents could not be uploaded - please give them to the hostel again: ') + FAILED.join(', ')) + '</p>' : '';
     shell('<div class="card" style="text-align:center"><svg viewBox="0 0 24 24" style="width:56px;height:56px;color:#1a8f3c;display:block;margin:0 auto" aria-hidden="true"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
@@ -346,12 +349,14 @@
     var dh = demo && (demo.hostels || []).filter(function (x) { return x.id === H; })[0];
     var dset = (dh && dh.settings) || {};
     if (dh) NAME = dh.name;
-    PV = { on: ((dset.police || {}).on !== false), state: q.get('s') || (dset.police || {}).state || '' };
-    return form({ docs: ((dset.docs || {}).required) || ['Aadhaar card', 'Passport photo'], upload: false });
+    PV = { on: false, state: '' };
+    var dreq = (dset.docs || {}).required || ['Aadhaar card', 'Passport photo'], dph = (dset.docs || {}).photos || {}, dl = [];
+    dreq.forEach(function (d) { var c = dph[d] || {}, aad = /aadhaar|aadhar/i.test(d), n = +c.count || (aad ? 2 : 1); if (n < 2) { dl.push(d); return; } for (var i = 0; i < Math.min(n, 4); i++) dl.push(d + ' (' + ((c.names || [])[i] || (aad ? ['Front', 'Back'][i] : '') || 'Photo ' + (i + 1)) + ')'); });
+    return form({ docs: dl, upload: false });
   }
   api({ action: 'info' }).then(function (d) {
     if (d.name) NAME = d.name;
-    PV = { on: !!d.police, state: d.state || '' };
+    PV = { on: false, state: '' };
     form(d);
   }).catch(function (e) { fail(e.noServer ? T.noServer : (e.status === 403 ? T.bad : (e.message || T.fail))); });
 })();

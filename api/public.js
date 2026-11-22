@@ -10,7 +10,7 @@
  * service role.
  */
 const crypto = require('crypto');
-const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, readBodyWithRaw, SITE_RESERVED, cleanPhone, isValidEmail } = require('./_lib.js');
+const { URL_, HttpError, sb, rest, uuid, limit, clientIp, readJson, readBodyWithRaw, SITE_RESERVED, cleanPhone, isValidEmail, docSlots } = require('./_lib.js');
 
 const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
@@ -165,7 +165,7 @@ async function join(req, res) {
     return res.status(200).json({
       name: h.name,
       // the app's own default (DEFAULT_SETTINGS in js/domain.js) when the owner never changed it
-      docs: ((h.settings && h.settings.docs) || {}).required || ['Aadhaar card', 'Passport photo'],
+      docs: docSlots(h.settings && h.settings.docs),
       upload: true,
       police: st.on !== false,
       state: st.state || '',
@@ -191,7 +191,7 @@ async function join(req, res) {
     if (!NAME_OK.test(name)) throw new HttpError(400, 'Name can contain letters and spaces only');
     if (e.guardian && !NAME_OK.test(str(e.guardian, 80))) throw new HttpError(400, 'Guardian name can contain letters and spaces only');
     // Aadhaar: exactly 12 digits, never starting with 0 or 1 (the form checks this too; this stops a hand-made request)
-    if (str(e.idNo, 40)) { const d = str(e.idNo, 40).replace(/\D/g, ''); if (d.length !== 12 || /^[01]/.test(d)) throw new HttpError(400, 'Aadhaar number must be exactly 12 digits'); }
+    if (str(e.idNo, 40)) { const d = str(e.idNo, 40).replace(/\D/g, ''); if (d.length !== 12) throw new HttpError(400, 'Aadhaar number must be exactly 12 digits'); }
     const phone = cleanPhone(e.phone);
     if (!phone) throw new HttpError(400, 'Enter a 10-digit mobile number');
     // every detail is compulsory
@@ -209,7 +209,7 @@ async function join(req, res) {
     const docs = (Array.isArray(e.docs) ? e.docs : [])
       .filter(d => d && typeof d.path === 'string' && d.path.startsWith(dir) && /^[\w./-]{1,200}$/.test(d.path) && !d.path.includes('..'))
       .slice(0, 8).map(d => ({ type: str(d.type, 60) || 'Document', path: d.path, ts: at }));
-    const needDocs = ((h.settings && h.settings.docs) || {}).required || ['Aadhaar card', 'Passport photo'];
+    const needDocs = docSlots(h.settings && h.settings.docs);
     if (docs.length < needDocs.length) throw new HttpError(400, 'Please upload every document: ' + needDocs.join(', '));
     const data = {
       status: 'pending', name, phone,

@@ -16,7 +16,7 @@
 // GET /api/admin?cron=sweep   Authorization: Bearer <CRON_SECRET>   the same clean-up, daily (vercel.json)
 
 const crypto = require('crypto');
-const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone, sendViaSmtp } = require('./_lib.js');
+const { URL_, KEY, HttpError, sb, rest, uuid, optUuid, caller, limit, clientIp, readJson, cleanPhone, sendViaSmtp, isValidEmail } = require('./_lib.js');
 const Cashfree = require('./_cashfree.js');
 const Mail = require('./_email.js');
 const Pdf = require('./_pdf.js');
@@ -29,7 +29,7 @@ const ROLES = ['owner', 'manager', 'warden', 'accountant', 'cook', 'housekeeping
 const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 
 const insert = (table, row) => rest(table, '', { method: 'POST', body: row, headers: { Prefer: 'return=representation' } }).then(a => a[0]);
-const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 30) || 'user';
+const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 30).replace(/\.+$/, '') || 'user';
 const digits = s => String(s || '').replace(/\D/g, '');
 
 // Owner/manager of the org, or super admin. Returns the hostel_id the caller is allowed to
@@ -100,7 +100,9 @@ async function makeUser({ full_name, phone, username, password, isSuper = false 
     if (isProd) {
       // In production, NEVER default to mobile number. Generate high-entropy random password.
       // The user must set their password via the account activation invite link.
-      pw = crypto.randomBytes(16).toString('hex');
+      // Short (8 chars, no look-alike letters) so it is easy to copy and read out.
+      const SHORT_PW = 'abcdefghjkmnpqrstuvwxyz23456789';
+      pw = Array.from(crypto.randomBytes(8), b => SHORT_PW[b % SHORT_PW.length]).join('');
     } else {
       pw = String(cleanP || digits(phone) || 'tempPass123');
     }
@@ -210,6 +212,8 @@ const actions = {
       owner_name: b.owner?.full_name ? String(b.owner.full_name).trim().slice(0, 80) : null,
       phone: ownerPhone,
       city: o.city ? String(o.city).trim().slice(0, 60) : null,
+      address: o.address ? String(o.address).trim().slice(0, 240) : null,
+      email: o.email && isValidEmail(o.email) ? String(o.email).trim().toLowerCase() : null,
       plan: o.plan || 'standard',
       fee: Math.max(0, +o.fee || 0),
       modules: o.modules || {},
@@ -218,7 +222,7 @@ const actions = {
     });
     let owner = null;
     try {
-      const hostel = await insert('hostels', { org_id: org.id, name: b.hostel?.name || o.name, city: b.hostel?.city || o.city, address: b.hostel?.address, settings: b.hostel?.settings || {} });
+      const hostel = await insert('hostels', { org_id: org.id, name: b.hostel?.name || o.name, city: b.hostel?.city || o.city, address: b.hostel?.address, lat: Number.isFinite(+b.hostel?.lat) && b.hostel?.lat !== null && b.hostel?.lat !== '' ? +b.hostel.lat : null, lng: Number.isFinite(+b.hostel?.lng) && b.hostel?.lng !== null && b.hostel?.lng !== '' ? +b.hostel.lng : null, warden_phone: b.hostel?.warden_phone ? (cleanPhone(b.hostel.warden_phone) || digits(b.hostel.warden_phone)) : null, settings: b.hostel?.settings || {} });
       owner = await makeUser({ full_name: b.owner?.full_name || o.name, phone: b.owner?.phone, username: b.owner?.username, password: b.owner?.password });
       await addMembership({ user_id: owner.user_id, org_id: org.id, hostel_id: null, role: 'owner' });
       return { org, hostel, owner };
@@ -242,7 +246,7 @@ const actions = {
         } else if (hostel_id) {
           const [h] = await rest('hostels', `?id=eq.${hostel_id}&select=name`);
           if (h && h.name) {
-            const hSlug = slug(h.name).slice(0, 18).replace(/\.+$/, '') || 'hostel';
+            const hSlug = slug(h.name).slice(0, 6).replace(/\.+$/, '') || 'hostel';
             b.username = `${cleanP}.${hSlug}`;
           }
         }
@@ -955,6 +959,26 @@ const actions = {
       await assertAdmin(me, orgId, hostel_id);
     }
     return deliverResidentMail(b, me);
+  },
+
+  // Tells the owner / super admin exactly why e-mail is not going out: key present? sender domain verified? database key accepted?
+  async mail_check(b, me) {
+    if (!me || !(me.isSuper || (me.members || []).some(m => ['owner', 'manager'].includes(m.role)))) throw new HttpError(403, 'Owners and the super admin only');
+    const from = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>', m = from.match(/<([^>]+)>/), addr = m ? m[1] : from, domain = (addr.split('@')[1] || '').toLowerCase();
+    const out = { smtp: !!(process.env.SMTP_USER && process.env.SMTP_PASS), resend_key: !!process.env.RESEND_API_KEY, from, domain, database_key_ok: true };
+    try { await rest('profiles', '?select=id&limit=1'); } catch (e) { out.database_key_ok = false; out.database_error = String(e.message || e).slice(0, 160); }
+    if (out.resend_key) {
+      try {
+        const r = await fetch('https://api.resend.com/domains', { headers: { Authorization: 'Bearer ' + process.env.RESEND_API_KEY } });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok) {
+          const d = (j.data || []).find(x => String(x.name).toLowerCase() === domain || domain.endsWith('.' + String(x.name).toLowerCase()));
+          out.domain_found = !!d; out.domain_status = d ? d.status : null;
+          if (d) { try { const r2 = await fetch('https://api.resend.com/domains/' + d.id, { headers: { Authorization: 'Bearer ' + process.env.RESEND_API_KEY } }); const j2 = await r2.json(); out.records = (j2.records || []).map(x => ({ record: x.record, name: x.name, type: x.type, status: x.status })); } catch (e) { /* optional detail */ } }
+        } else { out.resend_error = (j && j.message) || ('HTTP ' + r.status); out.resend_restricted = r.status === 401 || r.status === 403; }
+      } catch (e) { out.resend_error = 'Resend unreachable: ' + e.message; }
+    }
+    return out;
   },
 
   // Many mails in one request (one login check, one rate-limit hit): the owner's "send to all".

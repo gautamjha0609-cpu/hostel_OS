@@ -17,7 +17,7 @@ const ARCHIVE_DAYS = 120;
 // Name the columns instead of select=*: the app never uses the rest, and the SaaS billing
 // columns on orgs are not granted to ordinary members at all, so select=* would be refused.
 const ORG_COLS = 'id,name,status,modules,max_hostels,max_beds';
-const HOSTEL_COLS = 'id,org_id,name,city,address,phone,status,settings,modules,blocks';
+const HOSTEL_COLS = 'id,org_id,name,city,address,phone,status,settings,modules,blocks,lat,lng,warden_phone';
 
 const LS = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },

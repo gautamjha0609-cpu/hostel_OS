@@ -59,7 +59,9 @@ function brandMail(a = {}) {
     p(esc(a.intro || `Here are your latest notice and stay details for ${hostel}.`)),
     amt > 0 ? stat('Total pending', inr(amt), 'Please clear it before the due date to avoid a late fee.', 'warn') : '',
     a.bodyLines ? mono(a.bodyLines) : '',
-    a.payLink ? button('Pay online / UPI', a.payLink) : '',
+    Array.isArray(a.payLinks) && a.payLinks.length > 1
+      ? a.payLinks.slice(0, 4).map(x => button(`${String(x.label || 'Pay').slice(0, 40)} \u00b7 ${inr(+x.amount || 0)}`, x.url)).join('')
+      : a.payLink ? button('Pay online / UPI', a.payLink) : '',
     p(`<span style="font-size:13px;color:${MUTED}">Already paid? Add your payment reference in the Sarvlekh resident app, or tell the hostel office.</span>`),
   ].join('');
   return shell({ preheader: a.intro || a.headline || a.title || '', kicker: a.title || 'Notice', title: a.headline || a.title || 'Notice', hostel, date: a.date || '', body });

@@ -384,6 +384,21 @@ A.pgsheet = () => {
   const cur = cs.some(x => x.key === c.key) ? '' : row(c);
   sheet(t('Switch hostel'), `<div class="group">${cur}${cs.map(row).join('')}</div>`);
 };
+// Two quick taps on the hostel name = jump to the next hostel (1 > 2 > 3 > 1), without opening the list.
+{
+  const openSheet = A.pgsheet; let lastTap = 0;
+  A.pgsheet = (el, e) => {
+    const now = Date.now();
+    if (now - lastTap < 450) {
+      lastTap = 0; closeModal(true);
+      const cs = contexts(); if (cs.length < 2) return;
+      const i = cs.findIndex(x => x.key === ctx().key), nx = cs[(i + 1) % cs.length];
+      toast(t('Switched to {n}', { n: nx.label }), 'ok');
+      return chooseContext(nx.key);
+    }
+    lastTap = now; return openSheet(el, e);
+  };
+}
 A.chpw = () => formModal({
   title: 'Change password', submit: 'Update password',
   fields: [{ name: 'p1', label: 'New password', type: 'password', required: true, hint: t('At least 6 characters') }, { name: 'p2', label: 'Repeat new password', type: 'password', required: true }],
@@ -467,7 +482,7 @@ A.notifs = () => {
        <div class="ntf-list" id="ntfGroup">
          ${list.map(n => { const [icn, tone] = kind(n); return `
            <div class="ntf-wrap" id="ntf-wrap-${n.id}" data-id="${n.id}">
-             <div class="ntf-swipe-bg"><span>${ico('trash', 'xs')} ${esc(t('Dismissed'))}</span><span>${esc(t('Dismissed'))} ${ico('trash', 'xs')}</span></div>
+             <div class="ntf-swipe-bg"><span class="sw-r">${ico('check', 'xs')} ${esc(t('Mark as read'))}</span><span class="sw-l">${esc(t('Delete'))} ${ico('trash', 'xs')}</span></div>
              <div class="ntf-item ${n.read ? 'read' : 'unread'}" data-id="${n.id}" data-to="${esc(n.link || '')}">
                <span class="ntf-ic ${tone}">${ico(icn, 'sm')}</span>
                <span class="ntf-body"><span class="ntf-top"><span class="ntf-t">${esc(n.title)}</span><span class="ntf-time">${esc(ago(n.ts))}</span></span>${n.body ? `<span class="ntf-d">${esc(n.body)}</span>` : ''}</span>
@@ -567,7 +582,8 @@ function initNotifGestures() {
       if (isHorizontal) {
         currentX = dx;
         item.style.transform = `translateX(${dx}px)`;
-        item.style.opacity = `${Math.max(0.2, 1 - Math.abs(dx) / 280)}`;
+        item.style.opacity = `${Math.max(0.35, 1 - Math.abs(dx) / 400)}`;
+        const wr = item.closest('.ntf-wrap'); if (wr) { wr.classList.toggle('sw-right', dx > 0); wr.classList.toggle('sw-left', dx < 0); }
       }
     }, { passive: true });
 
@@ -576,10 +592,14 @@ function initNotifGestures() {
       isDragging = false;
       item.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
 
-      if (isHorizontal && Math.abs(currentX) > 65) {
-        // Swiped past threshold -> slide out completely and dismiss
-        const dir = currentX > 0 ? 1 : -1;
-        item.style.transform = `translateX(${dir * 120}%)`;
+      const wr = item.closest('.ntf-wrap'); if (wr) wr.classList.remove('sw-right', 'sw-left');
+      if (isHorizontal && currentX > 80) {
+        // Swipe right: mark as read, the card stays
+        item.style.transform = 'translateX(0px)'; item.style.opacity = '1';
+        if (!(Store.get(id) || {}).read) { Store.patch(id, { read: true }); item.classList.remove('unread'); item.classList.add('read'); updateChrome(); const c = $('#ntfUnreadCount'); if (c) { const un = myNotifs().filter(n => !n.read).length; c.textContent = `${un} ${t('unread')}`; c.classList.toggle('z', !un); } toast(t('Marked as read')); }
+      } else if (isHorizontal && currentX < -80) {
+        // Swipe left: delete, the card slides out
+        item.style.transform = 'translateX(-120%)';
         item.style.opacity = '0';
         setTimeout(() => dismissNotif(id, item, null), 150);
       } else if (isHorizontal) {
@@ -1030,8 +1050,9 @@ function infoToButton(root) {
       else return;
     }
     st.dx = dx; const w = st.card.offsetWidth || 300;
-    st.card.style.transform = 'translateX(' + dx + 'px) rotate(' + (dx / w * 3) + 'deg)';
-    st.card.style.opacity = String(1 - Math.min(0.55, Math.abs(dx) / w));
+    const dual = st.wrap.classList.contains('dual');
+    st.card.style.transform = 'translateX(' + (dual ? Math.max(-w * 0.6, Math.min(w * 0.6, dx)) : dx) + 'px)' + (dual ? '' : ' rotate(' + (dx / w * 3) + 'deg)');
+    st.card.style.opacity = String(dual ? 1 : 1 - Math.min(0.55, Math.abs(dx) / w));
     st.wrap.classList.toggle('left', dx < 0); st.wrap.classList.toggle('right', dx > 0);
   });
   const end = e => {
@@ -1039,6 +1060,13 @@ function infoToButton(root) {
     const s = st; st = null; if (!s.drag) return;
     const w = s.card.offsetWidth || 300, v = Math.abs(s.dx) / Math.max(1, Date.now() - s.t);
     s.card.style.transition = 'transform .22s ease, opacity .22s ease';
+    if (s.wrap.classList.contains('dual')) {
+      // two-direction card: do the action of that side, then spring back (nothing is removed by the swipe itself)
+      const far = Math.abs(s.dx) > w * 0.3 || (v > 0.6 && Math.abs(s.dx) > 40), act = s.dx > 0 ? s.wrap.dataset.swright : s.wrap.dataset.swleft;
+      s.card.style.transform = ''; s.card.style.opacity = ''; s.wrap.classList.remove('left', 'right');
+      if (far && act && A[act]) { if (navigator.vibrate) try { navigator.vibrate(8); } catch (x) { /* ok */ } A[act]({ dataset: { ...s.wrap.dataset } }); }
+      return;
+    }
     if (Math.abs(s.dx) > w * 0.38 || (v > 0.6 && Math.abs(s.dx) > 40)) {
       s.card.style.transform = 'translateX(' + (s.dx > 0 ? '115%' : '-115%') + ')'; s.card.style.opacity = '0';
       if (navigator.vibrate) try { navigator.vibrate(8); } catch (x) { /* ok */ }

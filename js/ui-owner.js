@@ -125,20 +125,31 @@ PAGES.inbox = {
   title: 'Approvals', mod: 'inbox',
   render() {
     const list = inboxItems();
-    const acts = x => ({
-      claim: `${btn('View', 'claimview', `data-id="${x.id}"`, 'sm')}${btn('Approve', 'claimok', `data-id="${x.id}"`, 'sm ok', 'check')}`,
-      signup: btn('Review', 'signupview', `data-id="${x.id}"`, 'sm primary'),
-      pr: btn('Review', 'prview', `data-id="${x.id}"`, 'sm primary'),
-      meter: `${btn('View', 'meterview', `data-id="${x.id}"`, 'sm')}${btn('Reject', 'meterreject', `data-id="${x.id}"`, 'sm bad')}${btn('Bill it', 'meterok', `data-id="${x.id}"`, 'sm ok')}`,
-      dep: btn('Mark refunded', 'depok', `data-id="${x.id}"`, 'sm ok'),
-      cmp: btn('Open', 'go', 'data-to="complaints"', 'sm'),
-      hk: `${btn('Reassign', 'hkreassign', `data-id="${x.id}"`, 'sm')}${btn('OK', 'hkack', `data-id="${x.id}"`, 'sm')}`,
-      mbill: btn('E-mail all', 'mbillsend', '', 'sm ok', 'mail'),
-      remind: btn('E-mail all', 'remindsend', '', 'sm ok', 'mail'),
-      pv: `${btn('Open resident', 'go', `data-to="residents/${x.id}"`, 'sm')}${btn('Update', 'pvstatus', `data-id="${x.id}"`, 'sm primary')}`,
-      rinfo: btn('Open', 'go', 'data-to="complaints"', 'sm'),
-      salary: btn('Book salary', 'paysal', `data-id="${x.id}" ${x.attrs || ''}`, 'sm primary', 'wallet'),
-    }[x.k] || '');
+    // Every card has the same three slots, always in the same order: quiet (left), reject (middle, red), main (right, blue).
+    // A card with one or two actions leaves the other slots empty, so a button never jumps to a different place.
+    const ACT = {
+      claim: { sec: ['View', 'claimview'], bad: ['Reject', 'claimno'], pri: ['Approve', 'claimok', 'check'] },
+      signup: { bad: ['Reject', 'signupno'], pri: ['Review', 'signupview'] },
+      pr: { pri: ['Review', 'prview'] },
+      meter: { sec: ['View', 'meterview'], bad: ['Reject', 'meterreject'], pri: ['Bill it', 'meterok', 'check'] },
+      dep: { pri: ['Mark refunded', 'depok'] },
+      cmp: { pri: ['Open', 'go', null, 'data-to="complaints"'] },
+      hk: { sec: ['Reassign', 'hkreassign'], pri: ['OK', 'hkack'] },
+      mbill: { pri: ['E-mail all', 'mbillsend', 'mail', ''] },
+      remind: { pri: ['E-mail all', 'remindsend', 'mail', ''] },
+      pv: { sec: ['Open resident', 'go', null, x => `data-to="residents/${x.id}"`], pri: ['Update', 'pvstatus'] },
+      rinfo: { pri: ['Open', 'go', null, 'data-to="complaints"'] },
+      salary: { pri: ['Book salary', 'paysal', 'wallet'] },
+    };
+    const acts = x => {
+      const cfg = ACT[x.k]; if (!cfg) return '';
+      const slot = (key, cls) => {
+        const d = cfg[key]; if (!d) return `<span class="apv-slot ${key}" aria-hidden="true"></span>`;
+        const extra = d[3] === undefined ? `data-id="${x.id}" ${x.k === 'salary' ? (x.attrs || '') : ''}` : (typeof d[3] === 'function' ? d[3](x) : d[3]);
+        return `<span class="apv-slot ${key}">${btn(d[0], d[1], extra, cls, d[2] || undefined)}</span>`;
+      };
+      return slot('sec', 'sm') + slot('bad', 'sm bad') + slot('pri', 'sm primary');
+    };
     const row = x => {
       const toAttr = (x.k === 'cmp' || x.k === 'rinfo') ? 'data-to="complaints"' : '';
       return `<div class="apv" data-act="${APV_PRIMARY[x.k] || 'claimview'}" data-id="${x.id}" ${x.attrs || ''} ${toAttr}>
@@ -186,7 +197,9 @@ A.claimview = el => {
 A.claimok = el => {
   const c = Store.get(el.dataset.id);
   if (!c || c.status !== 'pending') return toast('Claim not found or already processed', 'bad');
-  const pay = recordPayment({ resId: c.resId, amount: c.amount, mode: 'upi', ref: c.utr, date: c.date, claimId: c.id });
+  // A claim for one UPI account (Rent or Electricity) clears only its own bills; anything extra stays as credit.
+  const other = c.payKind === 'elec' || c.payKind === 'rent' ? openInv(c.resId).filter(i => (i.type === 'electricity') !== (c.payKind === 'elec')).map(i => i.id) : null;
+  const pay = recordPayment({ resId: c.resId, amount: c.amount, mode: 'upi', ref: c.utr, date: c.date, claimId: c.id, exclude: other });
   Store.patch(c.id, { status: 'approved', payId: pay.id, by: (Store.me && Store.me.full_name) || 'Admin' });
   closeModal(true);
   render();
@@ -329,7 +342,8 @@ function roomForm(room) {
         info: t('Everyone living in this room counts as being in this block. Beds, bills and the head count stay with the hostel.')
       }] : []),
       { name: 'beds', label: 'Number of beds', type: 'number', int: true, value: r.beds ? r.beds.length : '', placeholder: 'e.g. 2', min: 1, max: 12, required: true }, { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', value: r.rent, min: 0, required: true },
-      ...(S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', value: r.deposit || '', min: 0, max: 500000, placeholder: t('e.g. 10000') }] : []),
+      { name: 'bedRents', label: 'Different rent for each bed (optional)', value: bedsOf(r).some(b => +b.rent > 0 && +b.rent !== +r.rent) ? bedsOf(r).map(b => bedRent(r, b.id)).join(', ') : '', plain: true, full: true, maxlength: 80, placeholder: 'e.g. 11000, 11500', hint: t('One amount per bed in order (Bed A, Bed B...), separated by commas. Leave empty to charge every bed the rent above. Residents already living here keep their own rent.') },
+      ...(depositOn() && S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', value: r.deposit || '', min: 0, max: 500000, placeholder: t('e.g. 10000') }] : []),
       { name: 'ac', label: 'AC room', type: 'checkbox', value: r.ac },
       ...(room ? [{
         type: 'html',
@@ -362,7 +376,10 @@ function roomForm(room) {
       const ids = 'ABCDEFGHIJKL'.slice(0, v.beds).split('');
       const cur = bedsOf(r);
       if (cur.filter(b => !ids.includes(b.id)).some(b => b.status === 'occ')) return 'You cannot remove a bed that is occupied';
-      const beds = ids.map(id => cur.find(b => b.id === id) || { id, status: 'vac' });
+      const bedRents = String(v.bedRents || '').split(/[,\s]+/).filter(Boolean).map(Number);
+      if (bedRents.some(n => isNaN(n) || n < 0 || n > 500000)) return 'Bed rents must be amounts, e.g. 11000, 11500';
+      if (bedRents.length > ids.length) return 'More bed rents than beds';
+      const beds = ids.map((id, i) => { const b = { ...(cur.find(x => x.id === id) || { id, status: 'vac' }) }; const br = bedRents[i]; if (br > 0 && br !== +v.rent) b.rent = br; else delete b.rent; return b; });
       Store.put('room', { ...r, id: r.id || `room-${slug(v.no)}-${uid()}`, no: v.no, floor: v.floor, block: blocksOn() ? v.block || '' : r.block || '', rent: v.rent, ...(S().deposit.mode === 'per_bed' ? { deposit: +v.deposit > 0 ? +v.deposit : 0 } : {}), ac: v.ac, sharing: v.beds, beds });
       toast(room ? 'Room updated' : 'Room added');
     },
@@ -396,7 +413,7 @@ A.bulkrooms = () => {
       { name: 'endNo', label: 'End room number', type: 'number', placeholder: 'e.g. 108', required: true },
       { name: 'beds', label: 'Beds per room (capacity)', type: 'number', int: true, min: 1, max: 12, placeholder: 'e.g. 2', required: true },
       { name: 'rent', label: 'Rent per bed (₹/month)', type: 'number', min: 0, placeholder: 'e.g. 6500', required: true },
-      ...(S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', min: 0, max: 500000, placeholder: 'e.g. 10000' }] : []),
+      ...(depositOn() && S().deposit.mode === 'per_bed' ? [{ name: 'deposit', label: 'Security deposit per bed (₹)', type: 'number', min: 0, max: 500000, placeholder: 'e.g. 10000' }] : []),
       { name: 'ac', label: 'AC rooms', type: 'checkbox', value: false },
       ...(blocksOn() ? [{ name: 'block', label: 'Block', type: 'select', options: [{ v: '', l: t('None') }, ...hostelBlocks().map(b => ({ v: b.k, l: b.l }))] }] : [])
     ],
@@ -497,7 +514,7 @@ A.bulkrooms = () => {
               `
             }
           ],
-          onSubmit: () => {
+          onSubmit: async () => {
             const batchNos = new Set();
             for (const p of previewList) {
               if (!p.no) return t('Every room must have a valid room number');
@@ -508,13 +525,21 @@ A.bulkrooms = () => {
             }
 
             try {
-              const res = bulkCreateRooms({
+              const plan = bulkCreateRooms({
                 floors: fls,
                 rooms: previewList,
                 defaultRent: v.rent,
                 defaultAc: v.ac,
-                block: v.block || ''
+                block: v.block || '',
+                dryRun: true
               });
+              // Cancel / close while rooms are being saved stops the run and takes back what was saved.
+              let stopped = false;
+              modalOnClose = () => { stopped = true; };
+              const sb = $('[data-act="msubmit"]');
+              const res = await commitRoomsCancellable(plan.createdRooms, fls.length, () => stopped, (n, tot) => { if (sb) sb.textContent = t('Creating {n} of {t}…', { n, t: tot }); });
+              if (res.cancelled) { modalOnClose = null; render(); toast(t('Bulk setup cancelled. No rooms were created.'), 'warn'); return false; }
+              modalOnClose = null;
               closeModal();
               toast(t('Bulk setup complete: {r} rooms with {b} beds created across {f} floors ✓', {
                 r: res.roomCount,
@@ -586,15 +611,125 @@ A.bulkrooms = () => {
 };
 
 /* ===================================================================== check-in */
+// The "Previous entry" fields, the same in the check-in form and in the Waiting-to-be-admitted form.
+function prevEntryFields() {
+  return [
+    { name: 'prevOn', label: 'Previous entry (already staying before today)', type: 'checkbox', value: false, full: true, info: t('Tick this to add the old rent, electricity and payments of a resident who joined in the past. It switches on by itself when the date is in the past; you can still turn it on or off.') },
+    { name: 'prevType', label: 'How did they pay?', type: 'select', value: 'monthly', hidden: true, full: true, options: [{ v: 'monthly', l: t('Monthly') }, { v: 'yearly', l: t('Yearly') }, { v: 'custom', l: t('Custom (paid up to a date)') }] },
+    { name: 'paidTill', label: 'Paid till (date)', type: 'date', hidden: true },
+    { name: 'paidTotal', label: 'Total amount paid (₹)', type: 'number', min: 0, max: 100000000, hidden: true },
+    ...(depositOn() ? [{ name: 'prevDep', label: 'Security deposit already received', type: 'checkbox', value: true, hidden: true, full: true }] : []),
+    { type: 'html', key: 'prevTable', hidden: true, html: '<div id="prevTbl"></div>' },
+  ];
+}
+// Shared onChange for both forms. dateName = the field that holds the date they moved in.
+function prevEntryOnChange(v, form, changed, dateName) {
+  const d = v[dateName];
+  if (changed === dateName && form.elements.prevOn) form.elements.prevOn.checked = !!d && d < today();
+  if (form.elements.prevOn && (changed === undefined || [dateName, 'prevOn', 'prevType', 'paidTill', 'paidTotal', 'rent', 'bed'].includes(changed))) prevEntryRefresh(form, { ...v, checkIn: d }, changed);
+}
+/* ---- Previous entry: the old-bills cards inside the check-in form ----
+ * One card per month. Rent, Electricity and Other each have their own amount and their own Paid / Due switch. */
+const PT_LBL = { rent: 'Rent', elec: 'Electricity', other: 'Other' };
+function ptCell(k, val, paid, disabled, why) {
+  // Electricity / Other: no amount typed = no Paid / Due choice (greyed out). It switches on, as Paid, when a number is entered.
+  const na = k !== 'rent' && !disabled && !(+val > 0);
+  if (na) paid = false;
+  return `<div class="pt-c ${disabled ? 'off' : ''}"><label>${esc(t(PT_LBL[k]))}</label>
+    <input type="number" class="inp pt-${k}" min="0" step="1" inputmode="numeric" ${val !== '' ? `value="${val}"` : ''} placeholder="${k === 'elec' ? '—' : '0'}" ${disabled ? 'disabled' : ''}>
+    <button type="button" class="pt-tg ${paid ? 'on' : ''} ${na ? 'na' : ''}" data-k="${k}" aria-pressed="${paid ? 'true' : 'false'}" ${disabled || na ? 'disabled' : ''} ${why ? `title="${esc(why)}"` : ''}><i></i><span>${na ? '—' : esc(t(paid ? 'Paid' : 'Due'))}</span></button></div>`;
+}
+function prevEntryRefresh(form, v, changed) {
+  const on = !!(form.elements.prevOn && form.elements.prevOn.checked), lump = on && v.prevType && v.prevType !== 'monthly';
+  showField(form, 'prevType', on); showField(form, 'paidTill', lump); showField(form, 'paidTotal', lump); showField(form, 'prevDep', on); showField(form, 'prevTable', on);
+  const box = $('#prevTbl', form); if (!box) return;
+  if (!on) { box.innerHTML = ''; return; }
+  if (changed === 'prevOn' && lump && !v.paidTill && form.elements.paidTill) form.elements.paidTill.value = today();
+  const paidTill = (form.elements.paidTill && form.elements.paidTill.value) || '';
+  const skipRes = form.dataset.prevRes;   // on a resident's page: months that already have a rent bill are left alone
+  const rows = prevEntryRows({ checkIn: v.checkIn, rent: v.rent, type: v.prevType || 'monthly', paidTill, paidTotal: v.paidTotal, skipYm: skipRes ? ym => !!Store.get(`inv-rent-${skipRes}-${ym}`) : null });
+  if (!rows.length) { box.innerHTML = `<div class="note warn">${esc(skipRes ? t('Every month from the start date already has a rent bill. Nothing to add.') : t('Pick a check-in date in the past to see the old months.'))}</div>`; return; }
+  // keep what was typed in the cards when only the amount / date above changes
+  const keep = {}; if (box.dataset.type === (v.prevType || 'monthly')) $$('.pt-card', box).forEach(c => { keep[c.dataset.ym] = { elec: $('.pt-elec', c).value, other: $('.pt-other', c).value, se: $('.pt-tg[data-k=elec]', c).classList.contains('on'), so: $('.pt-tg[data-k=other]', c).classList.contains('on'), sr: $('.pt-tg[data-k=rent]', c).classList.contains('on') }; });
+  box.dataset.type = v.prevType || 'monthly';
+  const cov = rows.filter(x => x.locked), tot = sum(cov, x => x.rent);
+  const info = lump
+    ? (cov.length ? t('{a} booked as rent for {n} months ({f} to {l}), about {m} a month. Rent after {d} is left for you to enter.', { a: inr(tot), n: cov.length, f: fmtYM(cov[0].ym), l: fmtYM(cov[cov.length - 1].ym), m: inr(Math.round(tot / cov.length)), d: fmtDate(paidTill) })
+      : t('Enter "Paid till" and the total amount paid. That amount is spread over the months up to that date.'))
+    : t('Edit any amount. Leave electricity empty if there is nothing to add.');
+  box.innerHTML = `<div class="pt-info ${lump && cov.length ? 'ok' : ''}">${esc(info)}</div>
+    ${rows.map(x => {
+      const k = keep[x.ym] || {}, lockE = x.future, why = x.future ? t('Not added for a month that has not come yet') : '';
+      const sr = x.locked ? true : k.sr != null ? k.sr : x.rentPaid, se = k.se != null && +k.elec > 0 ? k.se : true, so = k.so != null && +k.other > 0 ? k.so : true;
+      const rentCell = ptCell('rent', x.rent, sr, x.locked, x.locked ? t('Covered by the amount paid till {d}', { d: fmtDate(paidTill) }) : '').replace('class="pt-c off"', 'class="pt-c off locked"');
+      return `<div class="pt-card ${x.locked ? 'is-paid' : ''} ${x.future ? 'is-future' : ''}" data-ym="${x.ym}">
+        <div class="pt-h"><b>${esc(fmtYM(x.ym))}</b>${x.locked ? `<span class="badge ok">${esc(t(x.future ? 'Advance paid' : 'Paid'))}</span>` : x.future ? `<span class="badge">${esc(t('Upcoming'))}</span>` : ''}</div>
+        <div class="pt-g">${rentCell}${ptCell('elec', k.elec || '', lockE ? false : se, lockE, why)}${ptCell('other', lockE ? 0 : (k.other != null && k.other !== '' ? k.other : 0), lockE ? false : so, lockE, why)}</div></div>`;
+    }).join('')}`;
+}
+document.addEventListener('input', e => {
+  const inp = e.target; if (!inp || !inp.classList || !(inp.classList.contains('pt-elec') || inp.classList.contains('pt-other'))) return;
+  const tg = $('.pt-tg', inp.closest('.pt-c')); if (!tg || inp.disabled) return;
+  const has = +inp.value > 0, was = tg.classList.contains('na');
+  if (has && was) { tg.classList.remove('na'); tg.disabled = false; tg.classList.add('on'); tg.setAttribute('aria-pressed', 'true'); tg.querySelector('span').textContent = t('Paid'); }
+  else if (!has && !was) { tg.classList.add('na'); tg.classList.remove('on'); tg.disabled = true; tg.setAttribute('aria-pressed', 'false'); tg.querySelector('span').textContent = '—'; }
+});
+document.addEventListener('click', e => {
+  const b = e.target && e.target.closest && e.target.closest('.pt-tg'); if (!b || b.disabled) return;
+  e.preventDefault(); const on = b.getAttribute('aria-pressed') !== 'true';
+  b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.classList.toggle('on', on); b.querySelector('span').textContent = t(on ? 'Paid' : 'Due');
+});
+// From a resident's page: add the old months (rent, electricity, other) and what was paid, for someone already living here.
+A.resprev = el => {
+  const r = resById(el.dataset.id); if (!r) return;
+  const form = formModal({
+    title: `${t('Previous entry')} · ${r.name}`, submit: 'Save old bills', wide: true,
+    note: t('Add the months before today: rent, electricity and other charges, and what was already paid. Months that already have a rent bill are skipped.'),
+    fields: [
+      { name: 'checkIn', label: 'Count from', type: 'date', value: r.checkIn, required: true, max: today(), info: t('Starts at the check-in date. Move it later to add only recent months.') },
+      { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: r.rent, min: 0, max: 500000, required: true },
+      { name: 'prevOn', label: 'Previous entry', type: 'checkbox', value: true, hidden: true },
+      ...prevEntryFields().filter(x => x.name !== 'prevOn').map(x => (x.name === 'prevDep' ? { ...x, value: false } : x)),
+    ],
+    onChange: (v, f, changed) => { f.dataset.prevRes = r.id; prevEntryOnChange(v, f, changed === 'checkIn' ? undefined : changed, 'checkIn'); },
+    onSubmit: async (v, f) => {
+      const rows = prevEntryRead(f, v); if (!rows) return t('Pick a date in the past.'); if (rows.error) return rows.error;
+      if (!rows.length) return t('Nothing to add.');
+      const pr = applyPreviousEntry(r.id, rows, { type: v.prevType, paidTill: v.prevType !== 'monthly' ? v.paidTill : '', depositPaid: depositOn() && !!v.prevDep });
+      toast(t('Added {n} old bills, {a} marked paid', { n: pr.invoices, a: inr(pr.paid) }), 'ok');
+    }
+  });
+  form.dataset.prevRes = r.id;
+  prevEntryRefresh(form, { checkIn: r.checkIn, rent: r.rent, prevType: 'monthly' }, undefined);
+};
+// Reads the cards back. null = not a previous entry; { error } = something to fix; else the rows.
+function prevEntryRead(form, v0, dateName = 'checkIn') {
+  const v = { ...v0, checkIn: v0[dateName] };
+  if (!(form.elements.prevOn && form.elements.prevOn.checked)) return null;
+  const cards = $$('#prevTbl .pt-card', form); if (!cards.length) return { error: t('Pick a check-in date in the past for a previous entry.') };
+  const lump = v.prevType !== 'monthly';
+  if (lump && !v.paidTill) return { error: t('Enter the "Paid till" date.') };
+  if (lump && v.paidTill < v.checkIn) return { error: t('"Paid till" cannot be before the check-in date.') };
+  if (lump && !(+v.paidTotal > 0)) return { error: t('Enter the total amount paid.') };
+  const num0 = el => (el && !el.disabled && el.value !== '' ? +el.value : 0), rows = [];
+  for (const c of cards) {
+    const rentEl = $('.pt-rent', c), row = { ym: c.dataset.ym, rent: rentEl.value === '' ? 0 : +rentEl.value, elec: num0($('.pt-elec', c)), other: num0($('.pt-other', c)), locked: rentEl.disabled, future: c.classList.contains('is-future') };
+    if ([row.rent, row.elec, row.other].some(n => isNaN(n) || n < 0)) return { error: t('Amounts in the old-bills list must be zero or more.') };
+    const on = k => $(`.pt-tg[data-k=${k}]`, c).getAttribute('aria-pressed') === 'true';
+    row.rentPaid = row.locked || on('rent'); row.elecPaid = on('elec'); row.otherPaid = on('other');   // no amount = nothing to be paid or due
+    rows.push(row);
+  }
+  return rows;
+}
 A.checkin = (el, opts = {}) => {
   const vac = vacantBeds();
   if (!vac.length) { toast('No vacant beds. Add a room first.', 'bad'); return; }
-  const req = S().docs.required;
+  const req = docSlots(S().docs);
   const pre = el && el.dataset && el.dataset.bed ? el.dataset.bed : `${vac[0].room.id}|${vac[0].bed.id}`;
   // The block is not a separate question: a bed is in exactly one block, so choosing the bed
   // chooses the block. Grouping the list is what tells the owner which one they just picked.
-  const bedOpts = bedOptions(vac, x => `${x.room.no}-${x.bed.id} · ${inr(x.room.rent)} · ${x.room.floor}`);
-  const room0 = roomById(pre.split('|')[0]);
+  const bedOpts = bedOptions(vac, x => `${x.room.no}-${x.bed.id} · ${inr(bedRent(x.room, x.bed.id))} · ${x.room.floor}`);
+  const room0 = roomById(pre.split('|')[0]), bed0 = pre.split('|')[1];
   formModal({
     title: 'New check-in', submit: 'Check in', wide: true,
     note: t('Bills, bed status, resident login and the WhatsApp welcome are created automatically.'),
@@ -609,47 +744,51 @@ A.checkin = (el, opts = {}) => {
       { type: 'section', label: 'Room & money' },
       { name: 'bed', label: 'Room & bed', type: 'select', options: bedOpts, value: pre, required: true },
       { name: 'checkIn', label: 'Check-in date', type: 'date', value: today(), required: true },
+      ...prevEntryFields(),
       ...meterField(room0 ? room0.id : '', 'meterNow', 'Meter reading now', true),
-      { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: room0 ? room0.rent : '', min: 0, max: 500000, required: true, hint: t('Filled from the room. Change only for a special deal.') },
-      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: room0 ? depositFor(room0.rent, room0) : 0, min: 0, max: 500000 },
+      { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: room0 ? bedRent(room0, bed0) : '', min: 0, max: 500000, required: true, hint: t('Filled from the room. Change only for a special deal.') },
+      ...(depositOn() ? [{ name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: room0 ? depositFor(bedRent(room0, bed0), room0) : 0, min: 0, max: 500000 }] : []),
       { name: 'food', label: 'Takes mess food', type: 'checkbox', value: true },
       ...(accOn() ? [{ name: 'acc', label: 'Accessories given with the bed', type: 'multi', options: accItems().map(x => ({ v: x, l: x })), value: accItems(), full: true, info: t('Tick what you are handing over. The same list comes up at checkout so nothing goes missing. Edit the list in Settings > Room accessories.') }] : []),
       { name: 'lang', label: 'WhatsApp language', type: 'select', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }], value: S().wa.lang === 'hi' ? 'hi' : 'en' },
       { type: 'section', label: 'Documents' },
-      ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*', required: true })),
+      ...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/jpeg,image/png,image/webp', required: true })),
       { type: 'html', html: docsNote() },
       { type: 'section', label: 'App login' },
       { name: 'login', label: 'Create app login for resident', type: 'checkbox', value: true, hint: t('User ID = mobile.hostel, password = mobile number. They can change it later.') },
     ],
     onChange: (v, form, changed) => {
+      // Previous entry: switches on for a past check-in date (the owner can still change it), then draws the old-bills table
+      prevEntryOnChange(v, form, changed, 'checkIn');
       if (changed === 'meterNow' || changed === 'meterNowReset' || changed === 'bed') meterGuard(form, v, 'meterNow', String(v.bed || '').split('|')[0], true);
-      if (changed === 'bed') { const rm = roomById(String(v.bed).split('|')[0]); if (rm) { setField(form, 'rent', rm.rent); setField(form, 'deposit', depositFor(rm.rent, rm)); setMeterHint(form, 'meterNow', rm.id); } }
+      if (changed === 'bed') { const rm = roomById(String(v.bed).split('|')[0]); if (rm) { const br = bedRent(rm, String(v.bed).split('|')[1]); setField(form, 'rent', br); setField(form, 'deposit', depositFor(br, rm)); setMeterHint(form, 'meterNow', rm.id); } }
     },
     preview: v => {
       if (!v.name) return '';
       const rRent = v.rent != null && !isNaN(v.rent) ? +v.rent : 0;
       const cCalc = calcCheckInRent({ checkInDate: v.checkIn || today(), monthlyRent: rRent });
       const depAmt = v.deposit != null && !isNaN(v.deposit) ? +v.deposit : 0;
-      const hSlug = slug((Store.hostel() || {}).name || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+      const hSlug = slug((Store.hostel() || {}).name || 'hostel').slice(0, 6).replace(/\.+$/, '') || 'hostel';
       const depFee = depAmt > 0 ? Math.min(depAmt, Math.max(0, +S().deposit.nonRefundable || 0)) : 0;
       const uPreview = phone10(v.phone) ? `${phone10(v.phone)}.${hSlug}` : slug(v.name);
       return `<div style="font-size:12px;line-height:1.4"><b>${esc(t('Login'))}:</b> ${esc(uPreview)} / ${esc(phone10(v.phone) || '—')}<br><b>${esc(t('First Rent'))}:</b> ${inr(cCalc.amount)} (${cCalc.occupiedDays}/${cCalc.totalDays} ${esc(t('days'))} · ${inr(cCalc.dailyRate)}/${esc(t('day'))}) + ${inr(depAmt)} ${esc(t('deposit'))}${depFee > 0 ? `<br><b>${esc(t('Non-refundable fee'))}:</b> ${inr(depFee)} <span class="mute">(${esc(t('part of the deposit, kept at checkout'))})</span>` : ''}<br><small class="mute">${esc(cCalc.formula)}</small></div>`;
     },
-    onSubmit: async v => {
+    onSubmit: async (v, form) => {
       if (residents().some(r => r.status !== 'left' && r.phone === phone10(v.phone))) return 'A resident with this mobile number already exists';
       // Everything about the resident is compulsory: a check-in with a missing paper or contact cannot be saved.
       if (!isValidEmail(v.email)) return t('Enter a valid email address');
-      if (!/^[5-9][0-9]{9}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
+      if (!/^[0-9]{10}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
       const aad = String(v.idNo || '').replace(/[^0-9]/g, '');
-      if (aad.length !== 12 || /^[01]/.test(aad)) return t('Aadhaar number must be exactly 12 digits');
+      if (aad.length !== 12) return t('Aadhaar number must be exactly 12 digits');
       const [roomId, bed] = v.bed.split('|');
       // Settle the room's electricity up to the moment this person moves in, before they
       // exist as an occupant — otherwise they inherit a share of units used before they came.
       // Checked first of all, before anything is saved: a lower reading stops the check-in right here.
       const mp = meterReadingProblem(roomId, v.meterNow, { reset: v.meterNowReset, oldFinal: v.meterNowOldFinal });
       if (mp) return mp;
-      try { if (!meterResetNow(roomId, v, 'meterNow', v.checkIn)) moveReading(roomId, v.meterNow, v.checkIn); } catch (e) { return e.message; }
-      const r = checkIn({ name: v.name, phone: v.phone, email: v.email, guardian: v.guardian, guardianPhone: v.guardianPhone, college: v.college, idNo: v.idNo, address: v.address, roomId, bed, rent: v.rent, deposit: v.deposit, checkIn: v.checkIn, food: v.food, lang: v.lang, accessories: accOn() ? (v.acc || []) : null });
+      const prevRows = prevEntryRead(form, v); if (prevRows && prevRows.error) return prevRows.error;
+      try { if (!prevRows && !meterResetNow(roomId, v, 'meterNow', v.checkIn)) moveReading(roomId, v.meterNow, v.checkIn); } catch (e) { return e.message; }
+      const r = checkIn({ name: v.name, phone: v.phone, email: v.email, guardian: v.guardian, guardianPhone: v.guardianPhone, college: v.college, idNo: v.idNo, address: v.address, roomId, bed, rent: v.rent, deposit: v.deposit, checkIn: v.checkIn, ...(prevRows && prevRows[0] ? { firstRent: prevRows[0].rent } : {}), food: v.food, lang: v.lang, accessories: accOn() ? (v.acc || []) : null });
       if (opts && opts.inquiryId) {
         const inq = Store.get(opts.inquiryId);
         Store.patch(opts.inquiryId, {
@@ -664,6 +803,12 @@ A.checkin = (el, opts = {}) => {
         Store.patch(r.id, { pv: { status: initialPv, state: S().police.state || '', updatedAt: nowIso() } });
       } else {
         Store.patch(r.id, { pv: { status: 'not_required', state: S().police.state || '' } });
+      }
+      if (prevRows) {
+        try {
+          const pr = applyPreviousEntry(r.id, prevRows, { type: v.prevType, paidTill: v.prevType !== 'monthly' ? v.paidTill : '', depositPaid: depositOn() && !!v.prevDep });
+          toast(t('Previous entry saved: {n} old bills, {a} marked paid', { n: pr.invoices + 1, a: inr(pr.paid) }), 'ok');
+        } catch (e) { toast(t('Resident saved, but the old bills could not be added: {m}', { m: e.message }), 'bad'); }
       }
       let login = null;
       if (v.login) login = await createResidentLogin(r).catch(e => { toast(t('Login not created: {m}', { m: e.message }), 'bad'); return null; });
@@ -680,7 +825,7 @@ A.checkin = (el, opts = {}) => {
 };
 async function createResidentLogin(r) {
   const h = Store.hostel();
-  const hSlug = slug((h && h.name) || 'hostel').slice(0, 18).replace(/\.+$/, '') || 'hostel';
+  const hSlug = slug((h && h.name) || 'hostel').slice(0, 6).replace(/\.+$/, '') || 'hostel';
   const ph = phone10(r.phone);
   const wantUser = ph && ph.length === 10 ? `${ph}.${hSlug}` : undefined;
   const u = await Backend.admin('create_user', { full_name: r.name, phone: r.phone, username: wantUser, org_id: h.org_id, hostel_id: h.id, role: 'resident', ref_id: r.id });
@@ -977,13 +1122,14 @@ function residentDetail(id) {
     act: 'respays', attrs: `data-id="${id}"`,
   }) : li({ icon: 'check', ic: 'mute', t: t('No payments yet'), chev: false })) : ''}
         ${penCard(r)}
-        ${pvCard(r)}
       </div>
       <div class="stack">
         ${group('Details', [
     li({ icon: 'phone', ic: 'ok', t: r.phone, d: t('Mobile') }),
     r.guardianPhone ? li({ icon: 'users', ic: 'info', t: `${r.guardian || t('Guardian')} · ${r.guardianPhone}`, d: t('Guardian') }) : '',
     showFin ? li({ icon: 'rupee', ic: 'warn', t: `${inr(r.rent)} / ${t('month')}`, d: `${t('Deposit')} ${inr(r.deposit)}` }) : '',
+    showFin && isAdmin() ? li({ icon: 'cal', ic: 'info', t: t('Previous entry'), d: t('Add old rent, electricity and payments for earlier months'), act: 'resprev', attrs: `data-id="${r.id}"` }) : '',
+    showFin && r.paidTill ? li({ icon: 'check', ic: r.paidTill >= today() ? 'ok' : 'info', t: `${t('Rent paid till')} ${fmtDate(r.paidTill)}`, d: `${inr(r.paidTillAmount || 0)} ${t('paid in advance. No bill goes out for this period.')}`, chev: false }) : '',
     r.college ? li({ icon: 'building', ic: 'mute', t: r.college, d: t('College / office') }) : '',
     r.accessories && (r.accessories.given || []).length ? li({ icon: 'box', ic: (r.accessories.missing || []).length ? 'bad' : 'info', t: t('Accessories: {n} given', { n: r.accessories.given.length }), d: (r.accessories.returned ? ((r.accessories.missing || []).length ? t('NOT returned: {l}', { l: r.accessories.missing.join(', ') }) : t('All returned ✓')) : r.accessories.given.join(', ')) }) : '',
     r.food !== false && typeof tifPlanText === 'function' && (tifPlanText(r.id) || tifPlanText(r.id, 'skipPlan')) ? li({ icon: 'cal', ic: 'warn', t: t('Weekly meal plan'), d: [tifPlanText(r.id) ? `${t('Tiffin')} - ${tifPlanText(r.id)}` : '', tifPlanText(r.id, 'skipPlan') ? `${t('Skip')} - ${tifPlanText(r.id, 'skipPlan')}` : ''].filter(Boolean).join(' | '), chev: false }) : '',
@@ -1010,12 +1156,12 @@ A.resedit = el => {
     onSubmit: v => {
       const was = r.phone, now = phone10(v.phone);
       // the same rules as check-in: nothing half-filled gets saved
-      if (!/^[5-9][0-9]{9}$/.test(now)) return t('Mobile (WhatsApp) must be a 10-digit mobile number.');
+      if (!/^[0-9]{10}$/.test(now)) return t('Mobile (WhatsApp) must be a 10-digit mobile number.');
       if (residents().some(x => x.id !== r.id && x.status !== 'left' && x.status !== 'cancelled' && phone10(x.phone) === now)) return t('A resident with this mobile number already exists');
       if (!isValidEmail(v.email)) return t('Enter a valid email address');
-      if (!/^[5-9][0-9]{9}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
+      if (!/^[0-9]{10}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
       const aad = String(v.idNo || '').replace(/[^0-9]/g, '');
-      if (aad.length !== 12 || /^[01]/.test(aad)) return t('Aadhaar number must be exactly 12 digits');
+      if (aad.length !== 12) return t('Aadhaar number must be exactly 12 digits');
       Store.patch(r.id, { ...v, name: String(v.name || '').replace(/\s+/g, ' ').trim(), phone: now, guardianPhone: phone10(v.guardianPhone), idNo: aad });
       // Their password was set from the OLD number and does not follow it. Say so, and offer the fix
       // in one tap, rather than leaving a resident who tries the new number and is refused.
@@ -1064,7 +1210,7 @@ A.resshift = el => {
         name: 'bed',
         label: 'New room & bed',
         type: 'select',
-        options: bedOptions(vac, x => `${x.room.no}-${x.bed.id} · ${inr(x.room.rent)}`),
+        options: bedOptions(vac, x => `${x.room.no}-${x.bed.id} · ${inr(bedRent(x.room, x.bed.id))}`),
         required: true,
         hidden: defMode !== 'shift'
       },
@@ -1443,17 +1589,22 @@ A.respw = el => {
 };
 A.reswelcome = el => { const r = resById(el.dataset.id); waOpen(r.phone, welcomeMessage(r), 'Send login'); };
 A.resdocs = el => {
-  const r = resById(el.dataset.id), req = S().docs.required;
+  const r = resById(el.dataset.id), req = docSlots(S().docs);
   formModal({
-    title: 'Upload documents', fields: [...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/*' })), { type: 'html', html: docsNote() }],
+    title: 'Upload documents', fields: [...req.map((d, i) => ({ name: 'doc' + i, label: d, type: 'file', accept: 'image/jpeg,image/png,image/webp' })), { type: 'html', html: docsNote() }],
     onSubmit: v => { if (!Files.ready()) return 'Documents are not uploaded in demo mode.'; const files = req.map((d, i) => ({ type: d, file: (v['doc' + i] || [])[0] })).filter(x => x.file); if (!files.length) return 'Choose at least one file'; uploadDocs('res', r.id, files); }
   });
 };
 // One card for everything on file. A missing row is a prompt, an uploaded row is a door.
+// The Aadhaar number typed on the form, big and spaced 4-4-4, so it can be matched with the card photo without leaving the viewer.
+const aadhaarBanner = no => { const d = String(no || '').replace(/D/g, ''); return d ? `<div class="row sb" style="align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;border-radius:12px;background:var(--accent-soft);border:1px solid var(--line)"><div><div class="xs muted">${esc(t('Aadhaar number entered'))}</div><b style="font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums">${esc(d.replace(/(d{4})(?=d)/g, '$1 '))}</b></div></div>` : ''; };
 function docsCard(r) {
   const gone = docsGoneOn(r);
   if (gone && gone <= today()) return `<div class="group-t">${esc(t('Documents'))}</div><div class="group"><div class="li noic"><span class="body muted">${esc(t('Deleted {n} days after checkout', { n: DOC_KEEP_DAYS }))}</span></div></div>`;
-  const have = r.docs || [], need = gone ? [] : S().docs.required.filter(d => !have.some(x => x.type === d));
+  // Aadhaar is kept as a Front and a Back photo; one plain "Aadhaar card" file from before still counts as both.
+  const have = r.docs || [];
+  const need = gone ? [] : docSlots(S().docs)
+    .filter(d => !have.some(x => x.type === d || x.type === d.replace(/ \([^)]*\)$/, '')));
   const rows = [
     ...have.map(d => li({
       icon: 'file', ic: 'ok', t: t(d.type), d: `${fmtTs(d.ts)} · ${t('Tap to open')}`,
@@ -1610,6 +1761,7 @@ async function openResidentDocViewer(resId, activeType = '', initialPath = '', f
     title: `${esc(r.name)} · ${esc(curDoc.label)}`,
     wide: true,
     body: `
+      ${aadhaarBanner(r.idNo)}
       ${tabsHtml}
       ${viewerBody}
     `,
@@ -1667,7 +1819,7 @@ A.agrcreate = el => {
       { name: 'startDate', label: 'Start date', type: 'date', value: r.checkIn || today(), required: true },
       { name: 'endDate', label: 'End date', type: 'date', value: addDays(r.checkIn || today(), 335), required: true },
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: r.rent, required: true },
-      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: r.deposit, required: true },
+      ...(depositOn() ? [{ name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: r.deposit, required: true }] : []),
       { name: 'noticeDays', label: 'Notice period (days)', type: 'number', value: 30, required: true }
     ],
     onSubmit: v => {
@@ -1677,7 +1829,7 @@ A.agrcreate = el => {
           startDate: v.startDate,
           endDate: v.endDate,
           rent: v.rent,
-          deposit: v.deposit,
+          deposit: v.deposit != null ? v.deposit : (depositOn() ? r.deposit : 0),
           noticeDays: v.noticeDays
         });
         closeModal();
@@ -1717,7 +1869,7 @@ A.agrrenew = el => {
     fields: [
       { name: 'newEndDate', label: 'New end date', type: 'date', value: addDays(agr.endDate || today(), 335), required: true },
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', value: agr.rent, required: true },
-      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: agr.deposit, required: true },
+      ...(depositOn() ? [{ name: 'deposit', label: 'Security deposit (₹)', type: 'number', value: agr.deposit, required: true }] : []),
       { name: 'noticeDays', label: 'Notice period (days)', type: 'number', value: agr.noticeDays || 30, required: true }
     ],
     onSubmit: v => {
@@ -1725,7 +1877,7 @@ A.agrrenew = el => {
         renewAgreement(agr.id, {
           newEndDate: v.newEndDate,
           rent: v.rent,
-          deposit: v.deposit,
+          deposit: v.deposit != null ? v.deposit : (depositOn() ? agr.deposit : 0),
           noticeDays: v.noticeDays
         });
         closeModal();
@@ -1791,7 +1943,7 @@ A.signupview = el => {
     ? `<div class="group">${a.docs.map(d => li({ icon: 'file', ic: 'ok', t: t(d.type), d: fmtTs(d.ts), act: 'opendoc', attrs: `data-path="${esc(d.path || '')}"` })).join('')}</div>`
     : `<div class="hint">${esc(t('No documents uploaded — you can ask for them after admitting.'))}</div>`;
   const pv = a.pv || {};
-  sheet(a.name, `<dl class="kv">
+  sheet(a.name, `<div class="row" style="margin-bottom:10px"><button class="btn sm" data-act="signupedit" data-id="${a.id}">${ico('edit', 'sm')} ${esc(t('Edit details'))}</button></div>${aadhaarBanner(a.idNo)}<dl class="kv">
       ${row('Mobile', a.phone)}${row('Email', a.email)}${row('College / office', a.college)}
       ${row('Aadhaar / ID number', a.idNo)}${row('Permanent address', a.address)}
       ${row('Guardian', [a.guardian, a.guardianPhone].filter(Boolean).join(' · '))}
@@ -1808,13 +1960,43 @@ A.signupview = el => {
     { foot: `<button class="btn bad" data-act="signupno" data-id="${a.id}">${esc(t('Reject'))}</button><span class="sp"></span><button class="btn primary" data-act="signupok" data-id="${a.id}">${esc(t('Admit & give a bed'))}</button>` });
 };
 
+// Edit everything the applicant sent, then go straight on to giving a bed. Saving does not send anything for approval again.
+A.signupedit = el => {
+  const a = Store.get(el.dataset.id); if (!a) return;
+  formModal({
+    title: `${t('Edit details')} · ${a.name}`, submit: 'Save & Continue', wide: true,
+    note: t('Change anything the applicant filled in. Nothing is sent again; after saving you go on to give a bed.'),
+    fields: [
+      { name: 'name', label: 'Full name', value: a.name, required: true, maxlength: 80 },
+      { name: 'phone', label: 'Mobile (WhatsApp)', type: 'tel', value: a.phone, required: true, maxlength: 10 },
+      { name: 'email', label: 'Email address', type: 'email', value: a.email || '', maxlength: 80 },
+      { name: 'guardian', label: 'Parent / guardian name', value: a.guardian || '', maxlength: 80 },
+      { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: a.guardianPhone || '', maxlength: 10 },
+      { name: 'college', label: 'College / office', value: a.college || '', maxlength: 120 },
+      { name: 'idNo', label: 'Aadhaar card number', value: a.idNo || '', maxlength: 12 },
+      { name: 'address', label: 'Permanent address', value: a.address || '', full: true, maxlength: 240 },
+      { name: 'lang', label: 'Language', type: 'select', value: a.lang === 'hi' ? 'hi' : 'en', options: [{ v: 'en', l: 'English' }, { v: 'hi', l: 'हिन्दी' }] },
+      { name: 'note', label: 'They wrote', value: a.note || '', full: true, maxlength: 300, plain: true },
+    ],
+    onSubmit: v => {
+      if (v.email && !isValidEmail(v.email)) return t('Enter a valid email address');
+      if (v.guardianPhone && !/^[0-9]{10}$/.test(phone10(v.guardianPhone))) return t('Enter a valid 10-digit guardian mobile number');
+      if (v.idNo && String(v.idNo).replace(/\D/g, '').length !== 12) return t('Aadhaar number must be exactly 12 digits');
+      Store.patch(a.id, { name: v.name, phone: phone10(v.phone), email: v.email, guardian: v.guardian, guardianPhone: phone10(v.guardianPhone), college: v.college, idNo: String(v.idNo || '').replace(/\D/g, ''), address: v.address, lang: v.lang, note: v.note });
+      toast(t('Details saved'), 'ok');
+      setTimeout(() => A.signupok({ dataset: { id: a.id } }), 0);
+      return false;
+    }
+  });
+};
+
 // The only screen where the money and the bed are decided — by the owner, never the applicant.
 A.signupok = el => {
   const a = Store.get(el.dataset.id); if (!a) return;
   const free = vacantBeds();
   if (!free.length) return toast('No vacant bed. Add a room or free one up first.', 'bad');
-  const bedOpts = bedOptions(free, x => `${x.room.no}-${x.bed.id} · ${inr(x.room.rent)}${x.room.ac ? ' · AC' : ''}`);
-  const rentOf = v => { const [rid] = String(v).split('|'); const rm = roomById(rid); return rm ? rm.rent : 0; };
+  const bedOpts = bedOptions(free, x => `${x.room.no}-${x.bed.id} · ${inr(bedRent(x.room, x.bed.id))}${x.room.ac ? ' · AC' : ''}`);
+  const rentOf = v => { const [rid, bid] = String(v).split('|'); const rm = roomById(rid); return rm ? bedRent(rm, bid) : 0; };
   closeModal(true);
   formModal({
     title: `${t('Admit')} · ${a.name}`, submit: 'Admit resident',
@@ -1822,14 +2004,16 @@ A.signupok = el => {
     fields: [
       { name: 'bed', label: 'Room & bed', type: 'select', options: bedOpts, required: true, placeholder: 'Choose a bed…' },
       { name: 'rent', label: 'Monthly rent (₹)', type: 'number', min: 0, required: true, info: t('Filled from the room when you pick a bed. Change it if this resident pays something else.') },
-      { name: 'deposit', label: 'Security deposit (₹)', type: 'number', min: 0, value: 0 },
+      ...(depositOn() ? [{ name: 'deposit', label: 'Security deposit (₹)', type: 'number', min: 0, value: 0 }] : []),
       { name: 'from', label: 'Staying from', type: 'date', value: today(), required: true, info: t('The first rent bill is worked out from this date.') },
+      ...prevEntryFields(),
       ...meterField(free[0] ? free[0].room.id : '', 'meterNow', 'Meter reading now', true),
       { name: 'food', label: 'Takes mess food', type: 'checkbox', value: true },
       ...(accOn() ? [{ name: 'acc', label: 'Accessories given with the bed', type: 'multi', options: accItems().map(x => ({ v: x, l: x })), value: accItems(), full: true }] : []),
       { name: 'login', label: 'Create app login and send it on WhatsApp', type: 'checkbox', value: true, info: t('User ID = mobile.hostel, password = mobile number. They can change it later.') },
     ],
     onChange: (v, form, ch) => {
+      prevEntryOnChange(v, form, ch, 'from');
       if (ch === 'meterNow' || ch === 'meterNowReset' || ch === 'bed') meterGuard(form, v, 'meterNow', String(v.bed || '').split('|')[0], true);
       if (ch !== 'bed' || !v.bed) return;
       setMeterHint(form, 'meterNow', String(v.bed).split('|')[0]);
@@ -1838,12 +2022,19 @@ A.signupok = el => {
       const dep = form.elements.deposit; if (dep && !(+dep.value > 0)) dep.value = depositFor(rent, roomById(String(v.bed).split('|')[0]));
     },
     preview: v => (v.bed && v.rent >= 0 ? `${esc(t('First bill'))}: ${inr(round2((v.rent || 0) + (v.deposit || 0)))} · ${esc(t('rent is pro-rata from {d}', { d: fmtShort(v.from) }))}` : ''),
-    onSubmit: async v => {
+    onSubmit: async (v, form) => {
       const [roomId, bed] = v.bed.split('|');
       const mp = meterReadingProblem(roomId, v.meterNow, { reset: v.meterNowReset, oldFinal: v.meterNowOldFinal });
       if (mp) return mp;
-      try { if (!meterResetNow(roomId, v, 'meterNow', v.from)) moveReading(roomId, v.meterNow, v.from); } catch (e) { return e.message; }
-      const r = admitSignup(a.id, { roomId, bed, rent: v.rent, deposit: v.deposit || 0, checkIn: v.from, food: v.food, accessories: accOn() ? (v.acc || []) : null });
+      const prevRows = prevEntryRead(form, v, 'from'); if (prevRows && prevRows.error) return prevRows.error;
+      try { if (!prevRows && !meterResetNow(roomId, v, 'meterNow', v.from)) moveReading(roomId, v.meterNow, v.from); } catch (e) { return e.message; }
+      const r = admitSignup(a.id, { roomId, bed, rent: v.rent, deposit: v.deposit || 0, checkIn: v.from, ...(prevRows && prevRows[0] ? { firstRent: prevRows[0].rent } : {}), food: v.food, accessories: accOn() ? (v.acc || []) : null });
+      if (prevRows) {
+        try {
+          const pr = applyPreviousEntry(r.id, prevRows, { type: v.prevType, paidTill: v.prevType !== 'monthly' ? v.paidTill : '', depositPaid: depositOn() && !!v.prevDep });
+          toast(t('Previous entry saved: {n} old bills, {a} marked paid', { n: pr.invoices + 1, a: inr(pr.paid) }), 'ok');
+        } catch (e) { toast(t('Resident saved, but the old bills could not be added: {m}', { m: e.message }), 'bad'); }
+      }
       closeModal(); render();
       toast(t('{n} admitted', { n: r.name }), 'ok', { label: 'Open', run: () => go('residents/' + r.id) });
       if (v.login) {
@@ -1924,6 +2115,8 @@ function settleRows(s, dues) {
     s.nonRefundable > 0 ? row('Refundable deposit', `<b>${inr(s.refundableDeposit)}</b>`) : '',
     s.credit > 0 ? row('Advance credit', `+${inr(s.credit)}`, 'ok-t') : '',
     row('Unpaid dues', `-${inr(dues)}`),
+    s.rentAdjust && s.rentAdjust.bills && s.rentAdjust.bills.length ? row(`of which rent for days stayed (${s.rentAdjust.usedDays}/${s.rentAdjust.totalDays})`, inr(sum(s.rentAdjust.bills, b => b.amount)), 'muted') : '',
+    s.rentAdjust && s.rentAdjust.cut ? row('Unused rent taken off (left early)', `+${inr(s.rentAdjust.cut.excess)}`, 'ok-t') : '',
     s.shortfallFee > 0 ? row(`Notice shortfall (${s.shortfallDays} days)`, `-${inr(s.shortfallFee)}`, 'warn-t') : '',
     s.deductions > 0 ? row('Damage / other deductions', `-${inr(s.deductions)}`, 'bad-t') : '',
   ].join('');
@@ -2017,7 +2210,7 @@ A.addinv = el => formModal({
 
 /* ===================================================================== payments */
 // One money row for every Payments tab: the name wraps (never "Shi…"), amount on the right, actions underneath on a phone.
-const pillb = (label, act, attrs = '', cls = '') => `<button type="button" class="pillbtn ${cls}" data-act="${act}" ${attrs}>${esc(t(label))}</button>`;
+const pillb = (label, act, attrs = '', cls = '', icon = '') => `<button type="button" class="pillbtn ${cls}" data-act="${act}" ${attrs}>${icon ? ico(icon, 'xs') : ''}<span>${esc(t(label))}</span></button>`;
 const prow = o => `<div class="prow ${o.act ? 'tap' : ''}" ${o.act ? `role="button" tabindex="0" data-act="${o.act}" ${o.attrs || ''}` : ''}>${o.lead || ''}<div class="prow-b"><b class="prow-t">${o.t}</b><span class="prow-s">${o.s || ''}</span>${o.note ? `<span class="prow-n">${o.note}</span>` : ''}${o.tags ? `<span class="prow-g">${o.tags}</span>` : ''}</div>${o.amt != null ? `<div class="prow-m"><b class="${o.mc || ''}">${o.amt}</b>${o.ms ? `<small>${esc(o.ms)}</small>` : ''}</div>` : ''}${o.acts ? `<div class="prow-a">${o.acts}</div>` : ''}</div>`;
 PAGES.payments = {
   title: 'Payments', mod: 'payments',
@@ -2281,11 +2474,10 @@ A.pay = el => {
   });
 };
 /* The bill goes to ONE resident on WhatsApp together with a clean payment card: the QR first, then the amount and the details.
- * A wa.me link can only carry text, so on a phone the card + message go through the system share sheet (the owner taps
- * WhatsApp and the resident); without that (a laptop) the card is copied so it can be pasted into the chat. */
+ * A wa.me link can only carry text, so the card is copied and the resident's own chat opens with the message typed in. */
 async function payCardBlob(r, amount, note) {
   if (typeof qrcode !== 'function') await loadScript('/vendor/qrcode.js');
-  const q = qrcode(0, 'M'); q.addData(upiUri(amount, note)); q.make();
+  const q = qrcode(0, 'M'); const upi = (payBuckets(r)[0] || {}).upi || (S().pay || {}).upiId; q.addData(upiUri(amount, note, upi)); q.make();
   const n = q.getModuleCount(), W = 1080, H = 1660, c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = c.getContext('2d'), rr = (X, Y, w, h, R) => { x.beginPath(); x.moveTo(X + R, Y); x.arcTo(X + w, Y, X + w, Y + h, R); x.arcTo(X + w, Y + h, X, Y + h, R); x.arcTo(X, Y + h, X, Y, R); x.arcTo(X, Y, X + w, Y, R); x.closePath(); };
   const F = "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", h0 = Store.hostel() || {}, p = S().pay || {};
@@ -2297,21 +2489,19 @@ async function payCardBlob(r, amount, note) {
   T('Scan with any UPI app', qy + qs + 104, 34, '600', '#6b6f8d');
   T('₹' + Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }), qy + qs + 262, 150, '800', '#3b3fe0');
   x.fillStyle = '#e7e8f3'; x.fillRect(150, qy + qs + 326, W - 300, 3);
-  const rows = [[t('Pay to'), p.payee || h0.name || ''], ['UPI ID', p.upiId || ''], [t('For'), `${r.name} · ${t('Room')} ${roomName(r.roomId)}`]];
+  const rows = [[t('Pay to'), p.payee || h0.name || ''], ['UPI ID', upi || ''], [t('For'), `${r.name} · ${t('Room')} ${roomName(r.roomId)}`]];
   rows.forEach((row, i) => { const y = qy + qs + 420 + i * 84; x.textAlign = 'left'; x.fillStyle = '#8a8eab'; x.font = `600 32px ${F}`; x.fillText(row[0], 150, y); x.textAlign = 'right'; x.fillStyle = '#1b1c3a'; x.font = `700 34px ${F}`; let v = String(row[1]); while (x.measureText(v).width > 620 && v.length > 4) v = v.slice(0, -2); x.fillText(v === row[1] ? v : v + '…', W - 150, y); });
   x.fillStyle = '#e8f7ee'; rr(150, H - 270, W - 300, 96, 48); x.fill(); T(h0.name || 'Sarvlekh', H - 208, 36, '700', '#128a4a');
   return new Promise(res => c.toBlob(res, 'image/png'));
 }
 async function sendBillWithQr(r, m) {
-  const p = S().pay || {}; if (!p.upiId || !(m.total > 0)) return false;
+  const p = S().pay || {}; if (!(payBuckets(r)[0] || {}).upi && !p.upiId || !(m.total > 0)) return false;
+  if (payBuckets(r).length > 1) return false;   // rent and electricity go to different UPI IDs: the message carries two separate pay links
   let blob; try { blob = await payCardBlob(r, m.total, `${r.name.split(' ')[0]} ${roomName(r.roomId)} ${(Store.hostel() || {}).name || ''}`.trim()); } catch (e) { return false; }
   if (!blob) return false;
-  const file = new File([blob], `pay-${r.name.split(' ')[0]}-${m.total}.png`, { type: 'image/png' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], text: m.text }); return true; }
-    catch (e) { return e && e.name === 'AbortError'; }   // the owner closed the share sheet: nothing more to do
-  }
-  try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast(t('Payment card copied - paste it in the WhatsApp chat'), 'ok'); } catch (e) { /* no image clipboard: the text goes alone */ }
+  // Never the system share sheet: it lists every contact and the bill can land in the wrong chat. The card is
+  // copied instead and the resident's own chat is opened with the message already typed (see A.sendbill).
+  try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast(t('Payment card copied - paste it in the chat that opens'), 'ok'); } catch (e) { /* no image clipboard: the text with the pay link goes alone */ }
   return false;
 }
 A.sendbill = async el => {
@@ -2336,10 +2526,27 @@ function bulkMailHtml(plan, kind) {
     <div class="bm-st"><span class="ok">${ico('mail', 'xs')} ${esc(t('{n} will be e-mailed', { n: plan.todo.length }))}</span>${plan.noEmail.length ? `<span class="warn">${ico('alert', 'xs')} ${esc(t('{n} have no e-mail (app notice only)', { n: plan.noEmail.length }))}</span>` : ''}${wait ? `<span class="warn">${esc(t('{n} bills not complete', { n: wait }))}</span>` : ''}</div></div>`;
 }
 function bulkMailResult(r, kind) {
-  const msg = r.demo ? t('Demo hostel: nothing was really e-mailed.') : r.reason === 'not_configured' ? t('E-mail is not set up on the server yet (RESEND_API_KEY). Nothing was sent.') : '';
+  const msg = r.demo ? t('Demo hostel: nothing was really e-mailed.') : r.reason === 'not_configured' ? t('E-mail is not set up on the server yet (RESEND_API_KEY). Nothing was sent.') : r.reason ? t('Why: {r}', { r: String(r.reason) }) : '';
   return `<div class="bm"><div class="bm-ic ${r.failed && !r.sent ? 'bad' : 'ok'}">${ico(r.failed && !r.sent ? 'alert' : 'check')}</div><b class="bm-h">${esc(r.sent ? t('Sent to {n} residents', { n: r.sent }) : t('Nothing was sent'))}</b>
+    ${r.failed && !r.demo ? `<div style="text-align:center;margin:8px 0"><button class="btn sm" data-act="mailcheck">${ico('search', 'sm')} ${esc(t('Check e-mail setup'))}</button></div>` : ''}
     <div class="bm-st">${r.noEmail ? `<span class="warn">${esc(t('{n} app notice only (no e-mail)', { n: r.noEmail }))}</span>` : ''}${r.failed ? `<span class="bad">${esc(t('{n} failed - tap again to retry only those', { n: r.failed }))}</span>` : ''}</div>${msg ? `<p class="bm-p">${esc(msg)}</p>` : ''}</div>`;
 }
+A.mailcheck = async el => {
+  if (el) el.disabled = true;
+  try {
+    const c = await Backend.admin('mail_check');
+    const row = (ok, label, why) => li({ icon: ok ? 'check' : 'alert', ic: ok ? 'ok' : 'bad', t: label, d: why || '', chev: false });
+    const dom = c.domain_status === 'verified';
+    sheet(t('E-mail setup check'), group('', [
+      row(c.database_key_ok, t('Server can reach the database'), c.database_key_ok ? '' : t('The server key was refused: {e}. Put the new sb_secret key in Cloudflare (SUPABASE_SERVICE_ROLE_KEY).', { e: c.database_error || '' })),
+      row(c.resend_key || c.smtp, t('Mail provider key is set'), c.resend_key || c.smtp ? '' : t('RESEND_API_KEY is missing on the server.')),
+      row(!c.resend_error, t('Resend accepts the key'), c.resend_error ? (c.resend_restricted ? t('This key can only send mail, so it cannot list domains. That is fine; check the domain in the Resend dashboard.') : c.resend_error) : ''),
+      c.resend_key && !c.resend_restricted && !c.resend_error ? row(!!c.domain_found && dom, t('Sender domain {d} is verified in Resend', { d: c.domain }), c.domain_found ? t('Status: {s}', { s: c.domain_status }) + (c.records ? ' · ' + c.records.filter(x => x.status !== 'verified').map(x => x.record + ' ' + x.type + ' ' + x.status).join(', ') : '') : t('This domain is not added in Resend. Add it and the DNS records.')) : '',
+      li({ icon: 'mail', ic: 'info', t: t('Sender'), d: c.from, chev: false }),
+    ].join('')), { foot: '<button class="btn primary block" data-act="close">' + esc(t('Close')) + '</button>' });
+  } catch (e) { toast(e.message === 'Session expired' ? t('The server rejected the login check (401). The Supabase secret key on the server is probably the old, disabled one.') : e.message, 'bad'); }
+  finally { if (el) el.disabled = false; }
+};
 function openBulkMail(kind = 'bill', opts = {}) {
   const plan = bulkMailPlan(kind, opts), left = plan.todo.length + plan.noEmail.length;
   sheet(t(kind === 'reminder' ? 'E-mail payment reminders' : 'E-mail bills to everyone'), `<div id="bmBody">${bulkMailHtml(plan, kind)}</div>`,
@@ -2989,13 +3196,13 @@ PAGES.notices = {
     const list = Store.all('notice').slice().sort((a, b) => (b.pinned - a.pinned) || (b.date > a.date ? 1 : -1));
     const pins = list.filter(n => n.pinned), rest = list.filter(n => !n.pinned), wk = addDays(today(), -6);
     const card = n => swipeCard({
-      act: 'swnotice', id: n.id, icon: n.pinned ? 'star' : 'megaphone', tone: n.pinned ? 'tn3' : 'tn0', pinned: false, title: n.title, body: n.body, time: relDay(n.date),
-      actions: `${pillb('E-mail all', 'noticewa', `data-id="${n.id}"`)}${pillb(n.pinned ? 'Unpin' : 'Pin', 'noticepin', `data-id="${n.id}"`)}${pillb('Edit', 'noticeedit', `data-id="${n.id}"`)}${pillb('Delete', 'noticedel', `data-id="${n.id}"`, 'bad')}`,
+      act: 'swnotice', swRight: 'noticeedit', swLeft: 'noticedel', id: n.id, icon: n.pinned ? 'bookmark' : 'megaphone', tone: n.pinned ? 'tn3' : 'tn0', pinned: false, title: n.title, body: n.body, time: relDay(n.date),
+      actions: `${pillb('E-mail all', 'noticewa', `data-id="${n.id}"`, 'p-blue', 'mail')}${pillb(n.pinned ? 'Unpin' : 'Pin', 'noticepin', `data-id="${n.id}"`, 'p-orange', 'bookmark')}${pillb('Edit', 'noticeedit', `data-id="${n.id}"`, 'p-green', 'edit')}${pillb('Delete', 'noticedel', `data-id="${n.id}"`, 'p-red', 'trash')}`,
     });
     const sect = (title, xs) => xs.length ? `<div class="group-t">${esc(t(title))} · ${xs.length}</div><div class="swp-list fold-list">${xs.map(card).join('')}</div>` : '';
     return `${head('Notices', '', btn('New notice', 'addnotice', '', 'primary', 'plus'))}
       ${list.length ? `<div class="pstats">${kpi('Notices', list.length, t('residents see these'))}${kpi('Pinned', pins.length, t('stay on top'), pins.length ? 'warn' : '')}${kpi('This week', list.filter(n => n.date >= wk).length, '')}</div>
-      ${about('Swipe a notice left or right to delete it - you can undo for a few seconds.')}${sect('Pinned', pins)}${sect(pins.length ? 'Recent' : 'All notices', rest)}`
+      ${about('Swipe a notice right to edit it, or left to delete it (you are asked first).')}${sect('Pinned', pins)}${sect(pins.length ? 'Recent' : 'All notices', rest)}`
       : `<div class="card">${empty('No notices yet', 'Post one and every resident sees it in the app.', btn('New notice', 'addnotice', '', 'primary', 'plus'))}</div>`}`;
   },
 };
@@ -3459,7 +3666,7 @@ PAGES.emitra = {
   title: 'Police verification', mod: 'emitra',
   render() {
     const B0 = pvBoard(), doer = canVerifyPV(), tab = curTab('pvt', 'pending');
-    const B = { pending: [...B0.todo, ...B0.submitted], verified: B0.verified };
+    const B = { pending: [...B0.todo, ...B0.submitted], verified: B0.verified, all: [...B0.todo, ...B0.submitted, ...B0.verified].sort((a, b) => String(a.name).localeCompare(String(b.name))) };
     const total = B.pending.length + B.verified.length, done = B.verified.length;
     const who = doer ? t('You verify these tenants. Open one, copy the details into the police portal, save the acknowledgement.')
       : pvByPlatform() ? t('The Sarvlekh team does the police verification for your hostel. You only see how far it has gone.')
@@ -3477,7 +3684,7 @@ PAGES.emitra = {
       <div class="pvh"><div class="pvh-ring"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="pvg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22c55e"/><stop offset="1" stop-color="#0ea5a5"/></linearGradient></defs><circle cx="50" cy="50" r="42" class="pvh-tr"/><circle cx="50" cy="50" r="42" class="pvh-fg" style="stroke-dasharray:${(pct(done, total) * 2.639).toFixed(1)} 264"/></svg><div class="pvh-c"><b>${done}<i>/${total}</i></b><small>${esc(t('verified'))}</small></div></div>
         <div class="pvh-t"><b>${esc(doer ? t('Verification queue') : t('Verification status'))}</b><span>${esc(who)}</span></div></div>
       <div class="pvh-st"><span class="ok"><b>${done}</b>${esc(t('Verified'))}</span><span class="info"><b>${B0.submitted.length}</b>${esc(t('Waiting'))}</span><span class="warn"><b>${B0.todo.length}</b>${esc(t('To start'))}</span></div>
-      ${seg('pvt', [['pending', 'Pending', B.pending.length], ['verified', 'Verified', B.verified.length]], 'pending')}
+      ${seg('pvt', [['pending', 'Pending', B.pending.length], ['verified', 'Verified', B.verified.length], ['all', 'All residents', B.all.length]], 'pending')}
       ${list.length ? `<div class="group">${list.map(row).join('')}</div>` : `<div class="card">${empty(tab === 'pending' ? 'Verification queue clear' : 'Nothing here', tab === 'pending' ? 'No residents currently pending verification.' : 'No tenants in this list.')}</div>`}`;
   }
 };
@@ -3496,7 +3703,7 @@ A.emitraverify = el => {
   const kycDocsHtml = v.docs.length
     ? `<div class="row wrap" style="gap:8px;margin-top:6px">${v.docs.map(d => `<button type="button" class="btn sm" data-act="opendoc" data-path="${esc(d.path)}" data-res="${r.id}" data-type="${esc(d.type)}">${ico('eye', 'sm')} ${esc(d.type)}</button>`).join('')}</div>`
     : `<div class="muted sm" style="margin-top:4px">${esc(t('No ID papers uploaded yet.'))}</div>`;
-  formModal({
+  const pvForm = formModal({
     title: `Police Verification · ${r.name}`,
     submit: 'Save Verification',
     wide: true,
@@ -3508,13 +3715,14 @@ A.emitraverify = el => {
           <div class="group-t">${esc(t('Tenant'))}</div><div class="pvg">${v.tenant.map(x => pvRow(x[0], x[0] === 'Staying since' ? fmtDate(x[1]) : x[1])).join('')}</div>
           <div class="group-t">${esc(t('Stay'))}</div><div class="pvg">${v.stay.map(x => pvRow(x[0], x[0] === 'Staying since' ? fmtDate(x[1]) : x[1])).join('')}</div>
           <div class="group-t">${esc(t('Property'))}</div><div class="pvg">${v.property.map(x => pvRow(x[0], x[1])).join('')}</div>
+          <div class="group-t">${esc(t('Photo & Aadhaar'))}</div><div id="pvImgs" class="row" style="gap:10px;flex-wrap:wrap">${v.docs.map((d, i) => `<figure style="margin:0;width:46%;min-width:140px"><figcaption class="xs muted" style="margin-bottom:4px">${esc(d.type)}</figcaption><img data-pvimg="${i}" alt="${esc(d.type)}" style="width:100%;border-radius:10px;border:1px solid var(--line);background:var(--subtle,#f3f4f6);min-height:90px;object-fit:contain"></figure>`).join('') || `<span class="muted sm">${esc(t('No ID papers uploaded yet.'))}</span>`}</div>
           <div class="group-t">${esc(t('ID papers'))}</div>${kycDocsHtml}
           ${portal ? `<div style="margin-top:12px"><a class="btn sm primary" href="${esc(portal)}" target="_blank" rel="noopener">${ico('globe', 'sm')} ${esc(t('Open {p} portal', { p: portalName }))}</a></div>` : ''}
         `
       },
       { name: 'refNo', label: 'Police Acknowledgement / Reference Number', value: pv.refNo || '', required: true, maxlength: 60, hint: 'Reference number from the state police portal acknowledgement' },
       { name: 'date', label: 'Verification Date', type: 'date', value: pv.date || today(), required: true },
-      { name: 'status', label: 'Verification Status', type: 'select', options: [{ v: 'submitted', l: 'Submitted / Acknowledgement Received' }, { v: 'verified', l: 'Verified / Certificate Issued' }, { v: 'rejected', l: 'Rejected by Police' }], value: pv.status || 'submitted', required: true },
+      { name: 'status', label: 'Verification Status', type: 'select', options: [{ v: 'submitted', l: 'Submitted / Acknowledgement Received' }, { v: 'verified', l: 'Completed: verified & certificate issued (e-mails the resident)' }, { v: 'rejected', l: 'Rejected by Police' }], value: pv.status || 'submitted', required: true },
       { name: 'file', label: 'Upload Police Acknowledgement / Certificate', type: 'file', accept: 'image/*' },
       { name: 'notes', label: 'Operator Notes', value: pv.notes || '', maxlength: 200 }
     ],
@@ -3547,4 +3755,11 @@ A.emitraverify = el => {
       }
     }
   });
+  // the photo and both sides of the Aadhaar, shown right here so they can be checked against the details
+  setTimeout(async () => {
+    for (const img of $$('img[data-pvimg]', pvForm)) {
+      const d = v.docs[+img.dataset.pvimg]; if (!d || !d.path) continue;
+      try { img.src = await Files.url(d.path); img.style.cursor = 'zoom-in'; img.onclick = () => window.open(img.src, '_blank', 'noopener'); } catch (e) { img.alt = t('Could not load'); }
+    }
+  }, 50);
 };
