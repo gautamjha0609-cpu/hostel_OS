@@ -233,12 +233,12 @@ function fieldHtml(f) {
   const isFile = f.type === 'file';
   const isPhone = !isFile && (f.type === 'tel' || /phone|mobile/i.test(f.name));
   const isAadhaar = !isFile && (f.name === 'idNo' || f.name === 'aadhaar' || ((f.type === 'text' || !f.type) && /aadhaar/i.test(f.label || '') && !/card|photo|doc|file|upload|paper/i.test(f.label || '')));
-  const isPersonName = !isFile && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
+  const isPersonName = !isFile && !f.plain && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
 
   const defMax = isPhone ? 10 : isAadhaar ? 12 : f.type === 'email' ? 120 : (f.type === 'text' || !f.type) ? 120 : null;
   const mx = isPhone ? 10 : isAadhaar ? 12 : (f.maxlength != null ? f.maxlength : defMax);
   const itype = isPhone ? 'tel' : (f.type || 'text');
-  const dType = isPhone ? 'data-type="phone"' : isAadhaar ? 'data-type="aadhaar"' : isPersonName ? 'data-type="name"' : f.type === 'number' ? 'data-type="number"' : '';
+  const dType = isPhone ? 'data-type="phone"' : isAadhaar ? 'data-type="aadhaar"' : f.plain ? 'data-type="plain"' : isPersonName ? 'data-type="name"' : f.type === 'number' ? 'data-type="number"' : '';
   const imode = isPhone ? 'inputmode="numeric"' : isAadhaar ? 'inputmode="numeric"' : f.type === 'number' ? `inputmode="${f.step && f.step < 1 ? 'decimal' : 'numeric'}"` : f.inputmode ? `inputmode="${f.inputmode}"` : '';
   const pat = isPhone ? 'pattern="[5-9][0-9]{9}"' : isAadhaar ? 'pattern="[0-9]{12}"' : (f.pattern ? `pattern="${f.pattern.source || f.pattern}"` : '');
   const ph = f.placeholder || (isPhone ? '10-digit mobile' : isAadhaar ? '12-digit Aadhaar' : '');
@@ -271,7 +271,7 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
     if (!el || !el.name || el.type === 'file') return;
     const isPhone = el.dataset.type === 'phone' || el.type === 'tel' || /phone|mobile/i.test(el.name);
     const isAadhaar = el.dataset.type === 'aadhaar' || el.name === 'idNo' || el.name === 'aadhaar';
-    const isName = el.dataset.type === 'name' || ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(el.name);
+    const isName = el.dataset.type !== 'plain' && (el.dataset.type === 'name' || ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(el.name));
 
     if (isPhone) {
       let val = el.value.replace(/\D/g, '');
@@ -322,7 +322,7 @@ function formModal({ title, fields, submit = 'Save', onSubmit, note, wide, previ
       const isFile = f.type === 'file';
       const isPhone = !isFile && (f.type === 'tel' || /phone|mobile/i.test(f.name));
       const isAadhaar = !isFile && (f.name === 'idNo' || f.name === 'aadhaar' || ((f.type === 'text' || !f.type) && /aadhaar/i.test(f.label || '') && !/card|photo|doc|file|upload|paper/i.test(f.label || '')));
-      const isPersonName = !isFile && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
+      const isPersonName = !isFile && !f.plain && ['name', 'guardian', 'full_name', 'oname', 'owner_name', 'visitorName'].includes(f.name);
 
       if (f.required && (v === '' || v == null || (typeof v === 'number' && isNaN(v)) || (Array.isArray(v) && !v.length))) { err.textContent = t('{f} is required.', { f: L }); form.elements[f.name]?.focus?.(); return; }
       if (f.type === 'number') {

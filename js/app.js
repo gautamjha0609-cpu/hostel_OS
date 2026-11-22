@@ -65,8 +65,14 @@ function bottomNav() {
   const flat = navGroups().flatMap(g => g[1]);
   const pref = isAdmin() ? ['home', 'residents', 'payments', 'inbox'] : flat.map(x => x[0]);
   const main = pref.map(k => flat.find(x => x[0] === k)).filter(Boolean).slice(0, 4);
+  // More people have one hostel than several. Only the ones with several get the switcher here (like the
+  // account switcher in Instagram); it shows the hostel they are in right now. The menu stays in the header.
+  if (hasManyHostels()) return [...main, ['pgswitch', shortPg(), 'building']];
   return [...main, flat.length > main.length ? ['more', 'More', 'grid'] : ['me', 'Profile', 'user']];
 }
+const hasManyHostels = () => { const c = ctx(); return !!c.hostelId && c.role !== 'resident' && c.role !== 'emitra' && (contexts().length > 1 || String(c.key || '').startsWith('super:')); };
+// "Sunrise Boys PG" -> "Sunrise": short enough for the bottom bar, enough to know where you are.
+const shortPg = () => { const p = String((Store.hostel() || {}).name || '').trim().split(/\s+/); let w = p[0] || ''; if (w.length < 4 && p[1]) w += ' ' + p[1]; return w.length > 9 ? w.slice(0, 8) + '…' : w; };
 function badgeFor(k) {
   if (k === 'inbox') return inboxItems().length;
   if (k === 'inquiries') return Store.all('inquiry').filter(x => !x.data || (x.data.status || 'new') === 'new').length;
@@ -89,20 +95,26 @@ function badgeFor(k) {
  * A login tied to one block gets a label instead of a switch: there is nothing to choose. */
 const blockKey = hid => `hostelos.block.${hid}`;
 function blockBar() {
-  const bar = $('#bbar'); if (!bar) return;
-  const c = ctx();
+  const slot = $('#blkSlot'); if (!slot) return;
+  const top = $('#top'), c = ctx();
   // A resident lives in one room; there is no wing for them to choose between.
-  if (!c.hostelId || !blocksOn() || isResident()) { bar.hidden = true; bar.innerHTML = ''; return; }
-  bar.hidden = false;
+  if (!c.hostelId || !blocksOn() || isResident()) { slot.hidden = true; slot.innerHTML = ''; slot.dataset.sig = ''; if (top) top.classList.remove('hasblk'); return; }
+  slot.hidden = false; if (top) top.classList.add('hasblk');
   if (c.block) {
-    bar.innerHTML = `<span class="blabel">${ico('layers', 'sm')}${esc(blockName(c.block))}</span><span class="bhint">${esc(t('You see this block only'))}</span>`;
+    const sig = 'L' + c.block;
+    if (slot.dataset.sig !== sig) { slot.innerHTML = `<span class="blabel" title="${esc(t('You see this block only'))}">${ico('layers', 'sm')}${esc(blockName(c.block))}</span>`; slot.dataset.sig = sig; }
     return;
   }
   const cur = blockScope();
   const opts = [['', t('All blocks')], ...hostelBlocks().map(b => [b.k, b.l])];
   if (allRooms().some(r => !roomBlock(r))) opts.push(['-', t('Not in a block')]);
-  bar.innerHTML = `<span class="blabel">${ico('layers', 'sm')}</span><div class="chips">${opts.map(([v, l]) =>
-    `<button class="chip ${v === cur ? 'on' : ''}" data-act="blk" data-v="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
+  // rebuilt only when it would look different, so an open list is not closed by an unrelated refresh
+  const sig = 'S' + cur + '|' + opts.map(o => o.join('=')).join('|');
+  if (slot.dataset.sig === sig) return;
+  slot.dataset.sig = sig;
+  slot.innerHTML = `<select class="hsel" id="blkSel" aria-label="${esc(t('Switch block'))}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  Picker.enhance(slot);
+  const sel = $('#blkSel'); if (sel) sel.addEventListener('change', () => A.blk({ dataset: { v: sel.value } }));
 }
 A.blk = el => {
   const v = el.dataset.v || '';
@@ -112,8 +124,8 @@ A.blk = el => {
   render(true);
 };
 function buildShell() {
-  const c = ctx(), h = Store.hostel(), cs = contexts(), solo = false;
-  const opts = cs.map(x => `<option value="${esc(x.key)}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('');
+  const c = ctx(), h = Store.hostel(), solo = false;
+  const superIn = String(c.key || '').startsWith('super:');
   $('#app').innerHTML = `<div class="app ${solo ? 'solo' : ''}">
     <aside class="side" id="side" aria-label="${esc(t('Main menu'))}">
       <div class="brand"><img src="/icons/icon.svg" alt=""><div style="min-width:0">${esc(CFG.APP_NAME || 'Sarvlekh')}<small>${esc(h ? h.name : t('Platform'))}${h && h.settings && h.settings.demo ? ' <b style="color:var(--warn)">· DEMO</b>' : ''}</small></div></div>
@@ -123,26 +135,28 @@ function buildShell() {
     <div class="scrim" data-act="drawer"></div>
     <div class="main">
       <div class="offline" id="offline" ${Store.online ? 'hidden' : ''}>${esc(t('Offline — changes are saved and will sync'))}</div>
-      <header class="top ${cs.length > 1 || (c.key && c.key.startsWith('super:')) ? 'sel' : ''}" id="top">
+      <header class="top" id="top">
         <button class="ibtn menu-btn" data-act="drawer" aria-label="${esc(t('Menu'))}">${ico('menu')}</button>
         <h1 id="ptitle"></h1><span class="sp"></span>
-        ${cs.length > 1 || c.key && c.key.startsWith('super:') ? `<select class="hsel" id="ctxSel" aria-label="${esc(t('Switch hostel'))}">${opts}${c.key && c.key.startsWith('super:') ? `<option selected>${esc(c.label)}</option>` : ''}</select>` : ''}
+        ${c.hostelId && h ? (superIn ? `<button class="pgname" data-act="pgsheet" aria-label="${esc(t('Switch hostel'))}">${ico('building', 'sm')}<span>${esc(h.name)}</span></button>` : `<span class="pgname" title="${esc(h.name)}">${ico('building', 'sm')}<span>${esc(h.name)}</span></span>`) : ''}
+        <div class="blkslot" id="blkSlot" hidden></div>
         ${c.hostelId ? `<button class="ibtn hide-s" data-act="palette" aria-label="${esc(t('Search'))}" title="Ctrl+K">${ico('search', 'sm')}</button>` : ''}
         ${c.hostelId ? `<button class="ibtn" data-act="notifs">${ico('bell', 'sm')}<span class="sr">${esc(t('Notifications'))}</span><span class="dot" id="ndot" hidden></span></button>` : ''}
       </header>
-      <div class="bbar" id="bbar" hidden></div>
       <main class="page" id="page" tabindex="-1"></main>
     </div>
     <nav class="bnav" id="bnav" aria-label="${esc(t('Quick menu'))}"></nav>
   </div>`;
-  const sel = $('#ctxSel'); if (sel) sel.onchange = () => chooseContext(sel.value);
   Picker.enhance($('#top'));
   updateChrome();
 }
 function updateChrome() {
+  const hh = Store.hostel(); if (hh) $$('.pgname span').forEach(x => { if (x.textContent !== hh.name) x.textContent = hh.name; });
   const nav = $('#nav'); if (!nav) return;
   nav.innerHTML = navGroups().map(([title, list]) => `${title ? `<div class="nav-sec">${esc(t(title))}</div>` : ''}${list.map(([k, l, icn]) => { const n = badgeFor(k); return `<a href="/${k}" class="${ui.page === k ? 'on' : ''}" data-act="nav">${ico(icn, 'sm')}<span>${esc(t(l))}</span>${n ? `<span class="cnt">${n}</span>` : ''}</a>`; }).join('')}`).join('');
-  $('#bnav').innerHTML = bottomNav().map(([k, l, icn]) => { const n = badgeFor(k); return `<button class="${ui.page === k ? 'on' : ''}" data-act="${k === 'more' ? 'drawer' : 'go'}" data-to="${k}">${ico(icn)}<span>${esc(t(l))}</span>${n ? `<span class="dot">${n}</span>` : ''}</button>`; }).join('');
+  $('#bnav').innerHTML = bottomNav().map(([k, l, icn]) => {
+    if (k === 'pgswitch') return `<button class="pgb" data-act="pgsheet" aria-label="${esc(t('Switch hostel'))}"><i class="pgav">${esc((l || '?').slice(0, 1).toUpperCase())}</i><span>${esc(l)}</span></button>`;
+    const n = badgeFor(k); return `<button class="${ui.page === k ? 'on' : ''}" data-act="${k === 'more' ? 'drawer' : 'go'}" data-to="${k}">${ico(icn)}<span>${esc(t(l))}</span>${n ? `<span class="dot">${n}</span>` : ''}</button>`; }).join('');
   blockBar();
   const slot = $('#installSlot'); if (slot && typeof Pwa !== 'undefined') slot.innerHTML = Pwa.button();
   const nd = $('#ndot'); if (nd) { const n = myNotifs().filter(x => !x.read).length; nd.hidden = !n; nd.textContent = n > 9 ? '9+' : n; }
@@ -362,7 +376,14 @@ PAGES.me = {
       <p class="hint" style="text-align:center;margin-top:14px">${esc(CFG.APP_NAME || 'Sarvlekh')} · ${CLOUD ? t('Cloud') : t('Demo mode')}</p></div>`;
   },
 };
-A.ctx = el => chooseContext(el.dataset.key);
+A.ctx = el => { closeModal(); chooseContext(el.dataset.key); };
+// The hostel list in a sheet: the bottom-bar button on a phone, and the hostel name in the header for the platform admin.
+A.pgsheet = () => {
+  const c = ctx(), cs = contexts();
+  const row = x => li({ icon: x.role === 'resident' ? 'user' : x.role === 'super' ? 'key' : 'building', ic: x.key === c.key ? 'ok' : 'mute', t: x.label, end: x.key === c.key ? badge('Current', 'ok') : '', act: x.key === c.key ? '' : 'ctx', attrs: `data-key="${esc(x.key)}"`, chev: x.key !== c.key });
+  const cur = cs.some(x => x.key === c.key) ? '' : row(c);
+  sheet(t('Switch hostel'), `<div class="group">${cur}${cs.map(row).join('')}</div>`);
+};
 A.chpw = () => formModal({
   title: 'Change password', submit: 'Update password',
   fields: [{ name: 'p1', label: 'New password', type: 'password', required: true, hint: t('At least 6 characters') }, { name: 'p2', label: 'Repeat new password', type: 'password', required: true }],
@@ -826,18 +847,25 @@ window.addEventListener('unhandledrejection', e => oops(e.reason));
 const softRefresh = async () => {
   if (!Store.ctx || !Store.ctx.hostelId || document.hidden) return;
   try { await Store.sync(); } catch (e) { console.warn(e); }
+  // Settings and modules (the platform admin's changes) normally arrive live; without the live channel, fetch them here
+  if (CLOUD && (!Live.up || Date.now() - Store.metaAt > 600e3)) { try { await Store.refreshMeta(); } catch (e) { console.warn(e); } }
 };
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { Store.wake(); softRefresh(); if (Store.ctx && Store.ctx.hostelId) { try { runAutomation(); } catch (e) { console.error(e); } } }
+  if (!document.hidden) { Store.wake(); if (typeof Live !== 'undefined') Live.watch(); softRefresh(); if (Store.ctx && Store.ctx.hostelId) { try { runAutomation(); } catch (e) { console.error(e); } } }
   else Store.flush().catch(() => {});
 });
 // Self-rescheduling instead of setInterval, so the gap can grow while nothing is happening.
 (function pollLoop() {
   setTimeout(() => { softRefresh().finally(pollLoop); }, Store.pollDelay());
 })();
-Store.onChange = what => {
+Store.onChange = (what, changed) => {
   if (what === 'online') { updateChrome(); return; }
-  if (what === 'meta') { const c = Store.ctx; if (c && c.hostelId && !Store.hostel()) { toast('Access to this hostel was removed', 'bad'); chooseContext(); } return; }
+  if (what === 'meta') {
+    const c = Store.ctx; if (c && c.hostelId && !Store.hostel()) { toast('Access to this hostel was removed', 'bad'); chooseContext(); return; }
+    // modules, settings or access changed somewhere else: show it now, but never redraw under an open form
+    if (changed) { if ($('#mform') || ($('#modalRoot') && $('#modalRoot').innerHTML)) updateChrome(); else { updateChrome(); render(); } }
+    return;
+  }
   if ($('#mform') || ($('#modalRoot') && $('#modalRoot').innerHTML)) { updateChrome(); return; } // never redraw under an open form
   render();
 };

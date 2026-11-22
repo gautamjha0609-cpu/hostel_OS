@@ -97,6 +97,13 @@ PAGES.admin = {
       ${list.length ? `<div class="group">${list.map(o => { const hs = hostels.filter(h => h.org_id === o.id); return li({ lead: avatar(o.name), t: o.name, d: `${o.owner_name || ''} · ${o.phone || ''} · ${t('{n} hostels', { n: hs.length })} · ${t('{n} residents', { n: sum(hs, h => +statOf(h.id).residents || 0) })}`, end: `${o.status === 'suspended' ? badge('Suspended', 'bad') : o.paid_till && o.paid_till < today() ? badge('Fee overdue', 'warn') : badge(inr(o.fee) + '/yr', 'ok')}`, act: 'go', attrs: `data-to="admin/${o.id}"` }); }).join('')}</div>` : `<div class="card">${empty('No clients yet', 'Add your first PG owner.')}</div>`}`;
   },
 };
+/* What the client-level switch shows. The client's switch is the ceiling, and each hostel can be switched off
+ * below it. Showing only the ceiling made the client page say "Police verification: on" for a client whose only
+ * hostel had it off. So the switch reads ON only while the client has it AND at least one hostel really uses it. */
+function orgModState(orgMods, hs, k) {
+  const ceiling = (orgMods || {})[k] !== false, offIn = ceiling ? hs.filter(h => (h.modules || {})[k] === false).length : 0;
+  return { on: ceiling && !(hs.length && offIn === hs.length), offIn };
+}
 function orgDetail(id) {
   const o = adm.data.orgs.find(x => x.id === id); if (!o) return `<div class="card">${empty('Client not found')}</div>`;
   const hs = adm.data.hostels.filter(h => h.org_id === id);
@@ -117,7 +124,7 @@ function orgDetail(id) {
         ${group('Plan & billing', [li({ icon: 'rupee', ic: 'ok', t: `${inr(o.fee)} / ${t('year')}`, d: `${t(o.plan || 'standard')} · ${t('paid till')} ${o.paid_till ? fmtDate(o.paid_till) : '—'}`, act: 'orgpaid', attrs: `data-id="${id}"`, end: badge('Mark paid', 'acc') }), li({ icon: 'cal', ic: 'info', t: t('Change fee or paid-till date'), d: t('Edit the client'), act: 'editorg', attrs: `data-id="${id}"` }), li({ icon: 'bed', ic: 'info', t: t('Max {n} beds', { n: o.max_beds }), d: t('Max {n} hostels', { n: o.max_hostels }) })].join(''))}
       </div>
       <div class="stack">
-        ${group('Modules this client pays for', OPTIONAL_MODULES.map(k => `<div class="li noic"><span class="body"><span class="t">${esc(modLabel(k))}</span>${modNote(k) ? `<span class="d">${esc(modNote(k))}</span>` : ''}</span><label class="sw"><input type="checkbox" data-orgmod="${k}" data-org="${id}" ${mods[k] === false ? '' : 'checked'} aria-label="${esc(modLabel(k))}"><span></span></label></div>`).join(''), t('This is the ceiling for every hostel of this client. To switch a module off in one hostel only, use Modules on that hostel above.'))}
+        ${group('Modules this client pays for', OPTIONAL_MODULES.map(k => { const st = orgModState(mods, hs, k); const note = [st.offIn ? t(st.offIn === hs.length ? 'Off in every hostel of this client' : 'Off in {a} of {b} hostels', { a: st.offIn, b: hs.length }) : '', modNote(k)].filter(Boolean).join(' · '); return `<div class="li noic"><span class="body"><span class="t">${esc(modLabel(k))}</span>${note ? `<span class="d">${esc(note)}</span>` : ''}</span><label class="sw"><input type="checkbox" data-orgmod="${k}" data-org="${id}" ${st.on ? 'checked' : ''} aria-label="${esc(modLabel(k))}"><span></span></label></div>`; }).join(''), t('This is the ceiling for every hostel of this client. To switch a module off in one hostel only, use Modules on that hostel above.'))}
         ${(() => {
           const wide = ms.filter(m => !m.hostel_id && m.role !== 'resident');
           const perHostel = ms.filter(m => m.hostel_id && m.role !== 'resident').length;
@@ -132,11 +139,11 @@ function orgDetail(id) {
 A.addorg = () => formModal({
   title: 'New client', submit: 'Create client', wide: true, note: t('Creates the client, their first hostel and the owner login in one step.'),
   fields: [
-    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true, maxlength: 80 }, { name: 'city', label: 'City', maxlength: 60 },
+    { type: 'section', label: 'Client' }, { name: 'name', label: 'Business name', required: true, maxlength: 80, plain: true }, { name: 'city', label: 'City', maxlength: 60 },
     { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, max: 10000000, value: 499 }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, max: 100, value: 3 },
-    { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true, maxlength: 80 }, { name: 'haddr', label: 'Address', maxlength: 240 },
+    { type: 'section', label: 'First hostel' }, { name: 'hname', label: 'Hostel / PG name', required: true, maxlength: 80, plain: true }, { name: 'haddr', label: 'Address', maxlength: 240 },
     { type: 'section', label: 'Owner login' }, { name: 'oname', label: 'Owner name', required: true, maxlength: 80 }, { name: 'ophone', label: 'Owner mobile', type: 'tel', required: true, maxlength: 10, placeholder: '10-digit mobile' },
-    { name: 'ouser', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
+    { name: 'ouser', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._\-]{2,29}$/,
       info: t('Default is their 10-digit mobile number. They can manage all their hostels under this login.') },
     { name: 'opass', label: 'Password', required: true },
     { name: 'mods', label: 'Modules', type: 'multi', options: OPTIONAL_MODULES.map(k => ({ v: k, l: t(k === 'residentApp' ? 'Resident app' : MOD[k].l) })), value: OPTIONAL_MODULES, full: true },
@@ -154,24 +161,27 @@ A.addorg = () => formModal({
 });
 A.editorg = el => {
   const o = adm.data.orgs.find(x => x.id === el.dataset.id);
-  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true, maxlength: 80 }, { name: 'owner_name', label: 'Owner name', value: o.owner_name, maxlength: 80 }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone, maxlength: 10, placeholder: '10-digit mobile' }, { name: 'city', label: 'City', value: o.city, maxlength: 60 }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
+  formModal({ title: 'Edit client', fields: [{ name: 'name', label: 'Business name', value: o.name, required: true, maxlength: 80, plain: true }, { name: 'owner_name', label: 'Owner name', value: o.owner_name, maxlength: 80 }, { name: 'phone', label: 'Owner mobile', type: 'tel', value: o.phone, maxlength: 10, placeholder: '10-digit mobile' }, { name: 'city', label: 'City', value: o.city, maxlength: 60 }, { name: 'plan', label: 'Plan', type: 'select', options: ['trial', 'standard', 'premium'], value: o.plan }, { name: 'fee', label: 'Yearly fee (₹)', type: 'number', min: 0, value: o.fee }, { name: 'paid_till', label: 'Paid till', type: 'date', value: o.paid_till, min: '2020-01-01', max: addDays(today(), 366 * 5), info: t('The last day the client has paid for. Clear it if no fee is due.') }, { name: 'max_hostels', label: 'Max hostels', type: 'number', min: 1, value: o.max_hostels }, { name: 'max_beds', label: 'Max beds', type: 'number', min: 1, value: o.max_beds }, { name: 'notes', label: 'Notes', type: 'textarea', value: o.notes, full: true }],
     onSubmit: async v => { if (v.paid_till && (v.paid_till < '2020-01-01' || v.paid_till > addDays(today(), 366 * 5))) return t('Paid till looks wrong ({d}). It can be at most 5 years from today.', { d: fmtDate(v.paid_till) }); const patch = { ...v, phone: phone10(v.phone), paid_till: v.paid_till || null }; await Backend.update('orgs', o.id, patch); Object.assign(o, patch); toast('Saved'); } });
 };
 A.orgstatus = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id), next = o.status === 'active' ? 'suspended' : 'active'; confirmBox(next === 'suspended' ? t('Suspend {n}? Their staff and residents cannot log in until you activate again. Data is kept.', { n: o.name }) : t('Activate {n}?', { n: o.name }), async () => { await Backend.update('orgs', o.id, { status: next }); o.status = next; toast(next === 'active' ? 'Activated' : 'Suspended'); }, next === 'active' ? 'Activate' : 'Suspend', next === 'active' ? 'ok' : 'bad'); };
 // The date the client has paid till once `years` more are added (counted from today when nothing is paid ahead). Plans are yearly.
 const paidTillAfter = (o, years) => { const base = o.paid_till && o.paid_till > today() ? o.paid_till : today(); const d = parse(base); d.setFullYear(d.getFullYear() + (Math.min(5, Math.max(1, Math.round(years))) || 1)); return iso(d); };
 A.orgpaid = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Record client payment', fields: [{ name: 'years', label: 'Years paid', type: 'number', min: 1, max: 5, value: 1 }], note: t('Adds to the date the client has already paid till. To correct a wrong date, use Edit.'), preview: v => (v.years >= 1 && v.years <= 5 ? `<div class="note">${esc(t('Paid till {d}', { d: fmtDate(paidTillAfter(o, v.years)) }))}</div>` : `<div class="note">${esc(t('Enter 1 to 5 years.'))}</div>`), onSubmit: async v => { if (!Number.isInteger(v.years)) return t('Enter whole years, 1 to 5.'); const pt = paidTillAfter(o, v.years); await Backend.update('orgs', o.id, { paid_till: pt }); o.paid_till = pt; toast(t('Paid till {d}', { d: fmtDate(pt) })); } }); };
-A.delorg = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Delete client', submit: 'Delete forever', note: t('This deletes {n}, all their hostels and ALL data. It cannot be undone. Download backups first.', { n: o.name }), fields: [{ name: 'confirm', label: 'Type the client name to confirm', required: true }], onSubmit: async v => { if (v.confirm.trim() !== o.name) return 'Name does not match'; await Backend.remove('orgs', o.id); adm.data = null; closeModal(); go('admin'); toast('Client deleted'); return false; } }); };
-A.addhostel = el => formModal({ title: 'Add hostel', fields: [{ name: 'name', label: 'Hostel / PG name', required: true }, { name: 'city', label: 'City' }, { name: 'address', label: 'Address', full: true }], onSubmit: async v => { await Backend.insert('hostels', { org_id: el.dataset.org, ...v, status: 'active', settings: {} }); adm.data = null; toast('Hostel added'); } });
+A.delorg = el => { const o = adm.data.orgs.find(x => x.id === el.dataset.id); formModal({ title: 'Delete client', submit: 'Delete forever', note: t('This deletes {n}, all their hostels, ALL data and their logins (the user IDs become free again). It cannot be undone. Download backups first.', { n: o.name }), fields: [{ name: 'confirm', label: 'Type the client name to confirm', required: true }], onSubmit: async v => { if (v.confirm.trim() !== o.name) return 'Name does not match'; await Backend.remove('orgs', o.id); adm.data = null; closeModal(); go('admin'); toast('Client deleted'); return false; } }); };
+// One client cannot have two hostels with the same name (case and spacing do not make a new name).
+const sameHostelName = (orgId, name, exceptId) => { const k = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase(); return (adm.data.hostels || []).some(h => h.org_id === orgId && h.id !== exceptId && k(h.name) === k(name)); };
+A.addhostel = el => formModal({ title: 'Add hostel', fields: [{ name: 'name', label: 'Hostel / PG name', required: true, plain: true }, { name: 'city', label: 'City' }, { name: 'address', label: 'Address', full: true }], onSubmit: async v => { if (sameHostelName(el.dataset.org, v.name)) return t('This client already has a hostel called "{n}". Use a different name.', { n: v.name }); await Backend.insert('hostels', { org_id: el.dataset.org, ...v, status: 'active', settings: {} }); adm.data = null; toast('Hostel added'); } });
 // Only the four columns a browser is allowed to PATCH on a hostel. Status is the platform
 // admin's and has its own switch on the console, through set_hostel_admin.
 A.edithostel = el => { const h = admHostel(el.dataset.id); if (!h) return; formModal({
   title: 'Edit hostel', submit: 'Save',
-  fields: [{ name: 'name', label: 'Hostel / PG name', value: h.name, required: true, full: true },
+  fields: [{ name: 'name', label: 'Hostel / PG name', value: h.name, required: true, full: true, plain: true },
     { name: 'city', label: 'City', value: h.city },
     { name: 'phone', label: 'Phone', type: 'tel', value: h.phone },
     { name: 'address', label: 'Address', value: h.address, full: true }],
   onSubmit: async v => {
+    if (sameHostelName(h.org_id, v.name, h.id)) return t('This client already has a hostel called "{n}". Use a different name.', { n: v.name });
     const patch = { name: v.name, city: v.city, phone: phone10(v.phone), address: v.address };
     await Backend.update('hostels', h.id, patch);
     Object.assign(h, patch);
@@ -200,7 +210,7 @@ A.addowner = el => {
       { name: 'role', label: 'Role', type: 'select', options: [{ v: 'owner', l: t('Owner') }, { v: 'manager', l: t('Manager') }] },
       { name: 'hostel', label: 'Access', type: 'select', options: [{ v: '', l: t('All hostels of this client') }, ...hs.map(h => ({ v: h.id, l: h.name }))] },
       { type: 'section', label: 'How they log in' },
-      { name: 'username', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
+      { name: 'username', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._\-]{2,29}$/,
         info: t('Suggested from the name, with the mobile number as the password. Change either if you would rather set it yourself.') },
       { name: 'password', label: 'Password', required: true },
     ],
@@ -227,6 +237,13 @@ document.addEventListener('change', async e => {
       await Backend.update('orgs', o.id, { modules });
       o.modules = modules;
       const live = Store.orgs.find(x => x.id === o.id); if (live) live.modules = modules;
+      // switching it ON for the client switches it on in the hostels that had it off, so the two screens agree
+      if (want) for (const h of adm.data.hostels.filter(x => x.org_id === o.id && (x.modules || {})[k] === false)) {
+        const hm = applyModSwitch(h.modules || {}, k, true).modules;
+        const row = await Backend.setHostelAdmin(h.id, { modules: hm });
+        h.modules = (row && row.modules) || hm;
+        const lh = Store.hostels.find(x => x.id === h.id); if (lh) lh.modules = h.modules;
+      }
     });
   } catch (err) { e.target.checked = !want; toast(err.message, 'bad'); }
 });
@@ -378,7 +395,7 @@ document.addEventListener('change', async e => {
 A.delhostel = el => {
   const h = admHostel(el.dataset.id); if (!h) return;
   formModal({ title: `${t('Delete')} ${h.name}`, submit: 'Delete forever',
-    note: t('This deletes the hostel and every record in it — residents, bills, payments, everything. It cannot be undone.'),
+    note: t('This deletes the hostel and every record in it — residents, bills, payments, everything — and the logins that belonged only to this hostel. It cannot be undone.'),
     fields: [{ name: 'confirm', label: 'Type the hostel name to confirm', required: true, full: true }],
     onSubmit: async v => {
       if (v.confirm.trim() !== h.name) return 'Name does not match';
@@ -410,7 +427,7 @@ function loginFields(h, opts = {}) {
     { name: 'perms', label: 'Extra modules (optional)', type: 'multi', full: true,
       options: MODULES.filter(m => !['home', 'settings'].includes(m.k) && isModOnHostel(m.k, h, o)).map(m => ({ v: m.k, l: t(m.l) })) },
     { type: 'section', label: 'How they log in' },
-    { name: 'username', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._-]{2,29}$/,
+    { name: 'username', label: 'User ID', required: true, pattern: /^[a-z0-9][a-z0-9._\-]{2,29}$/,
       info: t('Lowercase letters, numbers, dot, dash. This is what they type to log in, so keep it short.') },
     { name: 'password', label: 'Password', required: true,
       info: t('At least 6 characters. The mobile number is suggested because it is the one thing they always remember; change it to anything you like.') },

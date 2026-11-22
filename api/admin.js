@@ -95,9 +95,6 @@ async function makeUser({ full_name, phone, username, password, isSuper = false 
   } else if (pw) {
     if (isProd && pw.length < 8) throw new HttpError(400, 'Password must be at least 8 characters in production');
     if (WEAK_PASSWORDS.has(pw.toLowerCase())) throw new HttpError(400, 'Password is too common. Choose a stronger password.');
-    if (isProd && (pw === cleanP || pw === digits(phone) || pw.toLowerCase() === uname.toLowerCase())) {
-      throw new HttpError(400, 'Password cannot be your phone number or username in production');
-    }
   } else {
     // No password provided
     if (isProd) {
@@ -112,7 +109,7 @@ async function makeUser({ full_name, phone, username, password, isSuper = false 
   if (pw.length < 6) throw new HttpError(400, 'Password must be at least 6 characters');
   const u = await sb('/auth/v1/admin/users', {
     method: 'POST',
-    body: { email: `${uname}@${DOMAIN}`, password: pw, user_metadata: { username: uname, full_name: name } },
+    body: { email: `${uname}@${DOMAIN}`, password: pw, email_confirm: true, user_metadata: { username: uname, full_name: name } },
   });
   const inviteToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(inviteToken).digest('hex');
@@ -166,6 +163,30 @@ async function assertCanManageUser(me, userId) {
   const covers = t => admin.some(a => a.org_id === t.org_id && (!a.hostel_id || a.hostel_id === t.hostel_id)
     && (t.role !== 'manager' || a.role === 'owner'));
   if (!ms.length || ms.some(m => m.role === 'owner') || !ms.every(covers)) throw new HttpError(403, 'Not allowed for this user');
+}
+
+// payment rows are kept by the database as long as the hostel exists (on delete restrict); a deliberate delete clears them
+async function clearPaymentRows(filter) {
+  for (const t of ['payment_refunds', 'payment_settlements', 'payment_transactions', 'payment_orders']) {
+    await rest(t, `?${filter}`, { method: 'DELETE' });
+  }
+}
+// logins whose every membership is inside what is being deleted (read BEFORE the delete: members cascade away with it)
+async function orphansAfter(filter, orgId, hostelId) {
+  const mine = await rest('members', `?${filter}&select=user_id`);
+  const out = [];
+  for (const id of [...new Set(mine.map(m => m.user_id))]) {
+    const [[p], all] = await Promise.all([rest('profiles', `?id=eq.${id}&select=is_super`), rest('members', `?user_id=eq.${id}&select=org_id,hostel_id`)]);
+    if (p && p.is_super) continue;
+    const inside = m => orgId ? m.org_id === orgId : m.hostel_id === hostelId;
+    if (all.every(inside)) out.push(id);
+  }
+  return out;
+}
+async function dropUsers(ids) {
+  let n = 0;
+  for (const id of ids) { try { await sb(`/auth/v1/admin/users/${id}`, { method: 'DELETE' }); n++; } catch (e) { if (!/not found/i.test(String(e.message))) { await rest('profiles', `?id=eq.${id}`, { method: 'DELETE' }).catch(() => {}); } } }
+  return n;
 }
 
 const actions = {
@@ -288,6 +309,28 @@ const actions = {
     await rest('profiles', `?id=eq.${b.user_id}`, { method: 'PATCH', body: { active: !!b.active } });
     await sb(`/auth/v1/admin/users/${b.user_id}`, { method: 'PUT', body: { ban_duration: b.active ? 'none' : '876000h' } });
     return { ok: true };
+  },
+
+  /* Deleting a client or a hostel removes everything of it from the database: the records (cascade), the payment
+   * rows that block a cascade, and the logins that belonged only to it, so their user IDs are free again.
+   * A login that also has access somewhere else, and any super admin, is never touched. */
+  async delete_org(b, me) {
+    if (!me.isSuper) throw new HttpError(403, 'Super admin only');
+    const org = uuid(b.org_id, 'client');
+    const hs = await rest('hostels', `?org_id=eq.${org}&select=id`);
+    const users = await orphansAfter(`org_id=eq.${org}`, org, null);
+    // every payment row carries its hostel_id (payment_refunds has no org_id), so clearing per hostel covers the client
+    for (const h of hs) await clearPaymentRows(`hostel_id=eq.${h.id}`);
+    await rest('orgs', `?id=eq.${org}`, { method: 'DELETE' });
+    return { ok: true, logins_removed: await dropUsers(users) };
+  },
+  async delete_hostel(b, me) {
+    if (!me.isSuper) throw new HttpError(403, 'Super admin only');
+    const h = uuid(b.hostel_id, 'hostel');
+    const users = await orphansAfter(`hostel_id=eq.${h}`, null, h);
+    await clearPaymentRows(`hostel_id=eq.${h}`);
+    await rest('hostels', `?id=eq.${h}`, { method: 'DELETE' });
+    return { ok: true, logins_removed: await dropUsers(users) };
   },
 
   async delete_user(b, me) {
@@ -959,58 +1002,58 @@ const actions = {
 
 // Sends ONE resident mail (already authorised by the caller): SMTP if configured, otherwise the mail provider.
 async function deliverResidentMail(b, me) {
-  const email = String(b.email || b.to || '').trim().toLowerCase();
-  if (!isValidEmail(email)) throw new HttpError(400, 'Valid recipient email required');
-  const subject = String(b.subject || 'Hostel Notice').slice(0, 150);
-  const messageId = 'email-' + crypto.randomBytes(8).toString('hex');
-  if (b.brand && typeof b.brand === 'object') b.html = Mail.brandMail({ ...b.brand, hostelName: b.brand.hostelName || b.hostel_name || b.hostelName });
-
-  // 1. Deliver via Direct SMTP (e.g. Gmail with App Password) if configured
-  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-    try {
-      const hostelName = b.hostel_name || b.hostelName || '';
-      const sender = hostelName ? `"${hostelName}" <${process.env.SMTP_USER}>` : process.env.SMTP_USER;
-      await sendViaSmtp({
-        host: process.env.SMTP_HOST || 'smtp.gmail.com',
-        port: +(process.env.SMTP_PORT || 465),
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-        from: sender,
-        to: email,
-        subject,
-        html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
-        text: b.text || ''
-      });
-      return { ok: true, status: 'sent', delivered: true, provider: 'smtp', messageId, recipient: email };
-    } catch (e) {
-      console.warn('Direct SMTP email delivery failed:', e.message);
-      throw new HttpError(400, `Email delivery failed via SMTP: ${e.message}`);
-    }
-  }
-
-  // 2. Otherwise the mail provider. Nothing is reported as sent unless it accepted the message.
-  // Deliver via the mail provider. Nothing is reported as sent unless Resend accepted it.
-  if (!process.env.RESEND_API_KEY) return { ok: true, status: 'not_configured', delivered: false, messageId, recipient: email };
-  const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>';
-  const hostelName = String(b.hostel_name || b.hostelName || '').replace(/["<>\r\n]/g, '').slice(0, 60);
-  let sender = fromConfig;
-  if (hostelName && fromConfig.includes('<')) {
-    const m = fromConfig.match(/<([^>]+)>/);
-    if (m) sender = `"${hostelName}" <${m[1]}>`;
-  } else if (hostelName && fromConfig.includes('@')) {
-    sender = `"${hostelName}" <${fromConfig}>`;
-  }
-  const replyTo = b.reply_to || b.replyTo || (me && me.email ? me.email : undefined);
-  let resp;
-  try {
-    resp = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: sender, to: [email], ...(replyTo ? { reply_to: replyTo } : {}), subject, html: b.html || `<p>${String(b.text || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</p>`, text: b.text || '' })
-    });
-  } catch (e) { throw new HttpError(502, 'Email service unreachable: ' + e.message); }
-  if (!resp.ok) { let m = ''; try { m = (await resp.json()).message || ''; } catch (e) {} throw new HttpError(502, 'Email provider rejected the message' + (m ? ': ' + m : '')); }
-  return { ok: true, status: 'sent', delivered: true, messageId, recipient: email };
+  const email = String(b.email || b.to || '').trim().toLowerCase();
+  if (!isValidEmail(email)) throw new HttpError(400, 'Valid recipient email required');
+  const subject = String(b.subject || 'Hostel Notice').slice(0, 150);
+  const messageId = 'email-' + crypto.randomBytes(8).toString('hex');
+  if (b.brand && typeof b.brand === 'object') b.html = Mail.brandMail({ ...b.brand, hostelName: b.brand.hostelName || b.hostel_name || b.hostelName });
+
+  // 1. Deliver via Direct SMTP (e.g. Gmail with App Password) if configured
+  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const hostelName = b.hostel_name || b.hostelName || '';
+      const sender = hostelName ? `"${hostelName}" <${process.env.SMTP_USER}>` : process.env.SMTP_USER;
+      await sendViaSmtp({
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: +(process.env.SMTP_PORT || 465),
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+        from: sender,
+        to: email,
+        subject,
+        html: b.html || `<p>${String(b.text || '').replace(/\n/g, '<br>')}</p>`,
+        text: b.text || ''
+      });
+      return { ok: true, status: 'sent', delivered: true, provider: 'smtp', messageId, recipient: email };
+    } catch (e) {
+      console.warn('Direct SMTP email delivery failed:', e.message);
+      throw new HttpError(400, `Email delivery failed via SMTP: ${e.message}`);
+    }
+  }
+
+  // 2. Otherwise the mail provider. Nothing is reported as sent unless it accepted the message.
+  // Deliver via the mail provider. Nothing is reported as sent unless Resend accepted it.
+  if (!process.env.RESEND_API_KEY) return { ok: true, status: 'not_configured', delivered: false, messageId, recipient: email };
+  const fromConfig = process.env.EMAIL_FROM || 'Sarvlekh <notifications@sarvlekh.in>';
+  const hostelName = String(b.hostel_name || b.hostelName || '').replace(/["<>\r\n]/g, '').slice(0, 60);
+  let sender = fromConfig;
+  if (hostelName && fromConfig.includes('<')) {
+    const m = fromConfig.match(/<([^>]+)>/);
+    if (m) sender = `"${hostelName}" <${m[1]}>`;
+  } else if (hostelName && fromConfig.includes('@')) {
+    sender = `"${hostelName}" <${fromConfig}>`;
+  }
+  const replyTo = b.reply_to || b.replyTo || (me && me.email ? me.email : undefined);
+  let resp;
+  try {
+    resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: sender, to: [email], ...(replyTo ? { reply_to: replyTo } : {}), subject, html: b.html || `<p>${String(b.text || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</p>`, text: b.text || '' })
+    });
+  } catch (e) { throw new HttpError(502, 'Email service unreachable: ' + e.message); }
+  if (!resp.ok) { let m = ''; try { m = (await resp.json()).message || ''; } catch (e) {} throw new HttpError(502, 'Email provider rejected the message' + (m ? ': ' + m : '')); }
+  return { ok: true, status: 'sent', delivered: true, messageId, recipient: email };
 }
 
 /* ---------------------------------------------------------------- document clean-up

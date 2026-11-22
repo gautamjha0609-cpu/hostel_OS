@@ -9,7 +9,7 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(self), geolocation=(self)',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://*.supabase.co https://api.bigdatacloud.net https://nominatim.openstreetmap.org https://api.cashfree.com https://sandbox.cashfree.com https://graph.facebook.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://cloudflareinsights.com https://api.bigdatacloud.net https://nominatim.openstreetmap.org https://api.cashfree.com https://sandbox.cashfree.com https://graph.facebook.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
   'X-Frame-Options': 'DENY',
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains'
 };
