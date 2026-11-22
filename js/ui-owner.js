@@ -2220,7 +2220,7 @@ const prow = o => `<div class="prow ${o.act ? 'tap' : ''}" ${o.act ? `role="butt
 PAGES.payments = {
   title: 'Payments', mod: 'payments',
   render() {
-    const tab = curTab('pay', 'dues'), claims = Store.all('claim').filter(c => c.status === 'pending');
+    const tab = (curTab('pay', 'dues') === 'deps' && !depositOn()) ? 'dues' : curTab('pay', 'dues'), claims = Store.all('claim').filter(c => c.status === 'pending');
     const dues = dueList(), ym = ymOf(today());
     const coll = sum(payments().filter(p => ymOf(p.date) === ym && p.mode !== 'deposit'), p => p.amount);
     let body = '';
@@ -2283,7 +2283,7 @@ PAGES.payments = {
         }); }).join('')}</div>` : `<div class="card">${empty('No checkouts yet')}</div>`}`;
     }
     return `${head('Payments', t('{c} collected in {m} · {d} pending', { c: inr(coll), m: fmtYM(ym), d: inr(sum(dues, x => x.due)) }), btn('Record cash payment', 'pay', '', 'primary', 'plus'))}
-      ${seg('pay', [['dues', 'Dues'], ['claims', 'UPI claims', claims.length], ['statement', 'Bank statement'], ['history', 'History'], ['deps', 'Deposits']], 'dues')}${body}`;
+      ${seg('pay', [['dues', 'Dues'], ['claims', 'UPI claims', claims.length], ['statement', 'Bank statement'], ['history', 'History'], ...(depositOn() ? [['deps', 'Deposits']] : [])], 'dues')}${body}`;
   },
 };
 A.importstmt = () => {
@@ -3195,22 +3195,55 @@ A.repres = () => { const R = repNow(); download(`residents-${R.from}-to-${R.to}.
 /* Notices: phone-notification style cards. Swipe a card sideways and it flies off and collapses (delete, with a few
  * seconds to undo). The buttons are still there for anyone who prefers tapping. */
 const relDay = d => { const n = Math.round((parse(today()) - parse(d)) / 864e5); return n <= 0 ? t('Today') : n === 1 ? t('Yesterday') : n < 7 ? t('{n} days ago', { n }) : fmtShort(d); };
+// Kinds of notice: the words in it decide the colour and icon, so a glance tells water-off from rent-due.
+const NT_KINDS = [
+  ['Important', /rule|warning|important|strict|curfew|gate|police|urgent|fine|penalty|last date|deadline/i, 'bad', 'alert'],
+  ['Payment', /rent|fee|pay|due|bill|₹|deposit|receipt|refund/i, 'ok', 'rupee'],
+  ['Maintenance', /water|tank|power|light|electric|lift|wifi|wi-fi|repair|maintenance|clean|pest|plumb|off from|shut/i, 'warn', 'wrench'],
+  ['Mess', /mess|food|meal|menu|dinner|lunch|breakfast|tiffin|kitchen|party|festival/i, 'info', 'utensils'],
+];
+const ntKind = n => { const x = `${n.title} ${n.body || ''}`; const k = NT_KINDS.find(z => z[1].test(x)); return k ? { l: k[0], c: k[2], i: k[3] } : { l: 'General', c: 'acc', i: 'megaphone' }; };
+// Ready-made notices: one tap fills the form, the owner only adjusts the details.
+const NT_TPL = [
+  ['Water supply off', 'Water supply will be off tomorrow from 10 AM to 1 PM for tank cleaning. Please store water in advance.', 'droplet'],
+  ['Power cut', 'There will be a power cut today from 2 PM to 4 PM for maintenance work. Please charge your phones early.', 'bolt'],
+  ['Rent reminder', 'This month\'s rent is due by the 5th. Please pay on time to avoid a late fee.', 'rupee'],
+  ['Mess timing', 'Mess timings are changing from tomorrow. Please check the new timings in the Meals section.', 'utensils'],
+  ['Special dinner', 'A special dinner is planned this Sunday. Please skip or confirm your meal in the app.', 'star'],
+  ['Cleaning day', 'Deep cleaning of all rooms will be done on Saturday. Please keep your valuables safe.', 'broom'],
+  ['Rules reminder', 'Please follow the hostel rules: gate closes at 10 PM, no loud music after 10 PM, keep common areas clean.', 'shield'],
+  ['Holiday', 'The hostel office will be closed on the public holiday. For emergencies call the warden.', 'cal'],
+];
 PAGES.notices = {
   title: 'Notices', mod: 'notices',
   render() {
-    const list = Store.all('notice').slice().sort((a, b) => (b.pinned - a.pinned) || (b.date > a.date ? 1 : -1));
-    const pins = list.filter(n => n.pinned), rest = list.filter(n => !n.pinned), wk = addDays(today(), -6);
-    const card = n => swipeCard({
-      act: 'swnotice', swRight: 'noticeedit', swLeft: 'noticedel', id: n.id, icon: n.pinned ? 'bookmark' : 'megaphone', tone: n.pinned ? 'tn3' : 'tn0', pinned: false, title: n.title, body: n.body, time: relDay(n.date),
-      actions: `${pillb('E-mail all', 'noticewa', `data-id="${n.id}"`, 'p-blue', 'mail')}${pillb(n.pinned ? 'Unpin' : 'Pin', 'noticepin', `data-id="${n.id}"`, 'p-orange', 'bookmark')}${pillb('Edit', 'noticeedit', `data-id="${n.id}"`, 'p-green', 'edit')}${pillb('Delete', 'noticedel', `data-id="${n.id}"`, 'p-red', 'trash')}`,
-    });
-    const sect = (title, xs) => xs.length ? `<div class="group-t">${esc(t(title))} · ${xs.length}</div><div class="swp-list fold-list">${xs.map(card).join('')}</div>` : '';
-    return `${head('Notices', '', btn('New notice', 'addnotice', '', 'primary', 'plus'))}
-      ${list.length ? `<div class="pstats">${kpi('Notices', list.length, t('residents see these'))}${kpi('Pinned', pins.length, t('stay on top'), pins.length ? 'warn' : '')}${kpi('This week', list.filter(n => n.date >= wk).length, '')}</div>
-      ${about('Swipe a notice right to edit it, or left to delete it (you are asked first).')}${sect('Pinned', pins)}${sect(pins.length ? 'Recent' : 'All notices', rest)}`
-      : `<div class="card">${empty('No notices yet', 'Post one and every resident sees it in the app.', btn('New notice', 'addnotice', '', 'primary', 'plus'))}</div>`}`;
+    const all = Store.all('notice').slice().sort((a, b) => (b.pinned - a.pinned) || (b.date > a.date ? 1 : -1)), wk = addDays(today(), -6);
+    const pins = all.filter(n => n.pinned), thisWk = all.filter(n => n.date >= wk), fl = curFlt('ntf', 'all');
+    const list = all.filter(n => fl === 'all' || (fl === 'pinned' ? n.pinned : fl === 'week' ? n.date >= wk : n.date < wk));
+    const tpl = `<div class="nt-tpl"><b>${esc(t('Quick post'))}</b><div class="nt-tpl-r">${NT_TPL.map((x, i) => `<button type="button" class="nt-chip" data-act="addnotice" data-tpl="${i}">${ico(x[2], 'xs')}<span>${esc(t(x[0]))}</span></button>`).join('')}</div></div>`;
+    const hero = `<section class="nt-hero"><div class="nt-hero-ic">${ico('megaphone')}</div><div class="nt-hero-t"><h2>${esc(t('Notice board'))}</h2><p>${all.length ? esc(t(all.length === 1 ? '1 notice · {r} residents see it in their app' : '{n} notices · {r} residents see them in their app', { n: all.length, r: activeRes().length })) : esc(t('Post a notice and every resident sees it in the app'))}</p>
+      <div class="nt-hero-st"><span>${ico('bookmark', 'xs')} ${pins.length} ${esc(t('pinned'))}</span><span>${ico('cal', 'xs')} ${thisWk.length} ${esc(t('this week'))}</span></div></div>${btn('New notice', 'addnotice', '', 'nt-new', 'plus')}</section>`;
+    const card = n => {
+      const k = ntKind(n), long = String(n.body || '').length > 150;
+      return `<div class="swp-wrap dual" data-swact="swnotice" data-swright="noticeedit" data-swleft="noticedel" data-id="${esc(n.id)}"><div class="swp-bg"><span>${ico('edit', 'sm')} ${esc(t('Edit'))}</span><span>${esc(t('Delete'))} ${ico('trash', 'sm')}</span></div>
+        <article class="swp nt nk-${k.c} ${n.pinned ? 'is-pin' : ''}"><i class="nt-bar"></i>
+          <div class="nt-top"><span class="nt-ic">${ico(k.i, 'sm')}</span><div class="nt-meta"><span class="nt-cat">${esc(t(k.l))}</span><span class="nt-date">${esc(relDay(n.date))}</span></div>${n.pinned ? `<span class="nt-pin">${ico('bookmark', 'xs')} ${esc(t('Pinned'))}</span>` : ''}</div>
+          <h3 class="nt-t">${esc(n.title)}</h3><p class="nt-b">${esc(n.body || '')}</p>${long ? `<button type="button" class="nt-more" data-act="ntexp">${esc(t('Read more'))}</button>` : ''}
+          <div class="nt-acts">
+            <button type="button" class="nt-a pillbtn p-blue" data-act="noticewa" data-id="${esc(n.id)}">${ico('mail', 'sm')}<span>${esc(t('E-mail all'))}</span></button>
+            <button type="button" class="nt-a pillbtn p-orange" data-act="noticepin" data-id="${esc(n.id)}">${ico('bookmark', 'sm')}<span>${esc(t(n.pinned ? 'Unpin' : 'Pin'))}</span></button>
+            <button type="button" class="nt-a pillbtn p-green" data-act="noticeedit" data-id="${esc(n.id)}">${ico('edit', 'sm')}<span>${esc(t('Edit'))}</span></button>
+            <button type="button" class="nt-a pillbtn p-red" data-act="noticedel" data-id="${esc(n.id)}">${ico('trash', 'sm')}<span>${esc(t('Delete'))}</span></button>
+          </div></article></div>`;
+    };
+    return `${head('Notices', '')}${hero}${tpl}
+      ${all.length ? `<div class="chips nt-flt">${[['all', 'All', all.length], ['pinned', 'Pinned', pins.length], ['week', 'This week', thisWk.length], ['old', 'Older', all.length - thisWk.length]].map(([k, l, n]) => `<button class="chip ${fl === k ? 'on' : ''}" data-act="flt" data-key="ntf" data-v="${k}">${esc(t(l))} <span class="chip-n">${n}</span></button>`).join('')}</div>
+        ${about('Swipe a notice right to edit it, or left to delete it (you are asked first).')}
+        <div class="swp-list nt-list">${list.map(card).join('') || `<div class="card muted">${esc(t('Nothing in this filter.'))}</div>`}</div>`
+      : `<div class="card">${empty('No notices yet', 'Tap a quick post above, or write your own.')}</div>`}`;
   },
 };
+A.ntexp = el => { const c = el.closest('.nt'); if (!c) return; const on = c.classList.toggle('open'); el.textContent = t(on ? 'Show less' : 'Read more'); };
 A.noticepin = el => { const n = Store.get(el.dataset.id); if (!n) return; Store.patch(n.id, { pinned: !n.pinned }); toast(t(n.pinned ? 'Unpinned' : 'Pinned on top')); render(); };
 A.noticeedit = el => { const n = Store.get(el.dataset.id); if (!n) return; formModal({
   title: 'Edit notice', submit: 'Save', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100, value: n.title }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500, value: n.body }, { name: 'pinned', label: 'Pin on top', type: 'checkbox', value: !!n.pinned }],
@@ -3222,10 +3255,10 @@ A.swnotice = el => {
   Store.remove(n.id); render();
   toast(t('Notice deleted'), 'ok', { label: 'Undo', run: () => { Store.put('notice', copy); render(); } });
 };
-A.addnotice = () => formModal({
-  title: 'New notice', submit: 'Post', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100 }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500 }, { name: 'pinned', label: 'Pin on top', type: 'checkbox' }],
+A.addnotice = el => { const tp = el && el.dataset && el.dataset.tpl != null ? NT_TPL[+el.dataset.tpl] : null; return formModal({
+  title: 'New notice', submit: 'Post', fields: [{ name: 'title', label: 'Title', required: true, full: true, maxlength: 100, value: tp ? t(tp[0]) : '' }, { name: 'body', label: 'Message', type: 'textarea', required: true, full: true, maxlength: 500, value: tp ? t(tp[1]) : '' }, { name: 'pinned', label: 'Pin on top', type: 'checkbox' }],
   onSubmit: v => { v.title = String(v.title || '').trim(); v.body = String(v.body || '').trim(); if (v.title.length < 3) return t('Give the notice a short title'); if (v.body.length < 5) return t('Write the message (a few words at least)'); Store.put('notice', { ...v, date: today() }); activeRes().forEach(r => notify({ to: 'res', resId: r.id, title: t('New notice'), body: v.title, link: 'r-help' })); toast('Notice posted'); },
-});
+}); };
 A.noticedel = el => confirmBox(t('Delete this notice?'), () => Store.remove(el.dataset.id), 'Delete', 'bad');
 A.noticewa = async el => { const n = Store.get(el.dataset.id); if (!n) return; const r = await sendNoticeMail(n); toast(r.status === 'already' ? t('This notice was already e-mailed to everyone.') : r.demo ? t('Demo hostel: nothing is really e-mailed.') : t('{n} residents e-mailed', { n: r.sent }), r.failed ? 'warn' : 'ok'); render(); };
 

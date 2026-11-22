@@ -405,7 +405,7 @@ PAGES.me = {
         ].join('')); })()}
       ${group('Preferences', [
         li({ icon: dark === 'dark' ? 'moon' : 'sun', ic: 'mute', t: t('Appearance'), end: t(dark === 'dark' ? 'Dark' : dark === 'light' ? 'Light' : 'Automatic'), act: 'theme' }),
-        li({ icon: 'download', ic: 'teal', t: t('Install app on this phone'), d: t('Add to home screen for one-tap access'), act: 'install' }),
+        ...(typeof Pwa !== 'undefined' && Pwa.standalone() ? [] : [li({ icon: 'download', ic: 'teal', t: t('Install app on this phone'), d: t('Add to home screen for one-tap access'), act: 'install' })]),
       ].join(''))}
       ${group('Security', [li({ icon: 'lock', ic: 'warn', t: t('Change password'), act: 'chpw' }), li({ icon: 'sync', ic: 'ok', t: t('Sync now'), d: Store.lastSync ? t('Last synced {t}', { t: ago(Store.lastSync) }) : '', act: 'syncnow' })].join(''))}
       <div style="margin-top:22px">${btn('Log out', 'logout', '', 'bad block', 'logout')}</div>
