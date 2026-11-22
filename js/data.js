@@ -740,7 +740,10 @@ const Store = {
   // they poll three times slower. Coming back to the app still syncs at once (visibilitychange in app.js).
   RES_POLL_MIN: 180e3,
   RES_POLL_MAX: 600e3,
+  // While the live channel (Realtime) is connected, every change already arrives by itself, so polling is only a safety net.
+  LIVE_POLL: 900e3,
   pollDelay() {
+    if (typeof Live !== 'undefined' && Live.up) return this.LIVE_POLL;
     const res = typeof isResident === 'function' && !!this.ctx && isResident();
     const lo = res ? this.RES_POLL_MIN : this.POLL_MIN, hi = res ? this.RES_POLL_MAX : this.POLL_MAX;
     return Math.min(hi, lo * Math.pow(2, Math.min(this.idleMisses, 3)));

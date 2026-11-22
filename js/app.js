@@ -912,7 +912,10 @@ document.addEventListener('visibilitychange', () => {
 });
 // Self-rescheduling instead of setInterval, so the gap can grow while nothing is happening.
 (function pollLoop() {
-  setTimeout(() => { softRefresh().finally(pollLoop); }, Store.pollDelay());
+  // A cheap local tick (no network) decides whether a poll is due, so the live channel dropping is noticed within a minute.
+  setTimeout(() => {
+    if (Date.now() - (Store.lastSync || 0) >= Store.pollDelay()) softRefresh().finally(pollLoop); else pollLoop();
+  }, 30e3);
 })();
 Store.onChange = (what, changed) => {
   if (what === 'online') { updateChrome(); return; }
