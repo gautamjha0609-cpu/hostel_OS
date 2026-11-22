@@ -35,7 +35,14 @@ PAGES['r-home'] = {
     const { feeNotices, generalNotices } = typeof residentNoticeBoard === 'function' ? residentNoticeBoard(r.id) : { feeNotices: [], generalNotices: [] };
     const task = hkTasks().filter(x => x.roomId === r.roomId && x.date >= today()).sort(by('date'))[0];
     const agr = typeof getActiveAgreement === 'function' ? getActiveAgreement(r.id) : null;
-    return `<div class="narrow stack">
+    const tab = curTab('rht', 'bills');
+    const paidTill = r.paidTill && r.paidTill >= today() ? `<div class="note ok">${ico('check', 'sm')} ${esc(t('Your rent is paid till {d}', { d: fmtDate(r.paidTill) }))}</div>` : '';
+    const payRow = `${pending.length ? `<div class="note">${ico('clock', 'sm')} ${esc(t('{a} payment waiting for owner to verify', { a: inr(sum(pending, c => c.amount)) }))}</div>` : ''}${due ? `<div class="rh-pay"><button class="btn primary" data-act="rcfpay">${ico('rupee', 'sm')} <span>${esc(t('Pay with UPI'))}</span></button><button class="btn" data-act="rqr">${ico('qr', 'sm')} <span>QR</span></button><button class="btn" data-act="rclaim">${ico('check', 'sm')} <span>${esc(t('I have paid'))}</span></button></div>` : ''}`;
+    const openCmp = Store.all('cmp').filter(c => c.resId === r.id && c.status !== 'resolved').length;
+    const quick = `<button type="button" class="rh-help" data-act="go" data-to="r-help"><span class="ic ok">${ico('chat')}</span><span class="rh-hb"><b>${esc(t('Help & notices'))}</b><small>${esc(openCmp ? t('{n} open complaints', { n: openCmp }) : t('Complaints, messages to the owner, notices'))}</small></span>${ico('chev', 'chev')}</button>`;
+    const todayParts = orgEnabled('mess') && next ? `<div class="card"><h3>${ico('utensils', 'sm')} ${esc(mealName(next.k))} · ${fmtTime(next.time)}<span class="sp"></span><a class="sm" href="/r-meals">${esc(t('All meals'))}</a></h3>${mealRow(r, today(), next)}</div>` : '' + orgEnabled('housekeeping') && task ? group('Room cleaning', li({ icon: 'broom', ic: task.status === 'done' ? 'ok' : 'info', t: task.date === today() ? t('Today') : fmtDate(task.date), d: `${task.schedName || ''}${task.time ? ' · ' + fmtTime(task.time) : ''} · ${t(HK_STAT[task.status][0])}`, act: 'go', attrs: 'data-to="r-clean"' })) : '';
+    const todayBlock = todayParts.trim() ? `<div class="group-t">${esc(t('Today'))}</div>${todayParts}` : '';
+    return `<div class="narrow stack rh">
       ${homeHero({
         name: r.name.split(' ')[0], sub: `${esc(hostelName())}<br>${esc(t('Room'))} ${esc(roomName(r.roomId))}-${esc(r.bed)}`,
         cards: [
@@ -48,12 +55,15 @@ PAGES['r-home'] = {
           { icon: 'broom', v: task ? esc(task.date === today() ? t('Today') : fmtShort(task.date)) : '-', l: 'Next cleaning' },
         ],
       })}
-      ${r.paidTill && r.paidTill >= today() ? `<div class="note ok">${ico('check', 'sm')} ${esc(t('Your rent is paid till {d}', { d: fmtDate(r.paidTill) }))}</div>` : ''}
-      <div class="hero ${due ? '' : 'ok'}"><div class="muted sm">${esc(t(due ? 'Amount due' : 'All paid'))}</div><div class="big">${inr(due)}</div>
-        ${pending.length ? `<div class="sm" style="margin-top:6px">${esc(t('{a} payment waiting for owner to verify', { a: inr(sum(pending, c => c.amount)) }))}</div>` : ''}
-        ${due ? `<div class="row" style="margin-top:14px"><button class="btn primary" data-act="rcfpay">${ico('rupee', 'sm')} ${esc(t('Pay with UPI'))}</button><button class="btn" data-act="rqr">${ico('qr', 'sm')} QR</button><button class="btn" data-act="rclaim">${ico('check', 'sm')} ${esc(t('I have paid'))}</button></div>` : ''}</div>
+      ${paidTill}
+      ${payRow}
+      ${quick}
+      ${todayBlock}
+      ${seg('rht', [['bills', 'Bills', open.length], ['room', 'My room'], ['notices', 'Notices', generalNotices.length]], 'bills')}
+      ${tab === 'bills' ? `
       ${(() => { const cl = Store.all('claim').filter(c => c.resId === r.id && (c.status !== 'approved' || (c.ts || '') > addDays(today(), -7))).sort(by('ts', -1)).slice(0, 4); return cl.length ? group('My payment confirmations', cl.map(c => li({ icon: c.status === 'approved' ? 'check' : c.status === 'rejected' ? 'alert' : 'clock', ic: c.status === 'approved' ? 'ok' : c.status === 'rejected' ? 'bad' : 'warn', t: `${inr(c.amount)} · UTR ${c.utr}`, d: c.status === 'rejected' ? `${t('Not verified')}: ${c.reason || ''}` : c.status === 'approved' ? t('Confirmed by the owner · receipt in Transaction history') : t('Waiting for the owner to check the UTR and screenshot'), end: badge(c.status === 'approved' ? 'Confirmed' : c.status === 'rejected' ? 'Rejected' : 'Waiting', c.status === 'approved' ? 'ok' : c.status === 'rejected' ? 'bad' : 'warn'), chev: false })).join('')) : ''; })()}
       ${feeNotices.some(fn => fn.balance > 0) ? group('Fees & Billing Notices', feeNotices.filter(fn => fn.balance > 0).map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok'), act: 'rviewinv', attrs: `data-id="${fn.invId || fn.id || ''}"` })).join('')) : (open.length ? group('Bill details', open.map(i => li({ icon: i.type === 'electricity' ? 'bolt' : i.type === 'laundry' ? 'shirt' : 'rupee', ic: invStat(i) === 'overdue' ? 'bad' : 'info', t: i.title, d: `${t('due')} ${fmtShort(i.due)}`, end: `<b>${inr(invBal(i))}</b>`, act: 'rviewinv', attrs: `data-id="${i.id}"` })).join('')) : '')}
+      ${group('Transaction history', Store.all('pay').filter(x => x.resId === r.id).sort(by('date', -1)).slice(0, 4).map(x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: `${fmtDate(x.date)} · ${x.mode.toUpperCase()}`, act: 'receipt', attrs: `data-id="${x.id}"` })).join(''))}` : tab === 'room' ? `
       ${orgEnabled('electricity') ? (() => {
         const elecCfg = S().elec || {};
         const scanRole = elecCfg.scanRole || 'both';
@@ -112,11 +122,8 @@ PAGES['r-home'] = {
       ${orgEnabled('electricity') ? (() => { const mine = resElecReadings(r.id); if (!mine.length) return ''; const m = mine[0], sh = m.shares.find(x => x.resId === r.id);
         return group('', li({ icon: 'bolt', ic: 'tn3', t: t('My electricity'), d: t('Last bill {a} · reading of {d}', { a: inr(sh.amount), d: fmtShort(m.date) }), act: 'relec', end: `<b>${inr(sh.amount)}</b>` })); })() : ''}
       ${agr ? group('Rental agreement', li({ icon: 'file', ic: 'ok', t: `${t('Rental agreement')} (v${agr.version})`, d: `${fmtDate(agr.startDate)} – ${fmtDate(agr.endDate)} · ${inr(agr.rent)}/mo`, act: 'agrview', attrs: `data-id="${agr.id}"` })) : ''}
-      ${orgEnabled('mess') && next ? `<div class="card"><h3>${ico('utensils', 'sm')} ${esc(mealName(next.k))} · ${fmtTime(next.time)}<span class="sp"></span><a class="sm" href="/r-meals">${esc(t('All meals'))}</a></h3>${mealRow(r, today(), next)}</div>` : ''}
-      ${orgEnabled('housekeeping') && task ? group('Room cleaning', li({ icon: 'broom', ic: task.status === 'done' ? 'ok' : 'info', t: task.date === today() ? t('Today') : fmtDate(task.date), d: `${task.schedName || ''}${task.time ? ' · ' + fmtTime(task.time) : ''} · ${t(HK_STAT[task.status][0])}`, act: 'go', attrs: 'data-to="r-clean"' })) : ''}
-      ${attOn() ? (() => { const m = attMonth(r.id, ymOf(today())); return group('My attendance', li({ icon: 'check', ic: m.absent ? 'warn' : 'ok', t: t('{n} days present', { n: m.present }), d: m.absent ? t('{n} days marked absent in {m}: {d}', { n: m.absent, m: fmtYM(ymOf(today())), d: m.absentDays.join(', ') }) : t('Nothing marked absent in {m}', { m: fmtYM(ymOf(today())) }), chev: false })); })() : ''}
-      ${generalNotices.length ? `<div class="group-t">${esc(t('General Notices'))}</div>${noticeCards(generalNotices.slice(0, 3), r)}` : ''}
-      ${group('Transaction history', Store.all('pay').filter(x => x.resId === r.id).sort(by('date', -1)).slice(0, 4).map(x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: `${fmtDate(x.date)} · ${x.mode.toUpperCase()}`, act: 'receipt', attrs: `data-id="${x.id}"` })).join(''))}
+      ${attOn() ? (() => { const m = attMonth(r.id, ymOf(today())); return group('My attendance', li({ icon: 'check', ic: m.absent ? 'warn' : 'ok', t: t('{n} days present', { n: m.present }), d: m.absent ? t('{n} days marked absent in {m}: {d}', { n: m.absent, m: fmtYM(ymOf(today())), d: m.absentDays.join(', ') }) : t('Nothing marked absent in {m}', { m: fmtYM(ymOf(today())) }), chev: false })); })() : ''}` : `
+      ${generalNotices.length ? noticeCards(generalNotices, r) : `<div class="card muted">${esc(t('No general notices in the last 30 days.'))}</div>`}`}
     </div>`;
   },
 };
@@ -519,11 +526,41 @@ PAGES['r-clean'] = {
     const r = meRes(); if (!r) return noRecord();
     const tasks = hkTasks().filter(x => x.roomId === r.roomId).sort(by('date', -1));
     const upcoming = [];
-    for (let i = 0; i < 14 && upcoming.length < 3; i++) { const d = addDays(today(), i); const s = Store.all('hks').find(x => (x.rooms || []).includes(r.roomId) && schedOn(x, d)); if (s) upcoming.push({ d, s }); }
+    for (let i = 0; i < 14 && upcoming.length < 4; i++) { const d = addDays(today(), i); const s = Store.all('hks').find(x => (x.rooms || []).includes(r.roomId) && schedOn(x, d)); if (s) upcoming.push({ d, s }); }
     const recent = tasks.filter(x => x.date <= today()).slice(0, 10);
-    return `<div class="narrow">${head('Room cleaning', `${t('Room')} ${esc(roomName(r.roomId))}`)}
-      ${group('Next cleaning', upcoming.map(u => li({ icon: 'cal', ic: 'info', t: u.d === today() ? t('Today') : fmtDate(u.d), d: `${u.s.name}${u.s.time ? ' · ' + fmtTime(u.s.time) : ''}` })).join('') || li({ icon: 'cal', ic: 'mute', t: t('No cleaning scheduled') }))}
-      ${group('Recent cleaning', recent.map(x => { const fb = Store.get(`hkf-${x.id}-${r.id}`); return `<div class="li hkrow"><span class="ic ${x.status === 'done' ? 'ok' : x.status === 'pending' ? '' : 'bad'}">${ico(x.status === 'done' ? 'check' : 'broom')}</span><span class="body"><span class="t">${x.date === today() ? esc(t('Today')) : fmtDate(x.date)} · ${esc(t(HK_STAT[x.status][0]))}</span><span class="d">${esc(x.staffName || '')}${x.reason ? ' · ' + esc(x.reason) : ''}${fb ? ' · ' + (fb.ok ? esc(t('You confirmed')) : esc(t('You reported an issue'))) : ''}</span></span><span class="end">${x.status === 'done' && !fb ? `${btn('Issue', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad', 'alert')}${btn('Satisfied', 'rfb', `data-id="${x.id}" data-ok="1"`, 'sm ok', 'check')}` : ''}${x.status === 'pending' && canMarkHk(x) ? btn('Mark cleaned', 'rhkdone', `data-id="${x.id}"`, 'sm ok') : ''}${(x.status === 'missed' || x.status === 'not_cleaned') && !fb ? btn('Report', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad') : ''}</span></div>`; }).join(''), t('Your feedback goes straight to the owner.'))}</div>`;
+    const ym = ymOf(today()), mon = tasks.filter(x => x.date <= today() && ymOf(x.date) === ym);
+    const nDone = mon.filter(x => x.status === 'done').length, nMiss = mon.filter(x => x.status === 'missed' || x.status === 'not_cleaned').length, nPend = mon.filter(x => x.status === 'pending').length;
+    const todays = tasks.find(x => x.date === today());
+    const next = upcoming[0];
+    // the big card: what is happening with this room's cleaning right now
+    let tone = 'info', ic = 'cal', title = t('No cleaning scheduled'), sub = t('Nothing is planned for your room in the next two weeks.'), act = '';
+    if (todays) {
+      const st = HK_STAT[todays.status] || HK_STAT.pending;
+      tone = st[1]; ic = todays.status === 'done' ? 'check' : todays.status === 'pending' ? 'broom' : 'alert';
+      title = todays.status === 'pending' ? t('Cleaning today') : t(st[0]) + ' · ' + t('Today');
+      sub = [todays.schedName || t('Room cleaning'), todays.time ? fmtTime(todays.time) : '', todays.staffName].filter(Boolean).join(' · ');
+      if (todays.status === 'pending' && canMarkHk(todays)) act = btn('Mark cleaned', 'rhkdone', `data-id="${todays.id}"`, 'ok', 'check');
+    } else if (next) {
+      ic = 'cal'; title = t('Next cleaning') + ' · ' + (next.d === today() ? t('Today') : fmtDate(next.d));
+      sub = [next.s.name || t('Room cleaning'), next.s.time ? fmtTime(next.s.time) : ''].filter(Boolean).join(' · ');
+    }
+    const stat = (n, l, c) => `<div class="rc-st ${c}"><b>${n}</b><span>${esc(t(l))}</span></div>`;
+    const up = upcoming.map(u => { const d = parse(u.d); return `<div class="rc-up"><div class="rc-date"><b>${d.getDate()}</b><span>${esc(MONTHS()[d.getMonth()])}</span></div><div class="rc-upt"><b>${u.d === today() ? esc(t('Today')) : esc(DAYS()[d.getDay()])}</b><span>${esc(u.s.time ? fmtTime(u.s.time) : (u.s.name || ''))}</span></div></div>`; }).join('');
+    const row = x => {
+      const fb = Store.get(`hkf-${x.id}-${r.id}`), st = HK_STAT[x.status] || HK_STAT.pending;
+      const acts = (x.status === 'done' && !fb ? `${btn('Issue', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad', 'alert')}${btn('Satisfied', 'rfb', `data-id="${x.id}" data-ok="1"`, 'sm ok', 'check')}` : '')
+        + (x.status === 'pending' && canMarkHk(x) ? btn('Mark cleaned', 'rhkdone', `data-id="${x.id}"`, 'sm ok', 'check') : '')
+        + ((x.status === 'missed' || x.status === 'not_cleaned') && !fb ? btn('Report', 'rfb', `data-id="${x.id}" data-ok="0"`, 'sm bad', 'alert') : '');
+      const meta = [x.staffName, x.reason, fb ? (fb.ok ? t('You confirmed') : t('You reported an issue')) : ''].filter(Boolean).join(' · ');
+      return `<div class="rc-row ${st[1]}"><span class="rc-ic">${ico(x.status === 'done' ? 'check' : x.status === 'pending' ? 'clock' : 'alert', 'sm')}</span><div class="rc-b"><div class="rc-t"><b>${x.date === today() ? esc(t('Today')) : esc(fmtDate(x.date))}</b><span class="badge ${st[1]}">${esc(t(st[0]))}</span></div>${meta ? `<div class="rc-m">${esc(meta)}</div>` : ''}${acts ? `<div class="rc-a">${acts}</div>` : ''}</div></div>`;
+    };
+    return `<div class="narrow stack rc">${head('Room cleaning', `${t('Room')} ${esc(roomName(r.roomId))}`)}
+      <section class="rc-hero t-${tone}"><span class="rc-hi">${ico(ic)}</span><div class="rc-ht"><small>${esc(t('Your room'))} ${esc(roomName(r.roomId))}</small><b>${esc(title)}</b><span>${esc(sub)}</span></div>${act ? `<div class="rc-ha">${act}</div>` : ''}</section>
+      <div class="rc-stats">${stat(nDone, 'Cleaned', 'ok')}${stat(nMiss, 'Missed', nMiss ? 'bad' : 'mute')}${stat(nPend, 'Pending', nPend ? 'info' : 'mute')}<small>${esc(t('This month'))}</small></div>
+      <div class="group-t">${esc(t('Coming up'))}</div>
+      ${up ? `<div class="rc-ups">${up}</div>` : `<div class="card muted">${esc(t('No cleaning scheduled'))}</div>`}
+      <div class="group-t">${withTip(esc(t('Recent cleaning')), tip(t('Your feedback goes straight to the owner.')))}</div>
+      ${recent.length ? `<div class="rc-list">${recent.map(row).join('')}</div>` : `<div class="card muted">${esc(t('Nothing here yet'))}</div>`}</div>`;
   },
 };
 A.rhkdone = el => { setHkStatus(el.dataset.id, 'done'); toast('Thanks — marked as cleaned'); render(); };
@@ -553,17 +590,21 @@ PAGES['r-help'] = {
     const { feeNotices, generalNotices } = typeof residentNoticeBoard === 'function' ? residentNoticeBoard(r.id) : { feeNotices: [], generalNotices: [] };
     const ph = S().pay.phone || (Store.hostel() || {}).phone;
     const myMsgs = rinfos().filter(x => x.resId === r.id).sort(by('ts', -1)).slice(0, 10);
-    return `<div class="narrow">${head('Help & notices', '', `${btn('Tell the owner', 'rtell', '', '', 'chat')}${btn('New complaint', 'rcmp', '', 'primary', 'plus')}`)}
-      ${orgEnabled('complaints') ? group('I told the owner', myMsgs.map(x => li({
-        icon: rinfoIcon(x.type), ic: x.status === 'seen' ? 'ok' : 'info',
-        t: rinfoLabel(x.type),
-        d: [x.text, x.from ? `${fmtShort(x.from)}${x.to && x.to !== x.from ? ' – ' + fmtShort(x.to) : ''}` : '', ago(x.ts), x.reply ? `${t('Owner')}: ${x.reply}` : ''].filter(Boolean).join(' · '),
-        end: x.status === 'seen' ? badge('Seen', 'ok') : badge('Sent'), chev: false,
-      })).join(''), t('Unwell, going home, back late — anything the owner should know.')) : ''}
-      ${orgEnabled('complaints') ? group('My complaints', mine.map(c => li({ icon: 'wrench', ic: c.status === 'resolved' ? 'ok' : 'warn', t: `${t(c.cat)} · ${t(c.status === 'resolved' ? 'Resolved' : 'Open')}`, d: `${c.text}${c.reply ? ' → ' + c.reply : ''} · ${ago(c.ts)}`, end: c.status === 'resolved' ? '' : btn('Mark resolved', 'rcmpdone', `data-id="${c.id}"`, 'sm ok', 'check') })).join('')) : ''}
-      ${feeNotices.some(fn => fn.balance > 0) ? group('Fees & Billing Notices', feeNotices.filter(fn => fn.balance > 0).map(fn => li({ icon: fn.status === 'paid' ? 'check' : (fn.status === 'overdue' ? 'alert' : 'rupee'), ic: fn.status === 'paid' ? 'ok' : (fn.status === 'overdue' ? 'bad' : 'warn'), t: `${fn.isCurrent ? '⭐ ' : ''}${fn.title}`, d: `${fn.body} · ${fmtDate(fn.date)}`, end: fn.balance > 0 ? `<b class="${fn.status === 'overdue' ? 'bad-t' : ''}">${inr(fn.balance)}</b>` : badge('Paid', 'ok') })).join('')) : ''}
-      <div class="group-t">${esc(t('General Notices (Active 30 Days)'))}</div>${noticeCards(generalNotices, r)}
-      ${ph ? group('Contact owner', `${li({ icon: 'phone', ic: 'ok', t: t('Call'), end: `<a class="btn sm" href="tel:${esc(ph)}">${esc(ph)}</a>` })}${li({ icon: 'wa', ic: 'ok', t: 'WhatsApp', end: `<a class="btn sm wa" href="${esc(waUrl(ph, `Hi, ${r.name} (${roomName(r.roomId)}) here. `))}" target="_blank" rel="noopener">${esc(t('Chat'))}</a>` })}`) : ''}</div>`;
+    const cmpOn = orgEnabled('complaints'), tab = cmpOn ? curTab('rhp', 'notices') : 'notices';
+    const openN = mine.filter(c => c.status !== 'resolved').length;
+    const fees = feeNotices.filter(fn => fn.balance > 0);
+    const hero = `<section class="hp-hero"><div class="hp-ht"><span class="hp-hi">${ico('chat')}</span><div><b>${esc(t('How can we help?'))}</b><span>${esc(t('Tell the owner or raise a complaint. You will see the reply here.'))}</span></div></div>
+      <div class="hp-acts">${btn('Tell the owner', 'rtell', '', '', 'chat')}${btn('New complaint', 'rcmp', '', 'primary', 'plus')}</div>
+      ${ph ? `<div class="hp-call"><a class="hp-pill" href="tel:${esc(ph)}">${ico('phone', 'sm')}<span>${esc(t('Call'))}</span></a><a class="hp-pill wa" href="${esc(waUrl(ph, `Hi, ${r.name} (${roomName(r.roomId)}) here. `))}" target="_blank" rel="noopener">${ico('wa', 'sm')}<span>WhatsApp</span></a><span class="hp-num">${esc(ph)}</span></div>` : ''}</section>`;
+    const note = n => `<div class="hp-card"><span class="hp-ci ${n.status === 'overdue' ? 'bad' : 'warn'}">${ico(n.status === 'overdue' ? 'alert' : 'rupee', 'sm')}</span><div class="hp-cb"><div class="hp-ct"><b>${esc(n.title)}</b><em class="${n.status === 'overdue' ? 'bad-t' : ''}">${inr(n.balance)}</em></div><p>${esc(n.body || '')}</p><small>${esc(fmtDate(n.date))}</small></div></div>`;
+    const cmpCard = c => `<div class="hp-card"><span class="hp-ci ${c.status === 'resolved' ? 'ok' : 'warn'}">${ico('wrench', 'sm')}</span><div class="hp-cb"><div class="hp-ct"><b>${esc(t(c.cat))}</b><span class="badge ${c.status === 'resolved' ? 'ok' : 'warn'}">${esc(t(c.status === 'resolved' ? 'Resolved' : 'Open'))}</span></div><p>${esc(c.text)}</p>${c.reply ? `<div class="hp-reply">${ico('chat', 'xs')}<span><b>${esc(t('Owner'))}</b> ${esc(c.reply)}</span></div>` : ''}<div class="hp-cf"><small>${esc(ago(c.ts))}</small>${c.status === 'resolved' ? '' : btn('Mark resolved', 'rcmpdone', `data-id="${c.id}"`, 'sm ok', 'check')}</div></div></div>`;
+    const msgCard = x => `<div class="hp-card"><span class="hp-ci ${x.status === 'seen' ? 'ok' : 'info'}">${ico(rinfoIcon(x.type), 'sm')}</span><div class="hp-cb"><div class="hp-ct"><b>${esc(rinfoLabel(x.type))}</b>${x.status === 'seen' ? badge('Seen', 'ok') : badge('Sent')}</div>${x.text ? `<p>${esc(x.text)}</p>` : ''}${x.from ? `<small>${esc(fmtShort(x.from))}${x.to && x.to !== x.from ? ' – ' + esc(fmtShort(x.to)) : ''}</small>` : ''}${x.reply ? `<div class="hp-reply">${ico('chat', 'xs')}<span><b>${esc(t('Owner'))}</b> ${esc(x.reply)}</span></div>` : ''}<div class="hp-cf"><small>${esc(ago(x.ts))}</small></div></div></div>`;
+    const nothing = m => `<div class="card muted">${esc(t(m))}</div>`;
+    const body = tab === 'notices'
+      ? `${fees.length ? `<div class="group-t">${esc(t('Fees & Billing Notices'))}</div><div class="hp-list">${fees.map(note).join('')}</div>` : ''}<div class="group-t">${esc(t('General Notices (Active 30 Days)'))}</div><div class="hp-notices">${noticeCards(generalNotices, r)}</div>`
+      : `<div class="group-t">${esc(t('My complaints'))}</div>${mine.length ? `<div class="hp-list">${mine.map(cmpCard).join('')}</div>` : nothing('No complaints yet')}<div class="group-t">${esc(t('I told the owner'))}</div>${myMsgs.length ? `<div class="hp-list">${myMsgs.map(msgCard).join('')}</div>` : nothing('Unwell, going home, back late — anything the owner should know.')}`;
+    return `<div class="narrow stack hp">${head('Help & notices')}${hero}
+      ${cmpOn ? seg('rhp', [['notices', 'Notices', generalNotices.length + fees.length], ['mine', 'My requests', openN]], 'notices') : ''}${body}</div>`;
   },
 };
 // Dates are optional: "I am unwell today" needs none, "away from the 4th to the 7th" does.

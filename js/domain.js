@@ -1253,6 +1253,16 @@ const WaGw = {
 function waOpen(phone, text, title = 'Send on WhatsApp') {
   if (!phone10(phone)) { toast('No mobile number saved', 'bad'); return; }
   const url = waUrl(phone, text);
+  // Installed app on an iPhone: a new window there becomes an empty in-app browser that stays open (a blank "Search or enter website name"
+  // page) when the owner comes back from WhatsApp. The whatsapp:// address opens the WhatsApp app directly and leaves nothing behind.
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (ios && typeof Pwa !== 'undefined' && Pwa.standalone && Pwa.standalone()) {
+    const p10 = phone10(phone), to = p10.length === 10 ? '91' + p10 : digits(phone);
+    location.href = `whatsapp://send?${to ? 'phone=' + to + '&' : ''}text=${encodeURIComponent(text)}`;
+    // WhatsApp not installed: nothing happens and this page stays in front, so offer the one-tap sheet instead
+    setTimeout(() => { if (!document.hidden) waSheet([{ phone, text, label: '' }], title); }, 1800);
+    return;
+  }
   let w = null;
   try { w = window.open(url, '_blank'); if (w) w.opener = null; } catch (e) { w = null; }
   if (!w) waSheet([{ phone, text, label: '' }], title);

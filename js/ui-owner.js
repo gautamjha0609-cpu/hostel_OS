@@ -2745,7 +2745,7 @@ A.readings = () => {
   formModal({
     title: 'Meter readings', submit: 'Create bills', wide: true,
     note: t('Leave a room empty to skip it. Free units ({f}) are deducted before charging ₹{r}/unit.', { f: S().elec.freeUnits, r: S().elec.rate }),
-    fields: [{ name: 'date', label: 'Reading date', type: 'date', value: today(), required: true }, { name: 'send', label: 'Send bills on WhatsApp after saving', type: 'checkbox', value: true }, ...fields],
+    fields: [{ name: 'date', label: 'Reading date', type: 'date', value: today(), required: true }, ...fields],
     preview: v => {
       let tot = 0, n = 0, highWarn = [];
       for (const r of list) {
@@ -2779,7 +2779,6 @@ A.readings = () => {
       for (const r of list) { const c = v['m_' + r.id]; if (isNaN(c)) continue; const m = addReading({ roomId: r.id, curr: c, date: v.date }); n++; if (m.status === 'billed') m.shares.forEach(s => touched.add(s.resId)); }
       if (!n) return 'Enter at least one reading';
       closeModal(); render(); toast(t('{n} readings saved', { n }));
-      if (v.send) { const q = [...touched].map(id => resById(id)).filter(r => r && resDue(r.id) > 0); if (q.length === 1) waOpen(q[0].phone, billMessage(q[0]).text, 'Send bill'); else if (q.length > 1) openBulkMail('bill', { only: new Set(q.map(r => r.id)) }); }
       return false;
     },
   });
