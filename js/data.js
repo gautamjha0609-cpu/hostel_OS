@@ -902,9 +902,9 @@ const DOC_KEEP_DAYS = 30;          // = doc_files_garbage() in schema.sql
 const Files = {
   ready: () => CLOUD,
 
-  async upload(file, kind, ownerId, type) {
+  async upload(file, kind, ownerId, type, hostelArg) {
     if (!CLOUD) throw new AppError('Documents need the cloud version. In demo mode nothing is uploaded.');
-    const hostelId = (Store.ctx || {}).hostelId;
+    const hostelId = hostelArg || (Store.ctx || {}).hostelId;
     if (!hostelId) throw new AppError('Open a hostel first');
     if (!/^[\w-]{1,64}$/.test(String(ownerId || ''))) throw new AppError('Save the record first');
     if (!file || !/^image\//.test(file.type)) throw new AppError('Upload a photo (JPG, PNG, WebP or HEIC). PDFs are not accepted.');

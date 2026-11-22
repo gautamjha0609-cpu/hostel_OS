@@ -1924,3 +1924,31 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:0;position:absolute;
 .rh .rh-help .ic{flex:none;width:40px;height:40px;border-radius:14px;display:grid;place-items:center;margin:0}
 .rh .rh-hb{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}.rh .rh-hb b{font-size:15px}.rh .rh-hb small{font-size:12.5px;color:var(--muted)}
 .rh .rh-help .chev{color:var(--muted);flex:none}
+
+/* ---------- Super admin: Police verification workspace ---------- */
+.pva-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.pva-imgs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.pva-imgs figure{margin:0;display:flex;flex-direction:column;gap:5px}
+.pva-imgs figcaption{font-size:12px;color:var(--muted);font-weight:600}
+.pva-imgs img{width:100%;min-height:96px;object-fit:contain;border-radius:14px;border:1px solid var(--line);background:var(--surface2)}
+
+/* ---------- Income, payables and ledger ---------- */
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.fgrid.f3{grid-template-columns:repeat(3,1fr)}
+.fhero{padding:14px 15px;border-radius:20px;background:var(--surface);border:1px solid color-mix(in srgb,var(--line) 70%,transparent);box-shadow:0 8px 22px rgba(20,30,60,.06);position:relative;overflow:hidden;min-width:0}
+.fhero::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--accent)}
+.fhero.ok::before{background:var(--ok)}.fhero.warn::before{background:var(--warn)}.fhero.bad::before{background:var(--bad)}
+.fh-l{font-size:11.5px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);font-weight:650}
+.fh-v{font-size:22px;font-weight:750;line-height:1.2;margin-top:3px;overflow-wrap:anywhere}
+.fhero.ok .fh-v{color:var(--ok)}.fhero.bad .fh-v{color:var(--bad)}
+.fh-s{font-size:12.5px;color:var(--muted);margin-top:2px}
+@media (max-width:420px){.fgrid.f3{grid-template-columns:1fr 1fr 1fr}.fgrid.f3 .fh-v{font-size:17px}.fgrid.f3 .fhero{padding:11px 10px 11px 13px}}
+.lg-k{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--fill);color:var(--muted)}
+.lg-k.income,.lg-k.resident{background:var(--ok-bg);color:var(--ok)}.lg-k.salary,.lg-k.advance{background:var(--info-bg);color:var(--info)}.lg-k.payable{background:var(--warn-bg);color:var(--warn)}.lg-k.expense{background:var(--bad-bg);color:var(--bad)}
+.fv{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.fv-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.fv-bar{height:8px;border-radius:999px;background:var(--fill);overflow:hidden}.fv-bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--ok),var(--accent))}
+.fv-g{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.fv-g>div{padding:10px 12px;border-radius:16px;background:var(--surface2);display:flex;flex-direction:column;gap:2px}
+.fv-g small{font-size:11.5px;color:var(--muted)}.fv-g b{font-size:16px}
+.info-t{color:var(--info)}

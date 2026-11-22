@@ -4259,6 +4259,7 @@ function genHkTasks(from = today(), days = 2) {
       if (!schedOn(s, date)) continue;
       for (const roomId of s.rooms || []) {
         const room = roomById(roomId); if (!room) continue;
+        if (!roomOccupied(room)) continue;    // nobody lives there: nothing to clean, nothing to miss
         const id = `hkt-${date}-${roomId}-${s.id}`, cur = Store.get(id);
         const staffId = (s.assign || {})[roomId] || s.staffId || null, st = staffById(staffId);
         if (cur) {
@@ -4273,8 +4274,11 @@ function genHkTasks(from = today(), days = 2) {
   if (n) { for (const s of hkStaff()) { const c = hkTasks().filter(x => x.date === from && x.staffId === s.id && x.status === 'pending').length; if (c) notify({ id: `ntf-hk-${s.id}-${from}`, to: 'staff', staffId: s.id, title: t('Today\'s cleaning'), body: t('{n} rooms assigned', { n: c }) }); } }
   return n;
 }
+const roomOccupied = room => !!room && bedsOf(room).some(b => b.status === 'occ');
 function markMissed() {
   const cut = S().hk.missedAfter, now = nowMinutes(); let n = 0;
+  // A room with nobody in it has no cleaning to miss: drop its unfinished tasks (and the "missed" alerts already raised for it).
+  for (const x of hkTasks()) if ((x.status === 'pending' || x.status === 'missed' || x.status === 'not_cleaned') && !x.ack && !roomOccupied(roomById(x.roomId))) Store.remove(x.id);
   for (const x of hkTasks()) if (x.status === 'pending' && (x.date < today() || (x.date === today() && now > minutes(cut)))) {
     Store.patch(x.id, { status: 'missed' }); n++;
   }
@@ -4543,6 +4547,91 @@ function salaryReminders(d0 = today()) {
   return out;
 }
 
+/* ===================================================================== income, payables and the money ledger
+ * Four kinds of money are kept apart and never mixed:
+ *   income   ('inc')  money coming in that is not a resident's bill: an old cot sold, newspaper scrap, a leftover belonging, anything else
+ *   expenses ('exp')  what the hostel spent (salaries and advances are written there by Staff & Salary)
+ *   payables ('cred') what the hostel still owes a vendor, a staff member or anyone else (an unpaid salary of the past, a loan from a shop)
+ *   advance           money paid or received ahead of the bill: it is shown as "advance", not as income or expense
+ * An income or a payable has a TOTAL and any number of instalments (date, amount, mode, note); pending = total - paid.
+ * Only money that really moved counts: income is what was received, not what was promised. */
+const INC_CATS = ['Old furniture / asset sale', 'Newspaper / scrap', 'Unclaimed belongings', 'Other income'];
+const incomeCats = () => ((S().incomeCats || []).length ? S().incomeCats : INC_CATS);
+const CRED_TYPES = [['vendor', 'Vendor / shop'], ['staff', 'Staff'], ['person', 'Person'], ['business', 'Business'], ['other', 'Other']];
+const instPaid = r => round2(sum((r && r.payments) || [], x => +x.amount || 0));
+function instState(r) {
+  const total = +(r && r.total) || 0, paid = instPaid(r), left = round2(total - paid);
+  return { total, paid, pending: Math.max(0, left), advance: Math.max(0, -left), status: paid <= 0 ? 'open' : left > 0.005 ? 'part' : left < -0.005 ? 'advance' : 'settled' };
+}
+const INST_BADGE = { open: ['Pending', 'warn'], part: ['Part paid', 'info'], settled: ['Settled', 'ok'], advance: ['Advance', 'info'] };
+// One more instalment on an income or a payable. More than what is pending is refused unless the caller says the extra is an advance.
+function addInstallment(kind, id, { amount, date = today(), mode = 'cash', note = '', allowAdvance = false } = {}) {
+  const r = Store.get(id); if (!r || r.kind !== kind) throw new Error(t('Record not found'));
+  const a = round2(+amount);
+  if (!(a > 0) || a > 100000000) throw new Error(t('Enter a valid amount'));
+  if (date > today()) throw new Error(t('The date cannot be in the future'));
+  const st = instState(r);
+  if (a > st.pending + 0.005 && !allowAdvance) throw new Error(st.pending > 0 ? t('Only {a} is pending. Reduce the amount, or tick that the extra is an advance.', { a: inr(st.pending) }) : t('This is already fully paid. Tick that it is an advance to record more.'));
+  const pay = { id: uid('ip-'), date, amount: a, mode, note: String(note || '').slice(0, 200), ts: nowIso() };
+  Store.put(kind, { ...r, payments: [...(r.payments || []), pay] });
+  return pay;
+}
+function removeInstallment(kind, id, payId) {
+  const r = Store.get(id); if (!r || r.kind !== kind) return false;
+  Store.put(kind, { ...r, payments: (r.payments || []).filter(x => x.id !== payId) });
+  return true;
+}
+function saveIncome({ id, cat, title, party, total, date, received, mode, note }) {
+  const tot = round2(+total);
+  if (!cat) throw new Error(t('Choose what kind of income this is'));
+  if (!(tot > 0) || tot > 100000000) throw new Error(t('Enter the total amount'));
+  if (date > today()) throw new Error(t('The date cannot be in the future'));
+  const got = received === '' || received == null ? 0 : round2(+received);
+  if (!(got >= 0)) throw new Error(t('Enter a valid amount'));
+  const cur = id ? Store.get(id) : null;
+  const rec = Store.put('inc', { ...(cur || {}), cat, title: String(title || '').trim(), party: String(party || '').trim(), total: tot, date, note: String(note || '').trim(), payments: cur ? cur.payments || [] : [] });
+  if (!cur && got > 0) addInstallment('inc', rec.id, { amount: got, date, mode, note: t('Received'), allowAdvance: true });
+  return Store.get(rec.id);
+}
+function savePayable({ id, party, ptype, title, total, date, due, paid, mode, note, staffId }) {
+  const tot = round2(+total);
+  if (!String(party || '').trim()) throw new Error(t('Enter who the money is payable to'));
+  if (!(tot > 0) || tot > 100000000) throw new Error(t('Enter the total amount'));
+  if (date > today()) throw new Error(t('The date cannot be in the future'));
+  const got = paid === '' || paid == null ? 0 : round2(+paid);
+  if (!(got >= 0)) throw new Error(t('Enter a valid amount'));
+  if (got > tot + 0.005) throw new Error(t('Paid so far cannot be more than the total'));
+  const cur = id ? Store.get(id) : null;
+  const rec = Store.put('cred', { ...(cur || {}), party: String(party).trim(), ptype: ptype || 'other', title: String(title || '').trim(), total: tot, date, due: due || '', note: String(note || '').trim(), ...(staffId ? { staffId } : {}), payments: cur ? cur.payments || [] : [] });
+  if (!cur && got > 0) addInstallment('cred', rec.id, { amount: got, date, mode, note: t('Paid so far') });
+  return Store.get(rec.id);
+}
+// Every movement of money between two dates, oldest first, each tagged with what it is, with a running balance.
+function finLedger(from, to) {
+  const rows = [], inR = d => d >= from && d <= to;
+  for (const p of payments()) if (!p.reversed && p.mode !== 'deposit' && inR(p.date)) rows.push({ k: 'resident', sign: 1, date: p.date, ts: p.ts || p.date, amount: +p.amount || 0, title: (resById(p.resId) || {}).name || t('Resident'), sub: t('Resident payment'), mode: p.mode, id: p.id });
+  for (const r of Store.all('inc')) for (const x of r.payments || []) if (inR(x.date)) rows.push({ k: 'income', sign: 1, date: x.date, ts: x.ts || x.date, amount: +x.amount || 0, title: r.title || t(r.cat), sub: [t(r.cat), r.party].filter(Boolean).join(' · '), mode: x.mode, id: r.id, note: x.note });
+  for (const e of Store.all('exp')) {
+    if (e.mode === 'credit' && !e.paid) continue;
+    const d = e.mode === 'credit' ? (e.paidOn || e.date) : e.date; if (!inR(d)) continue;
+    const s = e.ref ? Store.get(e.ref) : null, k = s && s.kind === 'sal' ? (s.isAdv || s.type === 'advance' ? 'advance' : 'salary') : 'expense';
+    rows.push({ k, sign: -1, date: d, ts: e.ts || d, amount: +e.amount || 0, title: e.vendor || t(e.cat), sub: k === 'expense' ? [t(e.cat), e.note].filter(Boolean).join(' · ') : (e.note || t(e.cat)), mode: e.mode, id: e.id });
+  }
+  for (const c of Store.all('cred')) for (const x of c.payments || []) if (inR(x.date)) rows.push({ k: 'payable', sign: -1, date: x.date, ts: x.ts || x.date, amount: +x.amount || 0, title: c.party, sub: [c.title, x.note].filter(Boolean).join(' · ') || t('Payable'), mode: x.mode, id: c.id });
+  rows.sort((a, b) => a.date.localeCompare(b.date) || String(a.ts).localeCompare(String(b.ts)));
+  let bal = 0; for (const r of rows) { bal = round2(bal + r.sign * r.amount); r.bal = bal; }
+  return rows;
+}
+function finTotals(rows) {
+  const by = k => round2(sum(rows.filter(r => r.k === k), r => r.amount));
+  const inn = round2(sum(rows.filter(r => r.sign > 0), r => r.amount)), out = round2(sum(rows.filter(r => r.sign < 0), r => r.amount));
+  return { in: inn, out, net: round2(inn - out), resident: by('resident'), income: by('income'), expense: by('expense'), salary: by('salary'), advance: by('advance'), payable: by('payable') };
+}
+// other income actually received between two dates (the resident payments are counted separately)
+const otherIncomeReceived = (from, to) => round2(sum(Store.all('inc'), r => sum((r.payments || []).filter(x => x.date >= from && x.date <= to), x => +x.amount || 0)));
+const payableOutstanding = () => round2(sum(Store.all('cred'), r => instState(r).pending));
+const incomePending = () => round2(sum(Store.all('inc'), r => instState(r).pending));
+
 /* ===================================================================== business insights
  * Everything the Insights tab shows is worked out here from records already on the device, so it is
  * testable without a screen: monthly trend, cost analysis, a 3-month forecast, a what-if scenario and
@@ -4558,7 +4647,7 @@ function bizInsights(n = 6) {
   const invs = invoices().filter(i => i.type !== 'deposit' && i.status !== 'void');
   const occNow = occupancy(), totalBeds = occNow.total || 0;
   const months = yms.map(ym => {
-    const income = sum(pays.filter(p => ymOf(p.date) === ym), p => p.amount);
+    const income = sum(pays.filter(p => ymOf(p.date) === ym), p => p.amount) + otherIncomeReceived(`${ym}-01`, `${ym}-31`);
     const expense = sum(exps.filter(x => ymOf(x.date) === ym), x => x.amount);
     const billed = sum(invs.filter(i => ymOf(i.date) === ym), i => i.amount);
     const collected = sum(invs.filter(i => ymOf(i.date) === ym), i => i.paid || 0);
@@ -4658,7 +4747,7 @@ function inboxItems() {
   }
   if (can('payments')) for (const d of Store.all('dep').filter(d => d.status === 'pending')) { const r = resById(d.resId); out.push({ k: 'dep', id: d.id, icon: 'wallet', ic: 'info', t: `${t('Deposit refund')} · ${inr(d.refund)}`, d: r ? r.name : '', ts: d._u }); }
   if (can('complaints')) for (const c of Store.all('cmp').filter(c => c.status === 'open')) { const r = resById(c.resId); out.push({ k: 'cmp', id: c.id, icon: 'wrench', ic: 'bad', t: `${t(c.cat)} · ${roomName(c.roomId)}`, d: `${r ? r.name + ': ' : ''}${c.text}`, ts: c.ts }); }
-  if (can('housekeeping') && isAdmin()) for (const x of hkTasks().filter(x => (x.status === 'missed' || x.status === 'not_cleaned') && !x.ack)) out.push({ k: 'hk', id: x.id, icon: 'broom', ic: 'warn', t: `${t(x.status === 'missed' ? 'Cleaning missed' : 'Room not cleaned')} · ${x.roomNo}`, d: `${fmtShort(x.date)} · ${x.staffName || t('Unassigned')}${x.reason ? ' · ' + x.reason : ''}`, ts: x._u });
+  if (can('housekeeping') && isAdmin()) for (const x of hkTasks().filter(x => (x.status === 'missed' || x.status === 'not_cleaned') && !x.ack && roomOccupied(roomById(x.roomId)))) out.push({ k: 'hk', id: x.id, icon: 'broom', ic: 'warn', t: `${t(x.status === 'missed' ? 'Cleaning missed' : 'Room not cleaned')} · ${x.roomNo}`, d: `${fmtShort(x.date)} · ${x.staffName || t('Unassigned')}${x.reason ? ' · ' + x.reason : ''}`, ts: x._u });
   if (can('payments')) { const due = monthlyBillsDue(); if (due.length) out.push({ k: 'mbill', id: 'mbill', icon: 'wa', ic: 'info', t: t('{n} monthly bills ready', { n: due.length }), d: t('Rent + electricity, once a month') + ' · ' + due.slice(0, 2).map(x => x.r.name).join(', ') + (due.length > 2 ? '…' : ''), ts: nowIso() }); }
   if (can('payments')) { const due = remindersDue(); if (due.length) out.push({ k: 'remind', id: 'remind', icon: 'wa', ic: 'ok', t: t('{n} payment reminders ready', { n: due.length }), d: due.slice(0, 3).map(x => x.r.name).join(', ') + (due.length > 3 ? '…' : ''), ts: nowIso() }); }
   if (can('residents') && isAdmin()) for (const a of pendingSignups()) out.push({ k: 'signup', id: a.id, icon: 'userplus', ic: 'ok', t: `${t('New resident application')} · ${a.name}`, d: [a.phone, a.college, (a.docs || []).length ? t('{n} documents', { n: a.docs.length }) : ''].filter(Boolean).join(' · '), ts: a.ts });
@@ -5452,9 +5541,9 @@ function maskAadhaar(str) {
  * them, where they will stay, and since when. No rent, deposit, dues, payments, electricity, attendance, e-mail, notes or other papers.
  * Every E-Mitra screen reads the resident only through this, so a field that is not listed here cannot show up there. */
 const PV_DOC_ALLOWED = /aadhaar|aadhar|id proof|identity|passport photo|photo|pan|voter|driving|passport/i;
-function pvSheet(r) {
-  const h = (typeof Store !== 'undefined' && Store.hostel && Store.hostel()) || {};
-  const room = r && r.roomId ? roomById(r.roomId) : null;
+function pvSheet(r, hostelArg, roomArg) {
+  const h = hostelArg || (typeof Store !== 'undefined' && Store.hostel && Store.hostel()) || {};
+  const room = roomArg !== undefined ? roomArg : (r && r.roomId ? roomById(r.roomId) : null);
   const docs = ((r && r.docs) || []).filter(d => PV_DOC_ALLOWED.test(String(d.type || ''))).map(d => ({ type: d.type, path: d.path || '' }));
   return {
     id: r.id,

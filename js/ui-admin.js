@@ -788,20 +788,150 @@ document.addEventListener('change', async e => {
   } catch (err) { e.target.checked = !want; toast(err.message, 'bad'); }
 });
 
-// Hostels whose police verification is done by us. One tap enters that hostel on the verification queue.
+/* ===================================================================== Police verification: the Sarvlekh team's own workspace
+ * Every resident of every hostel that has handed its police verification to us, in one list, inside the super admin panel.
+ * Nothing here switches into an owner's panel: the residents, rooms and papers are read straight from those hostels (the super admin
+ * is allowed to), the result is written back onto the resident's own record, and the owner sees the new status in their own panel at once. */
+adm.pv = adm.pv || { rows: null, loading: false, error: '' };
+const PVA_STATE = { none: ['Pending', 'bad'], submitted: ['Submitted', 'warn'], verified: ['Completed', 'ok'], rejected: ['Rejected', 'bad'] };
+const pvaState = r => { const s = (r.pv || {}).status; return s === 'verified' ? 'verified' : s === 'submitted' ? 'submitted' : s === 'rejected' ? 'rejected' : 'none'; };
+const pvaHostels = () => ((adm.data || {}).hostels || []).filter(h => h.modules && h.modules.pvPlatform === true);
+async function pvaFetch(hid, kind, id) {
+  if (!CLOUD) return (await Backend.pull(hid)).filter(x => x.kind === kind && !x.deleted && (!id || x.id === id));
+  if (id) return Backend.list('docs', `&hostel_id=eq.${hid}&id=eq.${encodeURIComponent(id)}&limit=1`);
+  const out = [];
+  for (let i = 0; i < 20; i++) { const b = await Backend.list('docs', `&hostel_id=eq.${hid}&kind=eq.${kind}&deleted=eq.false&order=id&limit=500&offset=${i * 500}`); out.push(...b); if (b.length < 500) break; }
+  return out;
+}
+async function admPvLoad(force) {
+  const p = adm.pv; if (p.loading || (p.rows && !force)) return;
+  p.loading = true; p.error = '';
+  try {
+    const rows = [];
+    for (const h of pvaHostels()) {
+      const [res, rooms] = await Promise.all([pvaFetch(h.id, 'res'), pvaFetch(h.id, 'room')]);
+      const rm = new Map(rooms.map(x => [x.id, x.data || {}]));
+      for (const x of res) {
+        const d = x.data || {};
+        if (d.status !== 'active' && d.status !== 'notice') continue;
+        if (d.pv && (d.pv.status === 'not_required' || d.pv.status === 'exempt')) continue;
+        const room = rm.get(d.roomId) || null;
+        rows.push({ ...d, id: x.id, _h: h, _room: room, _roomNo: room ? room.no : (d.roomNo || '') });
+      }
+    }
+    rows.sort((a, b) => String(a.checkIn || '').localeCompare(String(b.checkIn || '')) || String(a.name).localeCompare(String(b.name)));
+    p.rows = rows;
+  } catch (e) { p.error = e.message || 'Could not load'; }
+  p.loading = false; render();
+}
 PAGES['admin-pv'] = {
   title: 'Police verification', ...superOnly,
   render() {
     if (!adm.data) return admWait('Police verification');
     if (adm.data.error) return admErr();
-    const hs = (adm.data.hostels || []).filter(h => h.modules && h.modules.pvPlatform === true);
+    const hs = pvaHostels(), p = adm.pv;
+    if (!hs.length) return `${head('Police verification')}<div class="card">${empty('No hostel yet', 'Open a hostel, go to Modules and switch on "Police verification done by Sarvlekh team".')}</div>`;
+    if (p.error) return `${head('Police verification')}<div class="card">${empty('Could not load', p.error, btn('Try again', 'pvareload'))}</div>`;
+    if (!p.rows) { admPvLoad(); return `${head('Police verification')}<div class="stack"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`; }
+    const hsel = curFlt('pvh', ''), f = curFlt('pvf', 'none');
+    const scoped = p.rows.filter(r => (!hsel || r._h.id === hsel) && needle('pva', r.name, r.phone, r.idNo, r._h.name));
+    const n = k => scoped.filter(r => pvaState(r) === k).length;
+    const list = scoped.filter(r => f === 'all' || pvaState(r) === f);
+    const tabs = [['none', 'Pending'], ['submitted', 'Submitted'], ['verified', 'Completed'], ['rejected', 'Rejected'], ['all', 'All']];
+    const chip = ([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-act="flt" data-key="pvf" data-v="${k}">${esc(t(l))} <span class="chip-n">${k === 'all' ? scoped.length : n(k)}</span></button>`;
+    const row = r => { const [sl, sc] = PVA_STATE[pvaState(r)], pv = r.pv || {};
+      return li({ lead: avatar(r.name || '?'), t: r.name || '?', d: [hs.length > 1 ? r._h.name : '', r._roomNo ? `${t('Room')} ${r._roomNo}${r.bed ? '-' + r.bed : ''}` : '', r.checkIn ? t('since {d}', { d: fmtShort(r.checkIn) }) : '', pv.refNo ? `${t('Ref')} ${pv.refNo}` : ''].filter(Boolean).join(' · '), end: badge(sl, sc), act: 'pvaopen', attrs: `data-h="${r._h.id}" data-id="${esc(r.id)}"` }); };
     return `${head('Police verification', t('{n} hostels use the Sarvlekh team', { n: hs.length }))}
-      ${about('Switch this on for a hostel in its Modules tab. Open its queue here, verify each tenant on the police portal and save the acknowledgement: the owner sees the status and the papers in their own panel.')}
-      ${hs.length ? `<div class="group">${hs.map(h => li({ icon: 'shield', ic: 'info', t: h.name, d: [h.city, t('{n} residents', { n: (statOf(h.id) || {}).residents || 0 })].filter(Boolean).join(' · '), act: 'pvopen', attrs: `data-id="${h.id}"` })).join('')}</div>`
-        : `<div class="card">${empty('No hostel yet', 'Open a hostel, go to Modules and switch on "Police verification done by Sarvlekh team".')}</div>`}`;
+      <div class="mini-kpis"><div class="bad"><b>${n('none')}</b><span>${esc(t('Pending'))}</span></div><div><b>${n('submitted')}</b><span>${esc(t('Submitted'))}</span></div><div><b>${n('verified')}</b><span>${esc(t('Completed'))}</span></div><div><b>${n('rejected')}</b><span>${esc(t('Rejected'))}</span></div></div>
+      <div class="tool">${hs.length > 1 ? `<select class="hsel" data-flt="pvh" aria-label="${esc(t('Hostel'))}"><option value="">${esc(t('All hostels'))}</option>${hs.map(h => `<option value="${h.id}" ${h.id === hsel ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select>` : ''}${searchBox('pva', 'Search name, mobile, Aadhaar, hostel')}<span class="sp"></span>${btn('', 'pvareload', `aria-label="${esc(t('Refresh'))}"`, 'sm', 'sync')}</div>
+      <div class="chips">${tabs.map(chip).join('')}</div>
+      ${list.length ? `<div class="group">${list.slice(0, ui.lim.pva || 60).map(row).join('')}</div>${list.length > (ui.lim.pva || 60) ? `<div style="text-align:center;margin-top:12px">${btn('Show more', 'more', 'data-key="pva" data-per="60"', 'sm')}</div>` : ''}`
+        : `<div class="card">${empty(f === 'none' ? 'Verification queue clear' : 'Nothing here', f === 'none' ? 'No residents currently pending verification.' : 'No tenants in this list.')}</div>`}`;
   },
 };
-A.pvopen = async el => { await chooseContext('super:' + el.dataset.id); go('emitra'); };
+A.pvareload = () => { adm.pv.rows = null; adm.pv.error = ''; render(); };
+const pvaRes = el => ((adm.pv || {}).rows || []).find(r => r._h.id === el.dataset.h && r.id === el.dataset.id);
+const pvaLines = v => [...v.tenant, ...v.stay, ...v.property].filter(x => x[1]).map(x => `${t(x[0])}: ${x[1]}`).join(String.fromCharCode(10));
+function pvaDetail(r) {
+  const v = pvSheet(r, r._h, r._room), pv = r.pv || {}, st = pvaState(r), [sl, sc] = PVA_STATE[st];
+  const imgs = v.docs.map(d => ({ type: d.type, path: d.path })).filter(d => d.path);
+  if (pv.certificatePath && /\//.test(pv.certificatePath)) imgs.push({ type: t('Verification certificate'), path: pv.certificatePath });
+  const at = `data-h="${r._h.id}" data-id="${esc(r.id)}"`;
+  const body = `<div class="pva-top"><span class="badge ${sc}">${esc(t(sl))}</span><span class="muted sm">${esc(r._h.name)}${r._h.city ? ' · ' + esc(r._h.city) : ''}</span></div>
+    ${st !== 'none' ? `<div class="group"><div class="li noic"><span class="body"><span class="t">${esc(t('Police acknowledgement / reference number'))}: ${esc(pv.refNo || '-')}</span><span class="d">${esc([pv.date ? fmtDate(pv.date) : '', pv.verifiedBy ? t('by {w}', { w: pv.verifiedBy }) : '', pv.notes || ''].filter(Boolean).join(' · '))}</span></span></div></div>` : ''}
+    ${v.missing.length ? `<div class="note warn">${ico('alert', 'sm')} ${esc(t('Missing: {l}. Ask the owner to complete the resident record.', { l: v.missing.map(x => t(x)).join(', ') }))}</div>` : ''}
+    <div class="group-t">${esc(t('Tenant'))}</div><div class="pvg">${v.tenant.map(x => pvRow(x[0], x[1])).join('')}</div>
+    <div class="group-t">${esc(t('Stay'))}</div><div class="pvg">${v.stay.map(x => pvRow(x[0], x[0] === 'Staying since' && x[1] ? fmtDate(x[1]) : x[1])).join('')}</div>
+    <div class="group-t">${esc(t('Property'))}</div><div class="pvg">${v.property.map(x => pvRow(x[0], x[1])).join('')}</div>
+    <div class="group-t">${esc(t('Photo & Aadhaar'))}</div>
+    <div class="pva-imgs">${imgs.map((d, i) => `<figure><figcaption>${esc(d.type)}</figcaption><img data-pvaimg="${i}" alt="${esc(d.type)}"></figure>`).join('') || `<span class="muted sm">${esc(t('No ID papers uploaded yet.'))}</span>`}</div>`;
+  sheet(`${t('Police verification')} · ${r.name}`, body, { foot: `<button class="btn primary" data-act="pvaform" ${at}>${ico('shield', 'sm')} ${esc(t(st === 'none' ? 'Enter verification' : 'Update verification'))}</button><button class="btn" data-act="pvaprint" ${at}>${ico('file', 'sm')} ${esc(t('Print form'))}</button><button class="btn" data-act="pvacopyall" ${at}>${ico('copy', 'sm')} ${esc(t('Copy details'))}</button>` });
+  setTimeout(async () => {
+    for (const img of $$('img[data-pvaimg]')) {
+      const d = imgs[+img.dataset.pvaimg]; if (!d) continue;
+      try { img.src = await Files.url(d.path); img.style.cursor = 'zoom-in'; img.onclick = () => window.open(img.src, '_blank', 'noopener'); } catch (e) { img.alt = t('Could not load'); }
+    }
+  }, 50);
+}
+A.pvaopen = el => { const r = pvaRes(el); if (r) pvaDetail(r); };
+A.pvacopyall = async el => { const r = pvaRes(el); if (!r) return; try { await navigator.clipboard.writeText(pvaLines(pvSheet(r, r._h, r._room))); toast(t('Copied')); } catch (e) { toast(t('Could not copy'), 'bad'); } };
+// A one-page verification form with every detail, to print or save as PDF from the browser
+A.pvaprint = el => {
+  const r = pvaRes(el); if (!r) return;
+  const v = pvSheet(r, r._h, r._room), pv = r.pv || {};
+  const tbl = rows => `<table>${rows.map(x => `<tr><th>${esc(t(x[0]))}</th><td>${esc(x[0] === 'Staying since' && x[1] ? fmtDate(x[1]) : x[1] || '')}</td></tr>`).join('')}</table>`;
+  const w = window.open('', '_blank'); if (!w) return toast(t('Allow pop-ups to print the form'), 'bad');
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>${esc(t('Police verification'))} - ${esc(r.name)}</title><style>body{font:14px/1.5 system-ui,sans-serif;margin:32px;color:#111}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:22px 0 6px;text-transform:uppercase;letter-spacing:.05em;color:#555}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:7px 10px;text-align:left;vertical-align:top}th{width:38%;background:#f5f5f7;font-weight:600}.sig{display:flex;gap:40px;margin-top:60px}.sig div{flex:1;border-top:1px solid #111;padding-top:6px;font-size:12px}</style>
+    <h1>${esc(t('Police verification'))}</h1><div>${esc(r._h.name)}${r._h.address ? ' · ' + esc(r._h.address) : ''}</div>
+    <h2>${esc(t('Tenant'))}</h2>${tbl(v.tenant)}<h2>${esc(t('Stay'))}</h2>${tbl(v.stay)}<h2>${esc(t('Property'))}</h2>${tbl(v.property)}
+    ${pv.refNo ? `<h2>${esc(t('Police acknowledgement / reference number'))}</h2><div>${esc(pv.refNo)} · ${esc(pv.date ? fmtDate(pv.date) : '')}</div>` : ''}
+    <div class="sig"><div>${esc(t('Tenant signature'))}</div><div>${esc(t('Landlord signature'))}</div></div>`);
+  w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch (e) { /* the user can print from the window */ } }, 300);
+};
+A.pvaform = el => {
+  const r = pvaRes(el); if (!r) return;
+  const pv = r.pv || {};
+  formModal({
+    title: `${t('Police verification')} · ${r.name}`, submit: 'Save verification',
+    fields: [
+      { name: 'refNo', label: 'Police Acknowledgement / Reference Number', value: pv.refNo || '', required: true, maxlength: 60, hint: 'Reference number from the state police portal acknowledgement' },
+      { name: 'date', label: 'Verification Date', type: 'date', value: pv.date || today(), required: true },
+      { name: 'status', label: 'Verification Status', type: 'select', options: [{ v: 'submitted', l: 'Submitted / Acknowledgement Received' }, { v: 'verified', l: 'Completed: verified & certificate issued (e-mails the resident)' }, { v: 'rejected', l: 'Rejected by Police' }], value: pv.status && pv.status !== 'none' ? pv.status : 'submitted', required: true },
+      { name: 'file', label: 'Upload Police Acknowledgement / Certificate', type: 'file', accept: 'image/*' },
+      { name: 'notes', label: 'Notes', value: pv.notes || '', maxlength: 200 },
+    ],
+    onSubmit: async v => {
+      if (v.date > today()) return t('The date cannot be in the future');
+      if (String(v.refNo || '').trim().length < 4) return t('Enter the acknowledgement / reference number from the police portal');
+      if (v.status === 'rejected' && !String(v.notes || '').trim()) return t('Say why it was rejected, so the owner can fix it');
+      try {
+        let doc = null; const f = (v.file || [])[0];
+        if (f) doc = await Files.upload(f, 'res', r.id, 'Police Verification Certificate', r._h.id);
+        await pvaSave(r, { refNo: v.refNo, date: v.date, status: v.status, notes: v.notes, certificatePath: doc ? doc.path : pv.certificatePath || null }, doc);
+        toast(t('Police verification updated ✓'), 'ok'); render();
+      } catch (err) { return err.message || String(err); }
+    },
+  });
+};
+// Writes the result onto the resident's own record (read fresh first, so what the owner changed in the meantime is kept) and leaves a line in that hostel's activity log.
+async function pvaSave(r, rec, doc) {
+  const hid = r._h.id, cur = (await pvaFetch(hid, 'res', r.id))[0];
+  if (!cur) throw new Error(t('This resident was not found any more'));
+  const data = { ...(cur.data || {}) }, was = (data.pv || {}).status;
+  const status = rec.status === 'verified' ? 'verified' : rec.status === 'rejected' ? 'rejected' : 'submitted';
+  const me = Store.me || {};
+  data.pv = { ...(data.pv || {}), refNo: String(rec.refNo).trim(), date: rec.date, certificatePath: rec.certificatePath, notes: String(rec.notes || '').trim(), status, submittedAt: nowIso(), changedOn: today(), verifiedBy: me.full_name || 'Sarvlekh team' };
+  if (doc) data.docs = [...(data.docs || []).filter(d => d.type !== doc.type), doc];
+  await Backend.push([{ hostel_id: hid, id: cur.id, kind: 'res', data, res_id: cur.res_id || null, room_id: cur.room_id || data.roomId || null, day: null, deleted: false }]);
+  const lid = uid('log-');
+  await Backend.push([{ hostel_id: hid, id: lid, kind: 'log', data: { date: today(), ts: nowIso(), rule: 'police_verification', msg: `Police verification for ${data.name}: ${status} (Ref: ${data.pv.refNo})`, actor: { id: me.id, name: me.full_name, role: 'super' }, meta: { resId: cur.id, refNo: data.pv.refNo, status } }, res_id: null, room_id: null, day: today(), deleted: false }]).catch(() => {});
+  Object.assign(r, { pv: data.pv, docs: data.docs });
+  if (status === 'verified' && was !== 'verified' && data.email && isValidEmail(data.email)) {
+    const lines = [`${t('Police verification')}: ${t('Completed')}`, `${t('Reference / Ack No.')}: ${data.pv.refNo}`, `${t('Date')}: ${fmtDate(data.pv.date)}`, `${t('Hostel / PG')}: ${r._h.name}`, r._roomNo ? `${t('Room')}: ${r._roomNo}${data.bed ? '-' + data.bed : ''}` : '', data.checkIn ? `${t('Staying since')}: ${fmtDate(data.checkIn)}` : ''].filter(Boolean).join('\n');
+    const brand = { hostelName: r._h.name || 'Hostel', title: t('Police verification completed'), headline: t('Your police verification is complete'), recipientName: data.name, intro: t('Your police verification for {h} has been completed. Details and your rental agreement are below.', { h: r._h.name || 'your hostel' }), bodyLines: lines, amountDue: 0, date: fmtDate(today()) };
+    try { await Backend.admin('send_resident_email', { to: data.email, subject: `${r._h.name || 'Hostel'} · ${t('Police verification completed')}`, html: renderBrandedEmailHtml(brand), brand, text: lines, res_id: cur.id, hostel_id: hid, hostel_name: r._h.name }); } catch (e) { console.warn('PV confirmation mail:', e.message); }
+  }
+}
 
 PAGES['admin-users'] = {
   title: 'All users', ...superOnly,

@@ -2926,6 +2926,7 @@ const expIc = c => `<span class="prow-ic ${tone(c)}">${ico(EXP_IC[c] || 'tag', '
 PAGES.expenses = {
   title: 'Expenses', mod: 'expenses',
   render() {
+    const finTab = curTab('fin', 'exp'); if (finTab !== 'exp') return finBody(finTab);
     const ym = ui.flt.expm || ymOf(today()), cat = curFlt('expc', 'all');
     const all = Store.all('exp'), monthList = all.filter(x => ymOf(x.date) === ym);
     const list = monthList.filter(x => (cat === 'all' || (cat === 'credit' ? x.mode === 'credit' && !x.paid : x.cat === cat)) && needle('exp', x.cat, x.vendor, x.note)).sort(by('date', -1));
@@ -2949,7 +2950,7 @@ PAGES.expenses = {
       s: esc([fmtShort(x.date), x.vendor, x.note].filter(Boolean).join(' · ')),
       tags: x.mode === 'credit' ? (x.paid ? badge('Credit · paid', 'ok') : `${badge('Unpaid credit', 'warn')}${pillb('Mark paid', 'exppaid', `data-id="${x.id}"`, 'ok')}`) : '', amt: inr(x.amount)
     })).join('')}</div>` : '';
-    return `${head('Expenses', '', btn('Add expense', 'addexp', '', 'primary', 'plus'))}
+    return `${head('Expenses', '', btn('Add expense', 'addexp', '', 'primary', 'plus'))}${finTabs()}
       ${hero}${monthList.length || credit.length ? stats : ''}${breakdown}
       <div class="tool"><select class="hsel" data-flt="expm" aria-label="${esc(t('Month'))}">${months.map(m => `<option value="${m}" ${m === ym ? 'selected' : ''}>${fmtYM(m)}</option>`).join('')}</select>${searchBox('exp', 'Search vendor or note')}</div>
       <div class="tool">${chips('expc', [['all', 'All'], ['credit', 'Unpaid credit'], ...S().expenseCats.filter(c => byCat[c]).map(c => [c, c])], 'all')}</div>
@@ -2991,6 +2992,127 @@ A.editexp = el => {
   expenseForm(x);
 };
 A.exppaid = el => { Store.patch(el.dataset.id, { paid: true, paidOn: today() }); toast('Marked paid'); render(); };
+
+/* ===================================================================== income, payables and ledger (tabs of the Expenses page) */
+const finTabs = () => seg('fin', [['exp', 'Expenses'], ['inc', 'Income'], ['pay', 'Payables'], ['led', 'Ledger']], 'exp');
+const FIN_MODES = () => [{ v: 'cash', l: t('Cash') }, { v: 'upi', l: 'UPI' }, { v: 'bank', l: t('Bank transfer') }, { v: 'cheque', l: t('Cheque') }];
+const finBadge = st => { const b = INST_BADGE[st]; return badge(b[0], b[1]); };
+const finHero = (label, value, sub, tn) => `<div class="fhero ${tn || ''}"><div class="fh-l">${esc(label)}</div><div class="fh-v">${value}</div><div class="fh-s">${sub || ''}</div></div>`;
+function finBody(tab) {
+  const ym = ui.flt.finm || ymOf(today());
+  const months = [...new Set([ymOf(today()), ...Store.all('inc').map(x => ymOf(x.date)), ...Store.all('cred').map(x => ymOf(x.date)), ...Store.all('exp').map(x => ymOf(x.date))])].sort().reverse().slice(0, 12);
+  const monthSel = `<select class="hsel" data-flt="finm" aria-label="${esc(t('Month'))}">${months.map(m => `<option value="${m}" ${m === ym ? 'selected' : ''}>${fmtYM(m)}</option>`).join('')}</select>`;
+  const inMonth = d => ymOf(d) === ym;
+  if (tab === 'inc') {
+    const all = Store.all('inc'), recvMonth = round2(sum(all, r => sum((r.payments || []).filter(x => inMonth(x.date)), x => x.amount)));
+    const f = curFlt('incf', 'all'), list = all.filter(r => (f === 'open' ? instState(r).pending > 0 : inMonth(r.date)) && needle('inc', r.title, r.party, r.cat)).sort(by('date', -1));
+    const pend = incomePending();
+    const rows = list.length ? `<div class="group">${list.map(r => { const s = instState(r); return prow({ act: 'incview', attrs: `data-id="${r.id}"`, lead: `<span class="prow-ic ${tone(r.cat)}">${ico('rupee', 'sm')}</span>`, t: esc(r.title || t(r.cat)), s: esc([t(r.cat), r.party, fmtShort(r.date)].filter(Boolean).join(' · ')), tags: finBadge(s.status), amt: inr(s.total), ms: s.advance > 0 ? `${t('Advance')} ${inr(s.advance)}` : s.pending > 0 ? `${t('Pending')} ${inr(s.pending)}` : `${t('Received')} ${inr(s.paid)}` }); }).join('')}</div>` : `<div class="card">${empty(f === 'open' ? 'Nothing is waiting to be received' : 'No income recorded', f === 'open' ? 'Every income entry is fully received.' : 'Sold an old cot, newspapers or kept belongings? Record it with Add income.')}</div>`;
+    return `${head('Income & payables', t('Money that comes in and money you owe'), btn('Add income', 'addinc', '', 'primary', 'plus'))}${finTabs()}
+      <div class="fgrid">${finHero(t('Received in {m}', { m: fmtYM(ym) }), inr(recvMonth), t('{n} entries', { n: all.filter(r => inMonth(r.date) || (r.payments || []).some(x => inMonth(x.date))).length }), 'ok')}${finHero(t('Still to receive'), inr(pend), pend ? t('{n} pending', { n: all.filter(r => instState(r).pending > 0).length }) : t('all received'), pend ? 'warn' : '')}</div>
+      <div class="tool">${monthSel}${searchBox('inc', 'Search item or buyer')}</div><div class="tool">${chips('incf', [['all', 'This month'], ['open', 'Pending']], 'all')}</div>${rows}
+      ${about('Income here is money that is not a resident\'s bill. Only what you have really received counts as income; the rest stays "pending" until it comes in.')}`;
+  }
+  if (tab === 'pay') {
+    const all = Store.all('cred'), out = payableOutstanding(), paidMonth = round2(sum(all, r => sum((r.payments || []).filter(x => inMonth(x.date)), x => x.amount)));
+    const f = curFlt('payf', 'open'), list = all.filter(r => (f === 'open' ? instState(r).pending > 0 : f === 'done' ? instState(r).pending <= 0 : true) && needle('cred', r.party, r.title)).sort((a, b) => (instState(b).pending > 0) - (instState(a).pending > 0) || String(a.due || '9999').localeCompare(String(b.due || '9999')));
+    const rows = list.length ? `<div class="group">${list.map(r => { const s = instState(r), late = r.due && r.due < today() && s.pending > 0; return prow({ act: 'credview', attrs: `data-id="${r.id}"`, lead: avatar(r.party), t: esc(r.party), s: esc([r.title, (CRED_TYPES.find(x => x[0] === r.ptype) || [0, ''])[1] && t((CRED_TYPES.find(x => x[0] === r.ptype) || [0, ''])[1]), r.due ? t('due {d}', { d: fmtShort(r.due) }) : ''].filter(Boolean).join(' · ')), tags: `${finBadge(s.status)}${late ? badge('Overdue', 'bad') : ''}`, amt: s.pending > 0 ? inr(s.pending) : inr(s.total), ms: s.pending > 0 ? `${t('of')} ${inr(s.total)}` : s.advance > 0 ? `${t('Advance')} ${inr(s.advance)}` : t('Settled') }); }).join('')}</div>` : `<div class="card">${empty(f === 'open' ? 'You owe nothing right now' : 'No payables', 'Add a vendor, a staff member or anyone you have to pay, and pay it in as many instalments as you like.')}</div>`;
+    return `${head('Income & payables', t('Money that comes in and money you owe'), btn('Add payable', 'addcred', '', 'primary', 'plus'))}${finTabs()}
+      <div class="fgrid">${finHero(t('You owe'), inr(out), out ? t('{n} open', { n: all.filter(r => instState(r).pending > 0).length }) : t('all clear'), out ? 'bad' : 'ok')}${finHero(t('Paid in {m}', { m: fmtYM(ym) }), inr(paidMonth), '', '')}</div>
+      <div class="tool">${monthSel}${searchBox('cred', 'Search name or reason')}</div><div class="tool">${chips('payf', [['open', 'Outstanding'], ['done', 'Settled'], ['all', 'All']], 'open')}</div>${rows}
+      ${about('A payable is money you still owe: a vendor, a staff member\'s old salary, a loan. Pay it in instalments; the pending amount goes down each time and the payment shows in the Ledger.')}`;
+  }
+  // ledger
+  const first = ym + '-01', last = ym + '-' + String(daysIn(ym)).padStart(2, '0'), rowsAll = finLedger(first, last), tt = finTotals(rowsAll), f = curFlt('ledf', 'all');
+  const list = rowsAll.filter(r => (f === 'all' || (f === 'in' ? r.sign > 0 : f === 'out' ? r.sign < 0 : r.k === f)) && needle('led', r.title, r.sub)).slice().reverse();
+  const IC = { resident: 'user', income: 'rupee', expense: 'cart', salary: 'users', advance: 'wallet', payable: 'clock' }, LB = { resident: 'Resident', income: 'Income', expense: 'Expense', salary: 'Salary', advance: 'Advance', payable: 'Payable' };
+  const rows = list.length ? `<div class="group">${list.map(r => prow({ lead: `<span class="prow-ic ${r.sign > 0 ? 'tn1' : 'tn3'}">${ico(IC[r.k] || 'tag', 'sm')}</span>`, t: esc(r.title), s: esc([fmtShort(r.date), r.sub, r.mode ? (r.mode || '').toUpperCase() : ''].filter(Boolean).join(' · ')), tags: `<span class="lg-k ${r.k}">${esc(t(LB[r.k]))}</span>`, amt: `<b class="${r.sign > 0 ? 'ok-t' : 'bad-t'}">${r.sign > 0 ? '+' : '−'} ${inr(r.amount)}</b>`, ms: `${t('Balance')} ${inr(r.bal)}` })).join('')}</div>` : `<div class="card">${empty('No transactions', 'Nothing moved in this month.')}</div>`;
+  return `${head('Income & payables', t('Money that comes in and money you owe'), btn('Download', 'ledcsv', '', '', 'download'))}${finTabs()}${monthBar(ym, 'finmon')}
+    <div class="fgrid f3"><div class="fhero ok"><div class="fh-l">${esc(t('Money in'))}</div><div class="fh-v">${inr(tt.in)}</div></div><div class="fhero warn"><div class="fh-l">${esc(t('Money out'))}</div><div class="fh-v">${inr(tt.out)}</div></div><div class="fhero ${tt.net >= 0 ? 'ok' : 'bad'}"><div class="fh-l">${esc(t('Net'))}</div><div class="fh-v">${tt.net < 0 ? '−' : ''}${inr(Math.abs(tt.net))}</div></div></div>
+    <div class="tool">${searchBox('led', 'Search name or note')}</div>
+    <div class="chips">${[['all', 'All'], ['in', 'In'], ['out', 'Out'], ['resident', 'Resident'], ['income', 'Income'], ['expense', 'Expense'], ['salary', 'Salary'], ['advance', 'Advance'], ['payable', 'Payable']].map(([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-act="flt" data-key="ledf" data-v="${k}">${esc(t(l))}</button>`).join('')}</div>${rows}
+    ${about('Every rupee that moved, oldest to newest within the month, tagged by what it is. Advances, salaries, expenses, income and payments to creditors are never mixed up. Money you only promised, or bills you have not paid yet, are not in here until they move.')}`;
+}
+A.finmon = el => { ui.flt.finm = el.dataset.m; render(); };
+A.ledcsv = () => { const ym = ui.flt.finm || ymOf(today()), rows = finLedger(ym + '-01', ym + '-' + String(daysIn(ym)).padStart(2, '0')); download(`ledger-${ym}.csv`, csv([['Date', 'Type', 'Name', 'Detail', 'Mode', 'In', 'Out', 'Balance'], ...rows.map(r => [r.date, r.k, r.title, r.sub, r.mode || '', r.sign > 0 ? r.amount : '', r.sign < 0 ? r.amount : '', r.bal])]), 'text/csv'); };
+
+/* ---- income ---- */
+function incForm(x) {
+  const e = x || {};
+  formModal({
+    title: x ? 'Edit income' : 'Add income',
+    fields: [
+      { name: 'cat', label: 'What kind of income', type: 'select', options: incomeCats().map(c => ({ v: c, l: t(c) })), value: e.cat, required: true },
+      { name: 'title', label: 'What was it for', value: e.title, maxlength: 80, placeholder: 'e.g. 4 old cots, March newspapers' },
+      { name: 'party', label: 'Received from', value: e.party, maxlength: 80, placeholder: 'Buyer or person' },
+      { name: 'total', label: 'Total amount (₹)', type: 'number', min: 1, max: 100000000, value: e.total, required: true },
+      { name: 'date', label: 'Date', type: 'date', value: e.date || today(), required: true },
+      ...(x ? [] : [{ name: 'received', label: 'Received now (₹)', type: 'number', min: 0, value: '', placeholder: 'Leave empty if nothing yet', hint: t('Less than the total = part received. The rest stays pending.') }, { name: 'mode', label: 'Received by', type: 'select', options: FIN_MODES(), value: 'cash' }]),
+      { name: 'note', label: 'Note', value: e.note, maxlength: 200, full: true },
+    ],
+    danger: x ? { label: 'Delete', run: () => confirmBox(t('Delete this income and its payments?'), () => { Store.remove(e.id); closeModal(); toast('Deleted'); render(); }, 'Delete', 'bad') } : null,
+    onSubmit: v => { try { saveIncome({ id: e.id, ...v }); } catch (err) { return err.message; } toast('Income saved'); render(); },
+  });
+}
+A.addinc = () => incForm();
+A.incedit = el => incForm(Store.get(el.dataset.id));
+A.incview = el => finView('inc', el.dataset.id);
+
+/* ---- payables ---- */
+function credForm(x) {
+  const e = x || {};
+  formModal({
+    title: x ? 'Edit payable' : 'Add payable',
+    fields: [
+      { name: 'party', label: 'Payable to', value: e.party, required: true, maxlength: 80, placeholder: 'Vendor, staff, person or business' },
+      { name: 'ptype', label: 'Type', type: 'select', options: CRED_TYPES.map(([v, l]) => ({ v, l: t(l) })), value: e.ptype || 'vendor' },
+      { name: 'title', label: 'What for', value: e.title, maxlength: 80, placeholder: 'e.g. Grocery on credit, old salary' },
+      { name: 'total', label: 'Total owed (₹)', type: 'number', min: 1, max: 100000000, value: e.total, required: true },
+      { name: 'date', label: 'Date', type: 'date', value: e.date || today(), required: true },
+      { name: 'due', label: 'Pay by (optional)', type: 'date', value: e.due || '' },
+      ...(x ? [] : [{ name: 'paid', label: 'Already paid (₹)', type: 'number', min: 0, value: '', placeholder: '0 if nothing yet', hint: t('Part already paid. The rest becomes pending.') }, { name: 'mode', label: 'Paid by', type: 'select', options: FIN_MODES(), value: 'cash' }]),
+      { name: 'note', label: 'Note', value: e.note, maxlength: 200, full: true },
+    ],
+    danger: x ? { label: 'Delete', run: () => confirmBox(t('Delete this payable and its payments?'), () => { Store.remove(e.id); closeModal(); toast('Deleted'); render(); }, 'Delete', 'bad') } : null,
+    onSubmit: v => { try { savePayable({ id: e.id, staffId: e.staffId, ...v }); } catch (err) { return err.message; } toast('Payable saved'); render(); },
+  });
+}
+A.addcred = () => credForm();
+A.crededit = el => credForm(Store.get(el.dataset.id));
+A.credview = el => finView('cred', el.dataset.id);
+
+/* ---- one record with its instalments ---- */
+function finView(kind, id) {
+  const r = Store.get(id); if (!r) return;
+  const s = instState(r), isInc = kind === 'inc', title = isInc ? (r.title || t(r.cat)) : r.party;
+  const pays = (r.payments || []).slice().sort(by('date', -1));
+  const pct_ = s.total ? Math.min(100, Math.round(s.paid / s.total * 100)) : 0;
+  const hero = `<div class="fv"><div class="fv-top">${finBadge(s.status)}<span class="muted sm">${esc([isInc ? t(r.cat) : r.title, isInc ? r.party : '', fmtDate(r.date)].filter(Boolean).join(' · '))}</span></div>
+    <div class="fv-bar"><i style="width:${pct_}%"></i></div>
+    <div class="fv-g"><div><small>${esc(t('Total'))}</small><b>${inr(s.total)}</b></div><div><small>${esc(t(isInc ? 'Received' : 'Paid'))}</small><b class="ok-t">${inr(s.paid)}</b></div><div><small>${esc(t(s.advance > 0 ? 'Advance' : 'Pending'))}</small><b class="${s.pending > 0 ? 'bad-t' : s.advance > 0 ? 'info-t' : ''}">${inr(s.advance > 0 ? s.advance : s.pending)}</b></div></div>
+    ${!isInc && r.due ? `<div class="sm ${r.due < today() && s.pending > 0 ? 'bad-t' : 'muted'}">${esc(t('Pay by {d}', { d: fmtDate(r.due) }))}</div>` : ''}${r.note ? `<div class="sm muted">${esc(r.note)}</div>` : ''}</div>`;
+  const list = pays.length ? group(isInc ? 'Receipts' : 'Payments', pays.map(x => li({ icon: 'check', ic: 'ok', t: inr(x.amount), d: [fmtDate(x.date), (x.mode || '').toUpperCase(), x.note].filter(Boolean).join(' · '), end: btn('', 'instdel', `data-k="${kind}" data-id="${r.id}" data-p="${x.id}" aria-label="${esc(t('Remove'))}"`, 'sm bad', 'trash'), chev: false })).join('')) : `<div class="card muted">${esc(t(isInc ? 'Nothing received yet.' : 'Nothing paid yet.'))}</div>`;
+  sheet(title, hero + list, { foot: `<button class="btn primary" data-act="instadd" data-k="${kind}" data-id="${r.id}">${ico('plus', 'sm')} ${esc(t(isInc ? 'Record receipt' : 'Record payment'))}</button><button class="btn" data-act="${isInc ? 'incedit' : 'crededit'}" data-id="${r.id}">${ico('edit', 'sm')} ${esc(t('Edit'))}</button>` });
+}
+A.instadd = el => {
+  const kind = el.dataset.k, r = Store.get(el.dataset.id); if (!r) return;
+  const s = instState(r), isInc = kind === 'inc';
+  formModal({
+    title: `${t(isInc ? 'Record receipt' : 'Record payment')} · ${isInc ? (r.title || t(r.cat)) : r.party}`,
+    note: s.pending > 0 ? `${t('Pending')}: <b>${inr(s.pending)}</b> ${t('of')} ${inr(s.total)}` : `${t('Fully settled')}: ${inr(s.total)}`,
+    fields: [
+      { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, max: 100000000, value: s.pending || '', required: true },
+      { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
+      { name: 'mode', label: isInc ? 'Received by' : 'Paid by', type: 'select', options: FIN_MODES(), value: 'cash' },
+      { name: 'note', label: 'Note', maxlength: 200, full: true },
+      { name: 'adv', label: 'More than pending: keep the extra as advance', type: 'checkbox', full: true },
+    ],
+    preview: v => { const a = +v.amount || 0; if (!(a > 0)) return ''; const left = round2(s.pending - a); return left > 0 ? t('Pending after this: {a}', { a: inr(left) }) : left < 0 ? t('Advance after this: {a}', { a: inr(-left) }) : t('Settled with this'); },
+    onSubmit: v => { try { addInstallment(kind, r.id, { amount: v.amount, date: v.date, mode: v.mode, note: v.note, allowAdvance: !!v.adv }); } catch (err) { return err.message; } toast(t('Saved')); closeModal(); render(); setTimeout(() => finView(kind, r.id), 60); return false; },
+  });
+};
+A.instdel = el => confirmBox(t('Remove this entry? The pending amount goes up again.'), () => { removeInstallment(el.dataset.k, el.dataset.id, el.dataset.p); toast('Removed'); closeModal(); render(); setTimeout(() => finView(el.dataset.k, el.dataset.id), 60); }, 'Remove', 'bad');
+
 
 /* ===================================================================== reports */
 // One period for the whole page and for every download below it.
@@ -3123,7 +3245,7 @@ PAGES.reports = {
     const pays = payments().filter(p => repIn(p.date, R) && p.mode !== 'deposit'), exps = Store.all('exp').filter(x => repIn(x.date, R));
     const bills = invoices().filter(i => i.type !== 'deposit' && repIn(i.date, R));
     const billed = sum(bills, i => i.amount), collectedOfBilled = sum(bills, i => i.paid || 0);
-    const income = sum(pays, p => p.amount), spend = sum(exps, x => x.amount);
+    const otherInc = otherIncomeReceived(R.from, R.to), income = sum(pays, p => p.amount) + otherInc, spend = sum(exps, x => x.amount);
     const byType = groupBy(bills, i => i.type), byCat = groupBy(exps, x => x.cat), byMode = groupBy(pays, p => p.mode);
     const rows = (obj, f) => Object.entries(obj).sort((a, b) => f(b[1]) - f(a[1])).map(([k, v]) => `<dt>${esc(t(INV_TYPES[k] || k))}</dt><dd>${inr(f(v))}</dd>`).join('') || `<dt class="muted">${esc(t('Nothing yet'))}</dt><dd></dd>`;
     return `${head('Reports', `${esc(R.label)}${bl ? ' · ' + esc(blockName(bl)) : ''}`)}${seg('rep', [['report', 'Totals'], ['insights', 'Insights']], 'report')}
@@ -3132,7 +3254,7 @@ PAGES.reports = {
         ${R.key === 'custom' ? `<input type="date" value="${R.from}" data-flt="repf" aria-label="${esc(t('From'))}"><span>${esc(t('to'))}</span><input type="date" value="${R.to}" data-flt="rept" aria-label="${esc(t('To'))}">` : ''}${tip(esc(t('Every report and download on this page uses this period.')))}
       </div>
       ${bl ? `<div class="note" style="margin-bottom:12px">${ico('alert', 'sm')} ${esc(t('Income and bills below are for this block only. Expenses are kept for the whole hostel and are not split.'))}</div>` : ''}
-      <div class="grid g4 keep2">${kpi('Income', inr(income), t('{n} payments', { n: pays.length }), 'ok', null, 'rupee')}${kpi('Expenses', inr(spend), t('{n} entries', { n: exps.length }), 'warn', null, 'wallet')}${kpi('Profit', inr(income - spend), '', income - spend >= 0 ? 'ok' : 'bad', null, 'chart')}${kpi('Collection rate', pct(collectedOfBilled, billed) + '%', t('{a} of {b} billed', { a: inr(collectedOfBilled), b: inr(billed) }), '', null, 'check')}</div>
+      <div class="grid g4 keep2">${kpi('Income', inr(income), otherInc ? t('{n} payments + {o} other income', { n: pays.length, o: inr(otherInc) }) : t('{n} payments', { n: pays.length }), 'ok', null, 'rupee')}${kpi('Expenses', inr(spend), t('{n} entries', { n: exps.length }), 'warn', null, 'wallet')}${kpi('Profit', inr(income - spend), '', income - spend >= 0 ? 'ok' : 'bad', null, 'chart')}${kpi('Collection rate', pct(collectedOfBilled, billed) + '%', t('{a} of {b} billed', { a: inr(collectedOfBilled), b: inr(billed) }), '', null, 'check')}</div>
       <div class="grid g3" style="margin-top:14px">
         <div class="card"><h3>${esc(t('Billed by type'))}</h3><dl class="kv">${rows(byType, l => sum(l, i => i.amount))}</dl></div>
         <div class="card"><h3>${esc(t('Collected by mode'))}</h3><dl class="kv">${rows(byMode, l => sum(l, p => p.amount))}</dl></div>

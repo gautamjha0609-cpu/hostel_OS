@@ -806,7 +806,14 @@ function staffForm(x) {
       { name: 'dept', label: 'Department', type: 'select', options: availableDepts.map(d => ({ v: d, l: t(d) })), value: s.dept, hint: `<a href="/settings/depts">${esc(t('Edit departments'))}</a>` },
       { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, max: 10000000, value: s.salary || '', required: true, placeholder: 'e.g. 15000', hint: t('Base monthly salary for this staff') },
       { name: 'joinDate', label: 'Joining date', type: 'date', value: s.joinDate || today(), required: true },
-      ...(isNew ? [{ name: 'openingAdv', label: 'Opening advance (₹)', type: 'number', min: 0, placeholder: '0 if none', hint: t('Any advance already paid to this staff') }] : []),
+      ...(isNew ? [
+        { type: 'section', label: 'Salary before joining the app' },
+        { name: 'advMonths', label: 'Advance salary already paid (months)', type: 'number', min: 0, max: 60, step: 0.5, placeholder: 'e.g. 5', hint: t('5 = five months of salary paid in advance. It is recovered from the next salaries.') },
+        { name: 'openingAdv', label: 'or advance already paid (₹)', type: 'number', min: 0, placeholder: '0 if none', hint: t('Use either months or an amount. These are past payments: they do not count as an expense now.') },
+        { name: 'partPct', label: 'Salary of this month already paid (%)', type: 'number', min: 0, max: 100, step: 1, placeholder: 'e.g. 50', hint: t('Part of the current month salary paid before joining the app.') },
+        { name: 'prevAmt', label: 'Previous pending salary (₹)', type: 'number', min: 0, placeholder: '0 if none', hint: t('Salary you still owe from before. It is added to Payables and you pay it in instalments.') },
+        { name: 'prevDays', label: 'or pending salary in days', type: 'number', min: 0, max: 366, step: 0.5, placeholder: 'e.g. 12', hint: t('Days x monthly salary / 30, if you do not have an amount.') },
+      ] : []),
       { name: 'idNo', label: 'ID number (Aadhaar)', value: s.idNo, maxlength: 12, placeholder: '12-digit Aadhaar', required: true },
       { name: 'address', label: 'Address', value: s.address, full: true, maxlength: 240, placeholder: 'Home address', required: true },
       ...(!isNew ? [] : [{ name: 'login', label: 'Create app login (shows only their work)', type: 'checkbox', value: true, hint: t('User ID = mobile.hostel, password = mobile number.'), full: true }]),
@@ -837,30 +844,14 @@ function staffForm(x) {
         address: v.address,
         docs: s.docs || []
       });
-      if (isNew && Number(v.openingAdv) > 0) {
-        const advVal = Number(v.openingAdv);
-        const adv = Store.put('sal', {
-          staffId: rec.id,
-          staffName: rec.name,
-          ym: ymOf(today()),
-          amount: advVal,
-          isAdv: true,
-          type: 'advance',
-          mode: 'cash',
-          date: today(),
-          note: t('Opening advance')
-        });
-        Store.put('exp', {
-          id: `exp-${adv.id}`,
-          date: today(),
-          cat: S().expenseCats.includes('Salary') ? 'Salary' : 'Other',
-          amount: advVal,
-          mode: 'cash',
-          paid: true,
-          vendor: rec.name,
-          note: `${t('Opening advance')} · ${rec.name}`,
-          ref: adv.id
-        });
+      // What happened before the app: history, not today's cash, so none of it is booked as an expense.
+      if (isNew) {
+        const advVal = Number(v.openingAdv) > 0 ? Number(v.openingAdv) : (Number(v.advMonths) > 0 ? round2(Number(v.advMonths) * salVal) : 0);
+        if (advVal > 0) Store.put('sal', { staffId: rec.id, staffName: rec.name, ym: ymOf(today()), amount: advVal, isAdv: true, type: 'advance', mode: 'cash', date: v.joinDate, opening: true, note: Number(v.advMonths) > 0 && !(Number(v.openingAdv) > 0) ? t('Opening advance: {n} months of salary', { n: Number(v.advMonths) }) : t('Opening advance') });
+        const pct = Math.min(100, Math.max(0, Number(v.partPct) || 0));
+        if (pct > 0) Store.put('sal', { staffId: rec.id, staffName: rec.name, ym: ymOf(today()), amount: round2(salVal * pct / 100), advDeducted: 0, type: 'salary', mode: 'cash', date: v.joinDate, opening: true, note: t('Part of the salary of this month paid before joining ({p}%)', { p: pct }) });
+        const prev = Number(v.prevAmt) > 0 ? Number(v.prevAmt) : (Number(v.prevDays) > 0 ? round2(Number(v.prevDays) * salVal / 30) : 0);
+        if (prev > 0) savePayable({ party: rec.name, ptype: 'staff', title: t('Previous pending salary'), total: prev, date: v.joinDate, staffId: rec.id, note: Number(v.prevAmt) > 0 ? '' : t('{d} days of salary', { d: Number(v.prevDays) }) });
       }
       const files = req.map((d, i) => ({ type: d, file: (v['doc' + i] || [])[0] })).filter(f => f.file);
       if (files.length) uploadDocs('staff', rec.id, files);
