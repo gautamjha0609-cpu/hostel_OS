@@ -94,7 +94,7 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://*.supabase.co https://api.bigdatacloud.net https://nominatim.openstreetmap.org; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+          "value": "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://cloudflareinsights.com https://api.bigdatacloud.net https://nominatim.openstreetmap.org; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
         },
         {
           "key": "X-Frame-Options",

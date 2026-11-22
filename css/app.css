@@ -76,6 +76,14 @@ svg.i.lg{width:28px;height:28px}
 .ibtn:active{opacity:.6}
 .ibtn .dot{position:absolute;top:-3px;right:-3px;background:var(--bad-solid);color:#fff;font-size:10.5px;font-weight:700;min-width:18px;height:18px;border-radius:99px;display:grid;place-items:center;padding:0 4px;border:2px solid var(--bg)}
 .menu-btn{display:none}
+.pgname{display:inline-flex;align-items:center;gap:7px;max-width:240px;min-width:0;padding:8px 14px;border-radius:99px;border:0;background:var(--fill);font:inherit;font-weight:650;font-size:14px;color:inherit;white-space:nowrap}
+.pgname span{overflow:hidden;text-overflow:ellipsis}
+.pgname svg{flex:none;color:var(--accent)}
+button.pgname{cursor:pointer}
+.blkslot{display:flex;align-items:center;min-width:0;flex:0 1 auto}
+.blkslot[hidden]{display:none}
+.blkslot .blabel{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:99px;background:var(--fill);color:var(--muted);font-weight:650;font-size:13.5px;white-space:nowrap}
+.blkslot .pk-pill{max-width:210px}
 .hsel{border:0;background:var(--fill);border-radius:99px;padding:8px 32px 8px 14px;font-weight:600;font-size:14px;max-width:220px;min-height:38px;background-position:right 12px center}
 .page{padding:6px clamp(14px,3vw,28px) 28px;max-width:1400px;width:100%;margin:0 auto;flex:1}
 .bnav{display:none}
@@ -370,6 +378,8 @@ button.kpi:active{opacity:.75}
   .bnav button.on{color:var(--accent)}
   .bnav button.on svg{transform:scale(1.04)}
   .bnav button:active{transform:scale(.9)}
+  .bnav .pgb span{max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bnav .pgav{width:26px;height:26px;border-radius:50%;background:var(--accent-solid);color:#fff;display:grid;place-items:center;font-style:normal;font-size:13px;font-weight:700;box-shadow:0 0 0 2px var(--surface),0 0 0 3.5px var(--accent-solid)}
   .bnav .dot{position:absolute;top:0;left:calc(50% + 5px);background:var(--bad-solid);color:#fff;font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:99px;display:grid;place-items:center;padding:0 3px;box-shadow:0 0 0 2px var(--surface)}
 }
 @media (max-width:720px){
@@ -381,7 +391,10 @@ button.kpi:active{opacity:.75}
   .fgrid.keep2{grid-template-columns:repeat(2,minmax(0,1fr))}
   .top{padding:calc(6px + var(--safe-t)) clamp(10px,3vw,16px) 6px;gap:6px}
   .top .hide-s{display:none}
-  .top.sel h1{display:none}
+  .top.hasblk h1{display:none}
+  .pgname{display:none}
+  .blkslot{flex:1 1 auto;justify-content:flex-end}
+  .blkslot .pk-pill{max-width:min(220px,56vw)}
   .top.sel .pk-pill, .top .pk-pill{max-width:min(240px,50vw);flex:1 1 auto;min-width:0}
   .pk-pill .pk-btn, .hsel{max-width:100%;font-size:13.5px;font-weight:600;padding:6px 12px;min-height:36px}
   .top .ibtn{width:36px;height:36px}

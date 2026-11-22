@@ -222,6 +222,7 @@ const Cloud = {
   },
   async token() { await this.refresh(false); return this.session.access_token; },
   async logout() {
+    if (typeof Live !== 'undefined') Live.close();
     try { await this.http(`${CFG.SUPABASE_URL}/auth/v1/logout`, { method: 'POST' }); } catch (e) { /* offline is fine */ }
     this.saveSession(null);
     AuthCache.clear();
@@ -324,7 +325,7 @@ const Cloud = {
   // status and modules belong to the platform admin, so the database refuses them on a plain
   // PATCH (hostels grants update on name, city, address and phone only).
   setHostelAdmin(id, patch) { return this.rpc('set_hostel_admin', { h: id, patch }); },
-  async fn(path, action, payload = {}) {
+  async fn(path, action, payload = {}, retry = true) {
     const headers = { 'Content-Type': 'application/json' };
     if (this.session) headers.Authorization = 'Bearer ' + (await this.token());
     let r; try { r = await fetch(path, { method: 'POST', headers, body: JSON.stringify({ action, ...payload }) }); }
@@ -332,6 +333,7 @@ const Cloud = {
     // Our own refusals always come back as JSON. Anything else from a failed call means the
     // serverless function is not there at all — which is a deployment fact, not something the
     // person pressing the button can fix by pressing it again.
+    if (r.status === 401 && retry && this.session) { await this.refresh(true); return this.fn(path, action, payload, false); }
     const text = await r.text();
     let data = null; try { data = text ? JSON.parse(text) : {}; } catch (e) { /* not ours */ }
     if (!r.ok) throw new AppError(data ? (data.error || 'Server error') : 'This needs the server, which is not running yet. It starts working once the app is deployed.');
@@ -343,7 +345,7 @@ const Cloud = {
   list: (table, q = '') => Cloud.rest(`${table}?select=*${q}`),
   insert: (table, row) => Cloud.rest(table, { method: 'POST', body: row, headers: { Prefer: 'return=representation' } }).then(a => a[0]),
   update: (table, id, patch) => Cloud.rest(`${table}?id=eq.${id}`, { method: 'PATCH', body: patch, headers: { Prefer: 'return=minimal' } }),
-  remove: (table, id) => Cloud.rest(`${table}?id=eq.${id}`, { method: 'DELETE' }),
+  remove: (table, id) => table === 'orgs' ? Cloud.admin('delete_org', { org_id: id }) : table === 'hostels' ? Cloud.admin('delete_hostel', { hostel_id: id }) : Cloud.rest(`${table}?id=eq.${id}`, { method: 'DELETE' }),
   rpc: (fn, args = {}) => Cloud.rest(`rpc/${fn}`, { method: 'POST', body: args }),
 };
 
@@ -535,6 +537,7 @@ const Demo = {
     }
     else if (action === 'set_password') { const p = d.profiles.find(x => x.id === b.user_id); if (String(b.password).length < 6) throw new AppError('Password must be at least 6 characters'); p.password = String(b.password); out = { ok: true }; }
     else if (action === 'set_active') { if (b.user_id === me.id) throw new AppError('You cannot disable yourself'); d.profiles.find(x => x.id === b.user_id).active = !!b.active; out = { ok: true }; }
+    else if (action === 'delete_org' || action === 'delete_hostel') { if (!me.is_super) throw new AppError('Super admin only'); await this.remove(action === 'delete_org' ? 'orgs' : 'hostels', b.org_id || b.hostel_id); return { ok: true }; }
     else if (action === 'delete_user') { if (!me.is_super) throw new AppError('Super admin only'); d.profiles = d.profiles.filter(x => x.id !== b.user_id); d.members = d.members.filter(x => x.user_id !== b.user_id); out = { ok: true }; }
     else throw new AppError('Unknown action');
     this.save(); return clone(out);
@@ -545,8 +548,11 @@ const Demo = {
   async remove(table, id) {
     const d = this.load();
     d[table] = d[table].filter(x => x.id !== id);
-    if (table === 'orgs') { const hs = d.hostels.filter(h => h.org_id === id).map(h => h.id); d.hostels = d.hostels.filter(h => h.org_id !== id); hs.forEach(h => delete d.docs[h]); d.members = d.members.filter(m => m.org_id !== id); }
-    if (table === 'hostels') { delete d.docs[id]; d.members = d.members.filter(m => m.hostel_id !== id); }
+    const gone = new Set();
+    if (table === 'orgs') { const hs = d.hostels.filter(h => h.org_id === id).map(h => h.id); d.hostels = d.hostels.filter(h => h.org_id !== id); hs.forEach(h => delete d.docs[h]); d.members.filter(m => m.org_id === id).forEach(m => gone.add(m.user_id)); d.members = d.members.filter(m => m.org_id !== id); }
+    if (table === 'hostels') { delete d.docs[id]; d.members.filter(m => m.hostel_id === id).forEach(m => gone.add(m.user_id)); d.members = d.members.filter(m => m.hostel_id !== id); }
+    // a login whose last access just went is deleted too, so its user ID is free again (super admins are never touched)
+    for (const u of gone) if (!d.members.some(m => m.user_id === u)) d.profiles = d.profiles.filter(p => p.id !== u || p.is_super);
     this.save();
   },
   async rpc(fn) {
@@ -585,18 +591,21 @@ const Store = {
     if (cached) { apply(cached); this.refreshMeta().catch(() => {}); return; }
     await this.refreshMeta();
   },
+  metaSig: '', metaAt: 0,
   async refreshMeta() {
     const m = await Backend.loadMeta();
     this.me = m.me; this.members = m.members; this.orgs = m.orgs; this.hostels = m.hostels;
     LS.set(`hostelos.meta.${Backend.uid()}`, m);
     if (this.me.lang && this.me.lang !== LANG && !LS.get('hostelos.lang.local')) { setLang(this.me.lang); await ensureLang().catch(() => {}); }
-    if (this.onChange) this.onChange('meta');
+    const sig = JSON.stringify([m.me, m.members, m.orgs, m.hostels]), changed = !!this.metaSig && sig !== this.metaSig;
+    this.metaSig = sig; this.metaAt = Date.now();
+    if (this.onChange) this.onChange('meta', changed);
   },
 
   // Load a hostel: cached copy first (instant), then a delta sync in the background.
   async open(ctx) {
     await this.flush().catch(() => {});
-    this.ctx = ctx; this.docs = new Map(); this.byKind = new Map(); this.cursor = null; this.outbox = []; this.ver++;
+    this.ctx = ctx; if (typeof Live !== 'undefined') Live.watch(); this.docs = new Map(); this.byKind = new Map(); this.cursor = null; this.outbox = []; this.ver++;
     if (!ctx.hostelId) return;
     const uidv = Backend.uid();
     if (uidv) {
@@ -799,7 +808,70 @@ const Store = {
   },
 };
 
-window.addEventListener('online', () => { Store.setOnline(true); Store.sync().catch(() => {}); });
+/* ===================================================================== live updates
+ * A change made anywhere — the platform admin switching a module, an owner editing a setting, a
+ * resident paying — reaches every open screen within a second, without a reload.
+ * It is Supabase Realtime over one WebSocket (the Phoenix wire format, no library): the database says
+ * "something changed in these tables" and we answer with the same cheap delta sync / meta refresh the
+ * app already does. Row-level security applies to the stream, so a login only hears about its own data.
+ * If the socket cannot be opened (offline, a blocked network) nothing breaks: polling still runs. */
+const Live = {
+  ws: null, up: false, ref: 0, hb: null, retry: 0, rt: null, key: '', tok: '', timers: {},
+  topic: 'realtime:sarvlekh-live',
+  watch() {
+    if (!CLOUD || typeof WebSocket === 'undefined' || !Cloud.session) return;
+    const c = Store.ctx || {}, h = Store.hostel(), key = [Backend.uid(), c.hostelId || '', (h && h.org_id) || c.orgId || ''].join('|');
+    if (key === this.key && this.ws && this.ws.readyState <= 1) return;
+    this.key = key; this.close(true); this.open();
+  },
+  close(keep) { clearInterval(this.hb); clearTimeout(this.rt); this.up = false; if (this.ws) { this.ws.onclose = null; try { this.ws.close(); } catch (e) { /* already closed */ } this.ws = null; } if (!keep) this.key = ''; },
+  tables() {
+    const c = Store.ctx || {}, h = Store.hostel(), org = (h && h.org_id) || c.orgId, uid = Backend.uid(), sup = !!(Store.me && Store.me.is_super);
+    const t = (table, filter) => ({ event: '*', schema: 'public', table, ...(filter ? { filter } : {}) });
+    const out = [];
+    if (c.hostelId) out.push(t('docs', 'hostel_id=eq.' + c.hostelId));
+    if (uid) out.push(t('members', 'user_id=eq.' + uid));
+    if (sup && !c.hostelId) { out.push(t('hostels')); out.push(t('orgs')); }
+    else { if (c.hostelId) out.push(t('hostels', 'id=eq.' + c.hostelId)); if (org) out.push(t('orgs', 'id=eq.' + org)); }
+    return out;
+  },
+  send(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ ref: String(++this.ref), ...o })); },
+  async open() {
+    let token; try { token = await Cloud.token(); } catch (e) { return this.later(); }
+    const ws = this.ws = new WebSocket(CFG.SUPABASE_URL.replace(/^http/, 'ws') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(CFG.SUPABASE_ANON_KEY) + '&vsn=1.0.0');
+    ws.onopen = () => {
+      this.tok = token;
+      this.send({ topic: this.topic, event: 'phx_join', payload: { config: { broadcast: { self: false }, presence: { key: '' }, postgres_changes: this.tables() }, access_token: token } });
+      this.hb = setInterval(() => {
+        this.send({ topic: 'phoenix', event: 'heartbeat', payload: {} });
+        const s = Cloud.session; if (s && s.access_token !== this.tok) { this.tok = s.access_token; this.send({ topic: this.topic, event: 'access_token', payload: { access_token: s.access_token } }); }
+      }, 25000);
+    };
+    ws.onmessage = e => {
+      let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.event === 'phx_reply' && m.topic === this.topic) {
+        if (m.payload && m.payload.status === 'ok') { this.up = true; this.retry = 0; this.note('docs'); this.note('meta'); }   // catch up on anything missed while it was down
+        else { this.up = false; }
+      } else if (m.event === 'postgres_changes') {
+        const d = m.payload && m.payload.data; if (d && d.table) this.note(d.table === 'docs' ? 'docs' : 'meta');
+      }
+    };
+    ws.onclose = () => { this.up = false; clearInterval(this.hb); this.later(); };
+    ws.onerror = () => { try { ws.close(); } catch (e) { /* closing anyway */ } };
+  },
+  later() { clearTimeout(this.rt); if (!Cloud.session) return; this.retry++; this.rt = setTimeout(() => this.open(), Math.min(30000, 1000 * Math.pow(2, Math.min(this.retry, 5)))); },
+  // Many rows can change in one go (a bulk bill run); wait a moment and do the work once.
+  note(what) {
+    clearTimeout(this.timers[what]);
+    const run = () => {
+      if (what === 'docs') { if (Store.syncing) { this.timers[what] = setTimeout(run, 400); return; } Store.wake(); Store.sync().catch(() => {}); }
+      else Store.refreshMeta().catch(() => {});
+    };
+    this.timers[what] = setTimeout(run, 250);
+  },
+};
+if (typeof window !== 'undefined') window.Live = Live;
+window.addEventListener('online', () => { Store.setOnline(true); Store.sync().catch(() => {}); Live.watch(); });
 window.addEventListener('offline', () => Store.setOnline(false));
 
 /* ===================================================================== documents
