@@ -854,15 +854,26 @@ A.admuserdel = el => { const p = adm.data.profiles.find(x => x.id === el.dataset
 A.admmemdel = el => confirmBox(t('Remove this access?'), async () => { await Backend.remove('members', el.dataset.id); adm.data = null; }, 'Remove', 'bad');
 
 
-/* ===================================================================== Usage & health
- * What can be measured from here is measured (database size, stored papers, records). RAM, CPU and Cloudflare request
- * counts need an API token the browser must never hold, so they are shown as "not connected" instead of invented.
- * Each reading is remembered once a day in this browser; from two or more days the growth gives "about N days left". */
-const HEALTH_PLAN = { dbMb: 500, filesMb: 1024 };       // Supabase free plan; change here when the project is upgraded
+/* ===================================================================== Usage & health (platform health, read live)
+ * Supabase: memory, swap, CPU, disk, connections, cache hit rate and uptime come from the project's own metrics (through the server).
+ * Cloudflare: requests, errors and CPU time per request, once a read-only API token is set on the server.
+ * Every card says what the number means, whether it is fine, and what to do if it is not. Nothing is guessed. */
+const HEALTH_PLAN = { dbMb: 500, filesMb: 1024, cfDailyRequests: 100000, cfCpuMs: 10 };   // Supabase Free + Cloudflare Workers Free; change when upgraded
 const HEALTH_LINKS = {
   supaPlan: 'https://supabase.com/dashboard/project/_/settings/billing/subscription', supaBill: 'https://supabase.com/dashboard/org/_/billing', supaUsage: 'https://supabase.com/dashboard/org/_/usage',
+  supaCompute: 'https://supabase.com/dashboard/project/_/settings/compute-and-disk', supaQueries: 'https://supabase.com/dashboard/project/_/reports/query-performance', supaLogs: 'https://supabase.com/dashboard/project/_/logs/postgres-logs',
   cfPlan: 'https://dash.cloudflare.com/?to=/:account/workers/plans', cfBill: 'https://dash.cloudflare.com/?to=/:account/billing', cfCard: 'https://dash.cloudflare.com/?to=/:account/billing/payment-info',
+  cfLogs: 'https://dash.cloudflare.com/?to=/:account/workers/services/view/hostelos/production/observability', cfToken: 'https://dash.cloudflare.com/profile/api-tokens',
 };
+adm.health = adm.health || { data: null, at: 0, loading: false, error: '', tried: false };
+async function admHealthLoad(force) {
+  const h = adm.health; if (h.loading) return;
+  if (!force && h.data && Date.now() - h.at < 600000) return;
+  h.loading = true;
+  try { h.data = await Backend.admin('health', { fresh: !!force }); h.at = Date.now(); h.error = ''; }
+  catch (e) { h.error = e.message || 'Could not read the platform health'; }
+  h.loading = false; render();
+}
 function healthSnap(db, files) {
   try {
     const k = 'sarv.health.snap', arr = JSON.parse(localStorage.getItem(k) || '[]'), day = today();
@@ -870,70 +881,119 @@ function healthSnap(db, files) {
     return arr;
   } catch (e) { return []; }
 }
-// days until a limit is reached at the pace of the last readings (null = not enough readings yet / not growing)
+// days until a limit is reached at the pace of the saved daily readings (null = not enough readings, or not growing)
 function healthDaysLeft(key, used, limit, snaps) {
   const pts = snaps.filter(x => x[key] != null); if (pts.length < 2) return null;
   const a = pts[0], b = pts[pts.length - 1], days = Math.max(1, diffDays(b.d, a.d)), perDay = (b[key] - a[key]) / days;
   return perDay > 0.001 ? Math.max(0, Math.floor((limit - used) / perDay)) : null;
 }
-function healthMetrics() {
-  const d = adm.data || {}, size = d.size, files = d.files ? Math.round(sum(d.files, r => +r.mb || 0) * 10) / 10 : null;
-  const snaps = healthSnap(size, files), out = [];
-  const add = (o) => { o.pct = o.limit ? Math.round((o.used / o.limit) * 100) : 0; o.level = o.pct >= 85 ? 'bad' : o.pct >= 70 ? 'warn' : 'ok'; out.push(o); };
-  if (size != null) add({ k: 'db', label: 'Database', icon: 'chart', used: size, limit: HEALTH_PLAN.dbMb, unit: 'MB', days: healthDaysLeft('db', size, HEALTH_PLAN.dbMb, snaps),
-    info: t('The space taken by all your clients\' records: residents, bills, payments, readings. Example: 400 of 500 MB means 100 MB is left before the free plan is full.'),
-    after: t('When it is full the app can stop saving new bills and payments. Upgrade to Supabase Pro (8 GB) before that, or archive old logs (Maintenance below).'), up: 'supa' });
-  if (files != null) add({ k: 'files', label: 'Document storage', icon: 'folder', used: files, limit: HEALTH_PLAN.filesMb, unit: 'MB', days: healthDaysLeft('files', files, HEALTH_PLAN.filesMb, snaps),
-    info: t('The photos of Aadhaar cards and other papers. Example: 20 residents a day with 2 photos each is about 5 MB a day.'),
-    after: t('When it is full new papers cannot be uploaded and check-ins with documents will fail. Run "Delete old documents now" or upgrade storage.'), up: 'supa' });
+const mb = n => Math.round(n / 1048576 * 10) / 10, gb = n => Math.round(n / 1073741824 * 100) / 100;
+const lvl = (p, warn, bad) => (p == null ? 'na' : p >= bad ? 'bad' : p >= warn ? 'warn' : 'ok');
+const worse = (a, b) => ({ na: 0, ok: 1, warn: 2, bad: 3 }[b] > { na: 0, ok: 1, warn: 2, bad: 3 }[a] ? b : a);
+// One entry per thing worth watching: what it is, how full, plain meaning, and what to do when it is not green.
+function healthSignals() {
+  const d = adm.data || {}, hd = adm.health.data, sp = hd && hd.supabase && hd.supabase.ok ? hd.supabase : null, cf = hd && hd.cloudflare, out = [];
+  const files = d.files ? Math.round(sum(d.files, r => +r.mb || 0) * 10) / 10 : null, size = d.size;
+  const snaps = healthSnap(size, files);
+  const add = o => out.push(o);
+  if (sp) {
+    const m = sp.memory, ramP = m.total ? m.used / m.total * 100 : null, swapP = m.swapTotal ? m.swapUsed / m.swapTotal * 100 : 0;
+    add({ k: 'ram', group: 'Server', label: 'Memory (RAM)', icon: 'chart', pct: ramP, level: worse(lvl(ramP, 85, 95), lvl(swapP, 25, 50)),
+      value: `${mb(m.used)} of ${mb(m.total)} MB used`, sub: `${t('Swap (spill-over memory on disk)')}: ${mb(m.swapUsed)} of ${mb(m.swapTotal)} MB (${Math.round(swapP)}%)`,
+      info: t('Memory is where the database keeps what it is working on. When it runs out the server spills onto the disk (swap) and everything slows down. Example: 70% RAM used is normal; swap above 25% means the server is short of memory.'),
+      act: swapP >= 25 ? t('The server is already using swap: memory is tight. Move the database to the next compute size before more hostels go live.') : ramP >= 85 ? t('Memory is nearly full. Plan a compute upgrade.') : '', link: HEALTH_LINKS.supaCompute, linkL: t('Change compute size'),
+      stat: `${m.total ? Math.round(m.total / 1048576) : '?'} MB ${t('server')}` });
+    const c = sp.cpu, cpuP = c.now;
+    add({ k: 'cpu', group: 'Server', label: 'Processor (CPU)', icon: 'bolt', pct: cpuP, level: lvl(cpuP, 70, 90),
+      value: `${Math.round(cpuP == null ? 0 : cpuP)}% ${t('busy this minute')}`, sub: `${t('Load')} ${c.load1} / ${c.load5} / ${c.load15} (1, 5, 15 min) · ${c.cores} ${t('cores')} · ${t('average since restart')} ${Math.round(c.sinceBoot || 0)}%`,
+      info: t('How hard the database processors are working. Short spikes are fine. Example: above 70% for many minutes means reports or many people at once are straining it; above 90% the app times out.'),
+      act: cpuP >= 70 ? t('The processor is busy. Open the slow-query report to see which screen is heavy.') : '', link: HEALTH_LINKS.supaQueries, linkL: t('See slow queries') });
+    const dk = sp.disk.data, dkP = dk ? dk.used / dk.size * 100 : null;
+    if (dk) add({ k: 'disk', group: 'Server', label: 'Server disk', icon: 'folder', pct: dkP, level: lvl(dkP, 70, 85), value: `${gb(dk.used)} of ${gb(dk.size)} GB used`, sub: t('The disk that holds the database files and logs.'),
+      info: t('The disk the database lives on, including logs and backups of its own. Example: 16% used leaves plenty of room; above 85% the database can stop writing.'), act: dkP >= 70 ? t('The disk is filling up. Upgrade disk size or archive old logs.') : '', link: HEALTH_LINKS.supaCompute, linkL: t('Change disk size') });
+    const pl = sp.pooler, plP = pl && pl.max ? pl.clients / pl.max * 100 : null;
+    if (pl && pl.max) add({ k: 'conn', group: 'Database', label: 'Connections', icon: 'users', pct: plP, level: lvl(plP, 70, 90), value: `${pl.clients} of ${pl.max} ${t('in use')}`, sub: t('People and servers connected to the database right now.'),
+      info: t('Each open screen can hold a connection. Example: 1 of 200 is nothing; close to the limit means new logins start failing.'), act: plP >= 70 ? t('Many connections are open. Check for a runaway job.') : '', link: HEALTH_LINKS.supaLogs, linkL: t('Open the logs') });
+    const ch = sp.database.cacheHit;
+    add({ k: 'cache', group: 'Database', label: 'Cache hit rate', icon: 'check', pct: ch, level: ch == null ? 'na' : ch < 90 ? 'bad' : ch < 97 ? 'warn' : 'ok', invert: true, value: ch == null ? '—' : ch.toFixed(2) + '%', sub: t('How often data was found in memory instead of read from disk.'),
+      info: t('Reading from memory is fast, from disk is slow. Example: 99% or more is excellent; below 95% means the database does not fit in memory and screens will feel slow.'), act: ch != null && ch < 97 ? t('Data is being read from disk too often. More memory (a larger compute size) fixes this.') : '', link: HEALTH_LINKS.supaCompute, linkL: t('Change compute size') });
+    add({ k: 'db', group: 'Database', label: 'Database up', icon: 'power', pct: sp.database.up ? 0 : 100, level: sp.database.up ? 'ok' : 'bad', noBar: true, value: sp.database.up ? t('Running') : t('Down'), sub: `${t('Up for')} ${Math.floor(sp.uptimeDays || 0)} ${t('days')} · ${sp.database.restarts || 0} ${t('restarts')} · ${sp.database.deadlocks || 0} ${t('deadlocks')}`,
+      info: t('Whether the database is answering, how long since it last restarted, and whether queries blocked each other (deadlocks). Example: restarts of 0 and deadlocks of 0 is what you want.'), act: sp.database.up ? '' : t('The database is not answering. Check the Supabase status page now.'), link: 'https://status.supabase.com', linkL: t('Supabase status') });
+  }
+  if (size != null) { const p = size / HEALTH_PLAN.dbMb * 100, dl = healthDaysLeft('db', size, HEALTH_PLAN.dbMb, snaps);
+    add({ k: 'dbsize', group: 'Database', label: 'Data stored', icon: 'chart', pct: p, level: lvl(p, 70, 85), value: `${size} of ${HEALTH_PLAN.dbMb} MB`, sub: dl != null ? t('About {n} days until full at the current pace', { n: dl }) : t('Pace shows after two days of readings'),
+      info: t('All your clients\' records: residents, bills, payments, readings. Example: 400 of 500 MB leaves 100 MB; the free plan stops saving when it is full.'), act: p >= 70 ? t('Close to the free limit. Upgrade to Pro (8 GB) or archive old logs.') : '', link: HEALTH_LINKS.supaPlan, linkL: t('Upgrade plan'), days: dl }); }
+  if (files != null) { const p = files / HEALTH_PLAN.filesMb * 100, dl = healthDaysLeft('files', files, HEALTH_PLAN.filesMb, snaps);
+    add({ k: 'files', group: 'Database', label: 'Document storage', icon: 'folder', pct: p, level: lvl(p, 70, 85), value: `${files} of ${HEALTH_PLAN.filesMb} MB`, sub: dl != null ? t('About {n} days until full at the current pace', { n: dl }) : t('Photos of Aadhaar cards and other papers'),
+      info: t('Photos of IDs and other papers. Example: 20 new residents a day with 2 photos each adds about 5 MB a day.'), act: p >= 70 ? t('Run "Delete old documents now" or upgrade storage.') : '', link: HEALTH_LINKS.supaPlan, linkL: t('Upgrade plan'), days: dl }); }
+  if (cf && cf.configured && !cf.error) {
+    const rp = cf.requestsToday / HEALTH_PLAN.cfDailyRequests * 100, ep = cf.requestsToday ? cf.errorsToday / cf.requestsToday * 100 : 0, cpuMs = cf.cpuP99 ? cf.cpuP99 / 1000 : 0;
+    add({ k: 'cfreq', group: 'Cloudflare', label: 'Requests today', icon: 'globe', pct: rp, level: lvl(rp, 70, 90), value: `${cf.requestsToday.toLocaleString('en-IN')} of ${HEALTH_PLAN.cfDailyRequests.toLocaleString('en-IN')}`, sub: `${cf.requestsHour.toLocaleString('en-IN')} ${t('in the last hour')} · ${cf.subrequestsToday.toLocaleString('en-IN')} ${t('calls to the database')}`,
+      info: t('How many times the app\'s server was called today (logins, saves, e-mails). The free Workers plan allows 100,000 a day. Example: 5,000 is very light.'), act: rp >= 70 ? t('You may hit the daily free limit. Move to the Workers Paid plan.') : '', link: HEALTH_LINKS.cfPlan, linkL: t('Workers plans') });
+    add({ k: 'cferr', group: 'Cloudflare', label: 'Errors today', icon: 'alert', pct: ep, level: ep >= 5 ? 'bad' : ep >= 1 ? 'warn' : 'ok', value: `${cf.errorsToday.toLocaleString('en-IN')} (${ep.toFixed(2)}%)`, sub: `${cf.errorsHour.toLocaleString('en-IN')} ${t('in the last hour')}`,
+      info: t('Calls that failed on the server. Example: under 1% is normal; a sudden jump after a release means something broke.'), act: ep >= 1 ? t('Errors are above normal. Read the live logs.') : '', link: HEALTH_LINKS.cfLogs, linkL: t('Open live logs') });
+    add({ k: 'cfcpu', group: 'Cloudflare', label: 'Server time per call', icon: 'clock', pct: cpuMs / HEALTH_PLAN.cfCpuMs * 100, level: lvl(cpuMs / HEALTH_PLAN.cfCpuMs * 100, 70, 95), value: `${(cf.cpuP50 / 1000).toFixed(1)} ms ${t('typical')} · ${cpuMs.toFixed(1)} ms ${t('slowest 1%')}`, sub: t('The free plan cuts a call off at 10 ms of processing.'),
+      info: t('How long the server works on one call (waiting for the database is not counted). Example: 2 ms is great; close to 10 ms, calls start to fail on the free plan.'), act: cpuMs >= 7 ? t('Calls are close to the 10 ms free limit. Workers Paid has no such cut-off.') : '', link: HEALTH_LINKS.cfPlan, linkL: t('Workers plans') });
+  }
   return { list: out, snaps };
 }
-const healthOk = () => !!(adm.data && !adm.data.error);
-// Red banner for the super admin home: only what is close to its limit, with the likely date and what to do.
+const HL_COL = { ok: 'ok', warn: 'warn', bad: 'bad', na: 'mute' };
+// "Everything fine" or the few things to do, worst first.
+function healthVerdict(list) {
+  const bad = list.filter(m => m.level === 'bad'), warn = list.filter(m => m.level === 'warn');
+  if (bad.length) return { level: 'bad', title: t('Act now'), sub: t(bad.length === 1 ? '1 thing is in the red' : '{n} things are in the red', { n: bad.length }), items: [...bad, ...warn] };
+  if (warn.length) return { level: 'warn', title: t('Needs attention soon'), sub: t(warn.length === 1 ? '1 thing is getting full' : '{n} things are getting full', { n: warn.length }), items: warn };
+  return { level: 'ok', title: t('All systems healthy'), sub: t('Nothing needs doing right now.'), items: [] };
+}
+// Red banner on the super admin home: only what is in trouble, with what to do. (Loads the numbers in the background.)
 function healthBanner() {
-  if (!healthOk()) return '';
-  const bad = healthMetrics().list.filter(m => m.pct >= 70); if (!bad.length) return '';
-  return bad.map(m => {
-    const red = m.pct >= 85, dl = m.days;
-    return `<div class="note ${red ? 'bad' : 'warn'}" style="margin-bottom:10px"><b>${ico('alert', 'sm')} ${esc(t(m.label))}: ${m.pct}% ${esc(t('full'))}${dl != null ? ' · ' + esc(t('about {n} days left', { n: dl })) : ''}</b><br>${esc(m.after)}<div style="margin-top:8px"><a class="btn sm primary" data-act="noop" href="${HEALTH_LINKS.supaPlan}" target="_blank" rel="noopener">${esc(t('Upgrade now'))}</a> <button class="btn sm" data-act="go" data-to="admin-usage">${esc(t('See details'))}</button></div></div>`;
-  }).join('');
+  if (!adm.data || adm.data.error) return '';
+  if (!adm.health.tried) { adm.health.tried = true; setTimeout(() => admHealthLoad(false), 0); }
+  const v = healthVerdict(healthSignals().list); if (!v.items.length) return '';
+  return v.items.slice(0, 3).map(m => `<div class="note ${m.level === 'bad' ? 'bad' : 'warn'}" style="margin-bottom:10px"><b>${ico('alert', 'sm')} ${esc(t(m.label))}: ${esc(m.value)}${m.days != null ? ' · ' + esc(t('about {n} days left', { n: m.days })) : ''}</b><br>${esc(m.act || m.sub)}<div style="margin-top:8px">${m.link ? `<a class="btn sm primary" data-act="noop" href="${m.link}" target="_blank" rel="noopener">${esc(m.linkL || t('Open'))}</a> ` : ''}<button class="btn sm" data-act="go" data-to="admin-usage">${esc(t('See details'))}</button></div></div>`).join('');
 }
 function healthCard(m) {
-  const color = m.level === 'bad' ? 'bad' : m.level === 'warn' ? 'warn' : 'ok';
-  const left = Math.max(0, Math.round((m.limit - m.used) * 10) / 10);
-  const rec = m.pct >= 85 ? t('Upgrade now: you are about to run out.') : m.pct >= 70 ? t('Plan an upgrade soon.') : t('Healthy. Nothing to do.');
-  return `<div class="card" style="margin-bottom:10px"><div class="row sb" style="align-items:center">${withTip(`<b>${esc(t(m.label))}</b>`, tip(esc(m.info)))}<span class="badge ${color}">${m.pct}%</span></div>
-    <div class="bar ${color}" style="margin:10px 0 6px"><i style="width:${Math.min(100, m.pct)}%"></i></div>
-    <div class="xs muted">${m.used} ${m.unit} ${esc(t('used of'))} ${m.limit} ${m.unit} · ${left} ${m.unit} ${esc(t('left'))}${m.days != null ? ' · ' + esc(t('about {n} days at the current pace', { n: m.days })) : ''}</div>
-    <div class="sm" style="margin-top:6px">${esc(rec)}</div></div>`;
+  const col = HL_COL[m.level], p = m.pct == null ? 0 : Math.max(0, Math.min(100, m.invert ? 100 - (100 - m.pct) * 10 : m.pct));
+  return `<div class="hl-card ${m.level}"><div class="row sb" style="align-items:center;gap:8px">${withTip(`<b>${esc(t(m.label))}</b>`, tip(esc(m.info)))}<span class="badge ${col}">${esc(t(m.level === 'ok' ? 'Healthy' : m.level === 'warn' ? 'Watch' : m.level === 'bad' ? 'Act' : 'n/a'))}</span></div>
+    <div class="hl-v">${esc(m.value)}</div>${m.noBar ? '' : `<div class="bar ${col}" style="margin:8px 0 6px"><i style="width:${Math.max(2, Math.min(100, Math.round(p)))}%"></i></div>`}
+    <div class="xs muted">${esc(m.sub || '')}</div>${m.act ? `<div class="hl-act">${esc(m.act)}${m.link ? ` <a data-act="noop" href="${m.link}" target="_blank" rel="noopener">${esc(m.linkL || t('Open'))} →</a>` : ''}</div>` : ''}</div>`;
 }
 function healthPanel() {
-  const { list } = healthMetrics(), nc = (label, info) => `<div class="card" style="margin-bottom:10px"><div class="row sb" style="align-items:center">${withTip(`<b>${esc(t(label))}</b>`, tip(esc(info)))}<span class="badge">${esc(t('Not connected'))}</span></div><div class="xs muted" style="margin-top:6px">${esc(t('Shown once a Supabase / Cloudflare API token is added on the server (SUPABASE_ACCESS_TOKEN, CLOUDFLARE_API_TOKEN). Until then open the dashboard link below.'))}</div></div>`;
-  const grow = healthMetrics().snaps.length < 2 ? `<p class="hint">${esc(t('Days-left estimates appear after two days of readings.'))}</p>` : '';
-  return `<div class="group-t">${esc(t('Health at a glance'))}</div>
-    ${list.map(healthCard).join('')}${grow}
-    ${nc('Server memory (RAM)', t('How much working memory the database server is using. Example: if RAM is almost full, pages get slow even when storage is fine.'))}
-    ${nc('Processor (CPU)', t('How busy the database server is. Example: 90% CPU for hours means many people are loading reports at once; the app slows down or times out.'))}
-    ${nc('Cloudflare requests', t('How many times the app was opened or used today. The free Workers plan allows 100,000 a day. Example: 50 hostels using it all day is far below that.'))}
-    ${group('Upgrade & billing', [
-      li({ icon: 'rupee', ic: 'ok', t: t('Supabase: upgrade plan'), d: t('Pro plan gives 8 GB database and 100 GB storage.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaPlan}" target="_blank" rel="noopener"` }),
-      li({ icon: 'wallet', ic: 'info', t: t('Supabase: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaBill}" target="_blank" rel="noopener"` }),
-      li({ icon: 'chart', ic: 'info', t: t('Supabase: usage dashboard'), d: t('RAM, CPU and egress in detail.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaUsage}" target="_blank" rel="noopener"` }),
-      li({ icon: 'rupee', ic: 'ok', t: t('Cloudflare: Workers plan'), d: t('Paid plan removes the daily request limit.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfPlan}" target="_blank" rel="noopener"` }),
-      li({ icon: 'wallet', ic: 'info', t: t('Cloudflare: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfBill}" target="_blank" rel="noopener"` }),
-    ].join(''))}`;
+  const h = adm.health, hd = h.data, { list } = healthSignals(), v = healthVerdict(list);
+  if (!h.tried) { h.tried = true; setTimeout(() => admHealthLoad(false), 0); }
+  const cf = hd && hd.cloudflare, sb = hd && hd.supabase;
+  const when = h.at ? `${t('Checked')} ${ago(new Date(h.at).toISOString())}` : '';
+  const verdict = `<div class="hl-verdict ${v.level}"><div class="hl-vic">${ico(v.level === 'ok' ? 'check' : 'alert')}</div><div class="hl-vt"><b>${esc(v.title)}</b><span>${esc(h.loading && !hd ? t('Reading the servers…') : v.sub)}</span></div><button class="btn sm" data-act="admhealth" ${h.loading ? 'disabled' : ''}>${ico('sync', 'sm')} ${esc(h.loading ? t('Checking…') : t('Check now'))}</button></div>
+    ${when ? `<p class="xs muted" style="margin:-4px 2px 10px">${esc(when)}</p>` : ''}${h.error ? `<div class="note bad" style="margin-bottom:10px">${esc(h.error)}</div>` : ''}
+    ${sb === undefined || (hd && sb && !sb.ok) ? `<div class="note warn" style="margin-bottom:10px">${esc(t('Server numbers could not be read'))}${sb && sb.error ? ': ' + esc(sb.error) : ''}</div>` : ''}`;
+  const next = v.items.length ? `<div class="group-t">${esc(t('What to do'))}</div><div class="group">${v.items.map(m => li({ icon: m.level === 'bad' ? 'alert' : 'clock', ic: HL_COL[m.level], t: `${t(m.label)} · ${m.value}`, d: m.act || m.sub, chev: false, end: m.link ? `<a class="btn sm" data-act="noop" href="${m.link}" target="_blank" rel="noopener">${esc(m.linkL || t('Open'))}</a>` : '' })).join('')}</div>` : '';
+  const groups = ['Server', 'Database', 'Cloudflare'].map(g => { const xs = list.filter(m => m.group === g); return xs.length ? `<div class="group-t">${esc(t(g === 'Server' ? 'Database server' : g === 'Database' ? 'Database & storage' : 'Cloudflare app server'))}</div><div class="hl-grid">${xs.map(healthCard).join('')}</div>` : ''; }).join('');
+  const setup = cf && !cf.configured ? `<div class="card hl-setup"><b>${ico('globe', 'sm')} ${esc(t('Connect Cloudflare (2 minutes, once)'))}</b>
+      <p class="sm muted" style="margin:6px 0 10px">${esc(t('Requests, errors and server time come from Cloudflare. It needs a read-only token. Nothing can be changed with it.'))}</p>
+      <ol class="hl-steps"><li>${esc(t('Open the token page and press'))} <b>Create Token → Create Custom Token</b>. <a data-act="noop" href="${HEALTH_LINKS.cfToken}" target="_blank" rel="noopener">${esc(t('Open token page'))} →</a></li>
+        <li>${esc(t('Give it one permission: Account → Account Analytics → Read. Account resources: your account. Create it and copy the token.'))}</li>
+        <li>${esc(t('In PowerShell, in the app folder, run this and paste the token when asked:'))}<code class="hl-code" id="hlCmd">npx wrangler secret put CLOUDFLARE_API_TOKEN --name hostelos</code><button class="btn sm" data-act="copycmd">${ico('copy', 'sm')} ${esc(t('Copy command'))}</button></li>
+        <li>${esc(t('Come back here and press Check now.'))}</li></ol></div>`
+    : cf && cf.error ? `<div class="note warn" style="margin-bottom:10px"><b>Cloudflare:</b> ${esc(cf.error)}. ${esc(t('Check that the token has Account Analytics: Read.'))}</div>` : '';
+  const ups = group('Upgrade & billing', [
+    li({ icon: 'rupee', ic: 'ok', t: t('Supabase: upgrade plan'), d: t('Pro: 8 GB database, 100 GB storage, bigger compute.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaPlan}" target="_blank" rel="noopener"` }),
+    li({ icon: 'chart', ic: 'info', t: t('Supabase: compute size (RAM and CPU)'), d: t('The fix when memory or CPU is tight.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaCompute}" target="_blank" rel="noopener"` }),
+    li({ icon: 'wallet', ic: 'info', t: t('Supabase: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.supaBill}" target="_blank" rel="noopener"` }),
+    li({ icon: 'rupee', ic: 'ok', t: t('Cloudflare: Workers plan'), d: t('Paid plan removes the daily request limit and the 10 ms cut-off.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfPlan}" target="_blank" rel="noopener"` }),
+    li({ icon: 'wallet', ic: 'info', t: t('Cloudflare: billing & credit card'), d: t('Add or change the card, see invoices.'), act: 'noop', tag: 'a', attrs: `href="${HEALTH_LINKS.cfBill}" target="_blank" rel="noopener"` }),
+  ].join(''));
+  return `${verdict}${next}${groups}${setup}${ups}`;
 }
+A.admhealth = () => admHealthLoad(true);
+A.copycmd = async el => { const c = document.getElementById('hlCmd'); try { await navigator.clipboard.writeText(c.textContent); toast(t('Copied. Paste it in PowerShell.')); } catch (e) { toast(t('Select the command and copy it'), 'warn'); } };
 PAGES['admin-usage'] = {
   title: 'Usage & health', ...superOnly,
   render() {
     if (!adm.data) return admWait('Usage & health');
     if (adm.data.error) return admErr();
     const { hostels, orgs, size } = adm.data, rows = sum(adm.data.stats, s => +s.rows || 0);
-    return `${head('Usage & health', t('Free tier: Supabase 500 MB database · Vercel 100 GB bandwidth.'), btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync'))}
-      ${healthBanner()}${healthPanel()}
-      <div class="grid g3 keep2" style="margin-bottom:14px">${kpi('Database size', size != null ? size + ' MB' : '—', `${pct(size || 0, 500)}% ${t('of free limit')}`, size > 400 ? 'bad' : 'ok', null, 'chart')}${kpi('Records', rows.toLocaleString('en-IN'), t('across {n} hostels', { n: hostels.length }), '', null, 'layers')}${kpi('Avg per hostel', hostels.length ? Math.round(rows / hostels.length).toLocaleString('en-IN') : 0, t('≈ 1 KB each'), '', null, 'building')}</div>
-      <div class="bar ${size > 400 ? 'bad' : 'ok'}" style="margin-bottom:8px"><i style="width:${Math.min(100, pct(size || 0, 500))}%"></i></div>
-      ${adm.data.usage && adm.data.usage.data != null ? `<p class="hint" style="margin-bottom:14px">${esc(t('Your clients’ data: {a} MB. The other {b} MB is Supabase’s own tables (logins, storage, migrations) — they are there from day one and do not grow with the business.', { a: adm.data.usage.data, b: Math.max(0, Math.round((adm.data.usage.total - adm.data.usage.data) * 10) / 10) }))}</p>` : '<div style="margin-bottom:14px"></div>'}
+    return `${head('Usage & health', t('Live health of the database and the app server, in plain words.'), btn('', 'admreload', `aria-label="${esc(t('Refresh'))}"`, '', 'sync'))}
+      ${healthPanel()}
       ${table([{ h: 'Hostel', f: h => `<b>${esc(h.name)}</b><div class="hint">${esc((orgs.find(o => o.id === h.org_id) || {}).name || '')}</div>` }, { h: 'Residents', f: h => statOf(h.id).residents || 0 }, { h: 'Records', f: h => (+statOf(h.id).rows || 0).toLocaleString('en-IN') }, { h: 'Last activity', f: h => (statOf(h.id).last_activity ? ago(statOf(h.id).last_activity) : '—') }, { h: '', acts: true, f: h => btn('Open', 'openhostel', `data-id="${h.id}"`, 'sm') }], hostels.slice().sort((a, b) => (+statOf(b.id).rows || 0) - (+statOf(a.id).rows || 0)), { key: 'usage' })}
       ${filesCard(adm.data.files)}
       ${backupCard(adm.data.backups, adm.data.drive)}

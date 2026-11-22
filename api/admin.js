@@ -152,6 +152,72 @@ async function addMembership({ user_id, org_id, hostel_id, role, ref_id, perms, 
  * "some" let the owner of org B reset the password of someone who is also a manager in org A,
  * and so log in as them there. A hostel-scoped manager covers only their own hostels, and
  * another manager's login is the owner's to reset, not a peer's. */
+/* ---------------------------------------------------------------- platform health (super admin)
+ * Real numbers, read live:
+ *   Supabase  the project's own Prometheus endpoint (it answers to the service key already on the server): memory, swap, CPU,
+ *             load, disk, connections, cache hit rate, database size.
+ *   Cloudflare Workers GraphQL analytics, when CLOUDFLARE_API_TOKEN (read-only) and CLOUDFLARE_ACCOUNT_ID are set: requests, errors, CPU time.
+ * Nothing here is estimated; if a number cannot be read the answer says why instead of guessing. */
+let _healthCache = null;
+const CF_ACCOUNT_DEFAULT = 'cb96c31b48365f7138431871c011a421';
+function promParse(text) {
+  const rows = [];
+  for (const line of String(text).split('\n')) {
+    if (!line || line[0] === '#') continue;
+    const m = /^([a-zA-Z_:][\w:]*)(\{[^}]*\})?\s+([-+0-9.eEInfNa]+)/.exec(line); if (!m) continue;
+    const labels = {}; if (m[2]) m[2].replace(/(\w+)="([^"]*)"/g, (_, k, v) => { labels[k] = v; });
+    rows.push({ n: m[1], l: labels, v: Number(m[3]) });
+  }
+  return rows;
+}
+const pv = (rows, n, pred) => { const r = rows.find(x => x.n === n && (!pred || pred(x.l))); return r ? r.v : null; };
+const psum = (rows, n, pred) => rows.filter(x => x.n === n && (!pred || pred(x.l))).reduce((a, b) => a + b.v, 0);
+async function fetchProm() {
+  if (!URL_ || !KEY) throw new HttpError(500, 'The database address or key is not set on the server');
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 9000);
+  try {
+    const r = await fetch(URL_ + '/customer/v1/privileged/metrics', { signal: ctl.signal, headers: { Authorization: 'Basic ' + Buffer.from('service_role:' + KEY).toString('base64') } });
+    if (!r.ok) throw new HttpError(502, 'Supabase metrics answered ' + r.status + (r.status === 401 ? ' (the server key was refused)' : ''));
+    return promParse(await r.text());
+  } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(504, 'Supabase metrics did not answer: ' + (e.name === 'AbortError' ? 'timeout' : e.message)); }
+  finally { clearTimeout(timer); }
+}
+async function supabaseHealth() {
+  const b = await fetchProm();
+  const cpuOf = rows => { const cpu = rows.filter(x => x.n === 'node_cpu_seconds_total'); const idle = cpu.filter(x => x.l.mode === 'idle' || x.l.mode === 'iowait').reduce((q, x) => q + x.v, 0), all = cpu.reduce((q, x) => q + x.v, 0); return { idle, all, cores: new Set(cpu.map(x => x.l.cpu)).size || 1 }; };
+  const c2 = cpuOf(b), cpuNow = pv(b, 'node_load1') != null ? Math.min(100, pv(b, 'node_load1') / c2.cores * 100) : null;   // 1-minute load per core: how busy the CPUs have been this last minute
+  const sinceBoot = c2.all > 0 ? (1 - c2.idle / c2.all) * 100 : null;
+  const memTotal = pv(b, 'node_memory_MemTotal_bytes'), memAvail = pv(b, 'node_memory_MemAvailable_bytes'), swapTotal = pv(b, 'node_memory_SwapTotal_bytes'), swapFree = pv(b, 'node_memory_SwapFree_bytes');
+  const fs_ = (mp) => { const size = pv(b, 'node_filesystem_size_bytes', l => l.mountpoint === mp), avail = pv(b, 'node_filesystem_avail_bytes', l => l.mountpoint === mp); return size ? { size, used: size - avail } : null; };
+  const hit = psum(b, 'pg_stat_database_blks_hit_total'), read = psum(b, 'pg_stat_database_blks_read_total');
+  const usedClients = pv(b, 'pgbouncer_used_clients'), maxClients = pv(b, 'pgbouncer_config_max_client_connections');
+  const boot = pv(b, 'node_boot_time_seconds');
+  return {
+    ok: true, at: new Date().toISOString(),
+    cpu: { now: cpuNow, sinceBoot, cores: c2.cores, load1: pv(b, 'node_load1'), load5: pv(b, 'node_load5'), load15: pv(b, 'node_load15') },
+    memory: { total: memTotal, available: memAvail, used: memTotal != null && memAvail != null ? memTotal - memAvail : null, swapTotal, swapUsed: swapTotal != null && swapFree != null ? swapTotal - swapFree : null },
+    disk: { data: fs_('/data'), root: fs_('/') },
+    database: { sizeBytes: pv(b, 'pg_database_size_bytes', l => l.datname === 'postgres'), cacheHit: hit + read > 0 ? hit / (hit + read) * 100 : null, deadlocks: psum(b, 'pg_stat_database_deadlocks_total'), rollbacks: psum(b, 'pg_stat_database_xact_rollback_total'), commits: psum(b, 'pg_stat_database_xact_commit_total'), tempBytes: psum(b, 'pg_stat_database_temp_bytes_total'), up: pv(b, 'pg_up') === 1, restarts: pv(b, 'postgresql_restarts_total') },
+    pooler: { clients: usedClients, max: maxClients },
+    uptimeDays: boot ? Math.max(0, (Date.now() / 1000 - boot) / 86400) : null,
+  };
+}
+async function cloudflareHealth() {
+  const token = process.env.CLOUDFLARE_API_TOKEN, acc = process.env.CLOUDFLARE_ACCOUNT_ID || CF_ACCOUNT_DEFAULT;   // an account id is an address, not a secret
+  if (!token || !acc) return { configured: false, missing: [!token && 'CLOUDFLARE_API_TOKEN', !acc && 'CLOUDFLARE_ACCOUNT_ID'].filter(Boolean) };
+  const script = process.env.CLOUDFLARE_WORKER_NAME || 'hostelos', now = new Date(), day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString(), hour = new Date(now.getTime() - 3600e3).toISOString();
+  const q = `query($acc:String!,$s:String!,$d:Time!,$h:Time!,$e:Time!){viewer{accounts(filter:{accountTag:$acc}){today:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$d,datetime_leq:$e}){sum{requests errors subrequests}quantiles{cpuTimeP50 cpuTimeP99 wallTimeP99}} hour:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$h,datetime_leq:$e}){sum{requests errors}quantiles{cpuTimeP99}}}}}`;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 9000);
+  try {
+    const r = await fetch('https://api.cloudflare.com/client/v4/graphql', { method: 'POST', signal: ctl.signal, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, variables: { acc, s: script, d: day, h: hour, e: now.toISOString() } }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || (j.errors && j.errors.length)) return { configured: true, error: (j.errors && j.errors[0] && j.errors[0].message) || ('Cloudflare answered ' + r.status) };
+    const a = (((j.data || {}).viewer || {}).accounts || [])[0] || {}, rows = a.today || [], hr = a.hour || [];
+    const tot = (arr, k) => arr.reduce((x, y) => x + ((y.sum || {})[k] || 0), 0), qmax = (arr, k) => arr.reduce((x, y) => Math.max(x, ((y.quantiles || {})[k] || 0)), 0);
+    return { configured: true, script, requestsToday: tot(rows, 'requests'), errorsToday: tot(rows, 'errors'), subrequestsToday: tot(rows, 'subrequests'), cpuP50: qmax(rows, 'cpuTimeP50'), cpuP99: qmax(rows, 'cpuTimeP99'), wallP99: qmax(rows, 'wallTimeP99'), requestsHour: tot(hr, 'requests'), errorsHour: tot(hr, 'errors'), at: now.toISOString() };
+  } catch (e) { return { configured: true, error: e.name === 'AbortError' ? 'Cloudflare did not answer in time' : e.message }; }
+  finally { clearTimeout(timer); }
+}
 // Every change the super admin makes to someone's login or profile is written into that hostel's activity log:
 // who did it, when, and what. (Same record the app's own "log" rows use, so it shows next to the owner's own activity.)
 async function superAudit(me, hostelId, resId, msg, meta = {}) {
@@ -314,6 +380,16 @@ const actions = {
     await sb(`/auth/v1/admin/users/${b.user_id}`, { method: 'PUT', body: { password: pw } });
     if (me.isSuper) await superAudit(me, b.hostel_id, b.res_id, 'Password reset by super admin', { user_id: b.user_id });
     return { ok: true };
+  },
+
+  // Platform health for the Usage & health screen: Supabase (live) and Cloudflare (when its read-only token is set).
+  async health(b, me) {
+    if (!me.isSuper) throw new HttpError(403, 'Super admin only');
+    if (_healthCache && Date.now() - _healthCache.t < 20000 && !b.fresh) return _healthCache.v;
+    const [sbR, cfR] = await Promise.allSettled([supabaseHealth(), cloudflareHealth()]);
+    const v = { supabase: sbR.status === 'fulfilled' ? sbR.value : { ok: false, error: (sbR.reason && sbR.reason.message) || 'failed' }, cloudflare: cfR.status === 'fulfilled' ? cfR.value : { configured: true, error: (cfR.reason && cfR.reason.message) || 'failed' }, accountId: process.env.CLOUDFLARE_ACCOUNT_ID || CF_ACCOUNT_DEFAULT };
+    _healthCache = { t: Date.now(), v };
+    return v;
   },
 
   /* Super admin: "log in as" a resident (or any non-super login) in one tap.
