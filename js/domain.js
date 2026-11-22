@@ -448,6 +448,14 @@ let _mealsCache = { src: null, val: [] };
 const meals = () => { const src = S().meals; if (_mealsCache.src !== src) _mealsCache = { src, val: byTime(src) }; return _mealsCache.val; };
 const mealByKey = k => meals().find(m => m.k === k) || { k, l: k };
 const mealName = k => t(mealByKey(k).l);
+/* Day-wise meals (Weekly menu > the clock on a day): each weekday can switch a meal off (Sunday: no breakfast) or serve it at
+ * its own time (Sunday breakfast at 10:00) without touching the other days. Kept in settings.mealDays[weekday][meal] and shared
+ * by every week of the rotating menu. */
+const mealDayCfg = (day, k) => (((S().mealDays || {})[day] || {})[k]) || {};
+const mealServedDay = (day, k) => !mealDayCfg(day, k).off;
+const mealTimeDay = (day, k) => mealDayCfg(day, k).time || mealByKey(k).time;
+const mealServed = (date, k) => mealServedDay(parse(date).getDay(), k);
+const mealsOn = date => meals().filter(m => mealServed(date, m.k)).map(m => ({ ...m, time: mealTimeDay(parse(date).getDay(), m.k) }));
 
 /* ===================================================================== documents
  * ID papers stay private (see Files in data.js); each Open mints a ten-minute link. */
@@ -2266,8 +2274,14 @@ function applyPreviousEntry(resId, rows, { type = 'monthly', paidTill = '', depo
   alog('previous_entry', `${r.name}: ${out.invoices} old bills added, ${inr(out.paid)} marked paid`, { resId, ...out });
   return out;
 }
+// The login link in the admission message carries the User ID and password after a "#": that part never goes to any server,
+// the login page reads it, fills the two boxes and removes it from the address bar at once. Same details as the message text.
+function loginLink(login) {
+  try { if (login && login.username && login.password && typeof btoa === 'function') return `${appUrl()}#c=${btoa(unescape(encodeURIComponent(login.username + '\n' + login.password))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`; } catch (e) { /* plain link */ }
+  return appUrl();
+}
 function welcomeMessage(r, login) {
-  return tpl('welcome', { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, room: roomName(r.roomId), bed: r.bed, rent: rs(r.rent), deposit: rs(r.deposit), link: appUrl(), username: login ? login.username : r.username || '-', password: login ? login.password : t('(your mobile number)') }, waLang(r));
+  return tpl('welcome', { name: r.name.split(' ')[0], hostel: (Store.hostel() || {}).name, room: roomName(r.roomId), bed: r.bed, rent: rs(r.rent), deposit: rs(r.deposit), link: loginLink(login), username: login ? login.username : r.username || '-', password: login ? login.password : t('(your mobile number)') }, waLang(r));
 }
 function shiftBed(resId, roomId, bedId, newRent, opts = {}) {
   const r = resById(resId), room = roomById(roomId);
@@ -3875,7 +3889,18 @@ function laundryMessage(l, kind) {
 
 /* ===================================================================== mess */
 const menuDoc = () => Store.get('menu') || { id: 'menu', week: {} };
-const dishesFor = (date, mealK) => ((menuDoc().week[parse(date).getDay()] || {})[mealK] || []).map(id => Store.get(id)).filter(Boolean);
+/* Rotating menu: the owner picks how many weeks the menu repeats over (1 to 5). Week 1 is stored as doc.week (as it always
+ * was), weeks 2 to 5 as doc.weeks[n]. doc.anchor is the Monday on which Week 1 started; every later Monday moves one week on,
+ * and after the last week it starts again at Week 1 (2-week cycle: 1, 2, 1, 2 ...). */
+const menuCycle = () => Math.min(5, Math.max(1, Math.round(+menuDoc().cycle) || 1));
+const mondayOf = d => addDays(d, -((parse(d).getDay() + 6) % 7));
+function menuWeekNo(date) {
+  const n = menuCycle(); if (n === 1) return 1;
+  const wk = Math.floor(diffDays(mondayOf(date), menuDoc().anchor || mondayOf(today())) / 7);
+  return ((wk % n) + n) % n + 1;
+}
+const menuWeekData = (doc, n) => ((n === 1 ? doc.week : (doc.weeks || {})[n]) || {});
+const dishesFor = (date, mealK) => (!mealServed(date, mealK) ? [] : (menuWeekData(menuDoc(), menuWeekNo(date))[parse(date).getDay()] || {})[mealK] || []).map(id => Store.get(id)).filter(Boolean);
 // Cut-off: e.g. breakfast skip allowed until 22:00 the previous day.
 function cutoffAt(date, mealK, kind = 'skip') {
   const m = mealByKey(mealK), tm = kind === 'tiffin' ? m.tCutoff : m.cutoff, prev = kind === 'tiffin' ? m.tPrev : m.prev;

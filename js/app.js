@@ -123,6 +123,22 @@ A.blk = el => {
   LS.set(blockKey(ctx().hostelId), v);
   render(true);
 };
+// While the super admin is signed in as someone else, a bar on top says so and takes them back with one tap.
+function impBar() {
+  let imp = null; try { imp = JSON.parse(sessionStorage.getItem('hostelos.imp') || 'null'); } catch (e) { imp = null; }
+  const old = document.getElementById('impBar'); if (old) old.remove();
+  if (!imp) return;
+  const bar = document.createElement('div'); bar.id = 'impBar'; bar.className = 'impbar';
+  bar.innerHTML = `<span>${esc(t('Signed in as'))} <b>@${esc(imp.as || '')}</b></span><button type="button" data-act="impback">${esc(t('Back to admin'))}</button>`;
+  document.body.prepend(bar); document.body.classList.add('imp');
+}
+A.impback = () => {
+  let imp = null; try { imp = JSON.parse(sessionStorage.getItem('hostelos.imp') || 'null'); } catch (e) { imp = null; }
+  try { sessionStorage.removeItem('hostelos.imp'); } catch (e) { /* ignore */ }
+  if (imp && imp.session) { LS.set('hostelos.session', imp.session); try { IDB.set('hostelos.session', imp.session).catch(() => {}); } catch (e) { /* ignore */ } }
+  else { LS.del('hostelos.session'); }
+  location.assign(imp && imp.back ? imp.back : '/');
+};
 function buildShell() {
   const c = ctx(), h = Store.hostel(), solo = false;
   const superIn = String(c.key || '').startsWith('super:');
@@ -149,6 +165,7 @@ function buildShell() {
   </div>`;
   Picker.enhance($('#top'));
   updateChrome();
+  impBar();
 }
 function updateChrome() {
   const hh = Store.hostel(); if (hh) $$('.pgname span').forEach(x => { if (x.textContent !== hh.name) x.textContent = hh.name; });
@@ -256,7 +273,16 @@ A.punchin = async el => {
 /* ===================================================================== login & setup */
 function renderLogin(err) {
   document.title = `${t('Log in')} · ${CFG.APP_NAME || 'Sarvlekh'}`;
-  const lastUser = (typeof LS !== 'undefined' && LS.get('hostelos.last_user')) || '';
+  let lastUser = (typeof LS !== 'undefined' && LS.get('hostelos.last_user')) || '', prePass = '';
+  // A login link from the admission message (…/#c=…) arrives with both boxes filled; the address bar is cleaned straight away.
+  try {
+    const m = /^#c=([\w-]+)$/.exec(location.hash || '');
+    if (m) {
+      const raw = decodeURIComponent(escape(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')))), i = raw.indexOf('\n');
+      if (i > 0) { lastUser = raw.slice(0, i); prePass = raw.slice(i + 1); }
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  } catch (e) { /* not a login link */ }
   // The brand mark is part of the background picture (phone and desktop each have their own);
   // this is only the sign-in panel: under the mark on a phone, to its right on a desktop.
   const EYE = '<svg class="i eye-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="i eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4M6.5 6.6C3.7 8.4 2 12 2 12s3.5 7 10 7c1.6 0 3-.4 4.3-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
@@ -264,7 +290,7 @@ function renderLogin(err) {
     <form id="loginForm" class="lcard" novalidate>
       <h1>${esc(t('Log in'))}</h1><p class="sub">${esc(t('Hostel & PG management, simple and fast'))}</p>
       <label class="lf"><span class="lic">${ico('user')}</span><input name="u" placeholder="${esc(t('User ID'))}" autocomplete="username" autocapitalize="none" value="${esc(lastUser)}" required></label>
-      <label class="lf"><span class="lic">${ico('lock')}</span><input name="p" type="password" placeholder="${esc(t('Password'))}" autocomplete="current-password" required>
+      <label class="lf"><span class="lic">${ico('lock')}</span><input name="p" type="password" placeholder="${esc(t('Password'))}" autocomplete="current-password" value="${esc(prePass)}" required>
         <button type="button" class="eye" data-act="pwtoggle" aria-label="${esc(t('Show password'))}">${EYE}</button>
         ${typeof Mascot !== 'undefined' ? `<div class="eleph" id="spy" aria-hidden="true">${Mascot.svg()}</div>` : ''}</label>
       <div class="caps" id="caps" role="status">${esc(t('Caps Lock is on.'))}</div>
@@ -299,9 +325,19 @@ async function doLogin(u, p) {
   try {
     const uid = await Backend.login(u, p);
     if (typeof AuthCache !== 'undefined') AuthCache.save(u, p, uid);
+    // ask the browser / Google Password Manager to offer saving the login (where the device supports it)
+    try { if (window.PasswordCredential && navigator.credentials && navigator.credentials.store) await navigator.credentials.store(new PasswordCredential({ id: u, password: p, name: u })); } catch (e) { /* not supported */ }
     await afterLogin();
   }
-  catch (e) { renderLogin(t(e.message)); }
+  catch (e) {
+    // An app installed on a phone before the Supabase key change keeps its old copy of the settings. Clear that copy and start fresh, once.
+    if (/legacy api keys/i.test(String(e.message)) && !sessionStorage.getItem('hostelos.healed')) {
+      try { sessionStorage.setItem('hostelos.healed', '1'); } catch (x) { /* private mode */ }
+      try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); for (const k of await caches.keys()) await caches.delete(k); } catch (x) { /* nothing to clear */ }
+      location.replace('/?fresh=' + Date.now()); return;
+    }
+    renderLogin(t(e.message));
+  }
 }
 async function afterLogin() {
   try { await Store.loadMeta(); }
@@ -982,7 +1018,8 @@ const FOLD_AT = 6, FOLD_SKIP_PAGES = ['attendance'];
 function hasContentBelow(el) {
   for (let n = el; n && n.id !== 'page'; n = n.parentElement) {
     if (n.parentElement && n.parentElement.classList.contains('grid')) continue;
-    for (let s = n.nextElementSibling; s; s = s.nextElementSibling) if (s.offsetHeight > 0 && !s.classList.contains('fold-btn')) return true;
+    // only real content counts: an "i" button, a hint line or a View all button under a list is not a reason to scroll inside it
+    for (let s = n.nextElementSibling; s; s = s.nextElementSibling) if (s.offsetHeight > 24 && !s.matches('.fold-btn, .about, .ib-w, .hint, .spin, [hidden]') && (s.textContent || '').trim().length) return true;
   }
   return false;
 }
@@ -993,7 +1030,7 @@ function foldLongLists(root) {
     if (g.closest('#modalRoot') || g.dataset.nofold != null || g.classList.contains('nofold') || g.nextElementSibling && g.nextElementSibling.classList.contains('fold-btn')) return;
     const rows = [...g.children].filter(x => x.classList.contains('li') || x.classList.contains('apv') || x.classList.contains('stk') || x.classList.contains('prc') || x.classList.contains('prow') || x.classList.contains('swp-wrap') || (g.classList.contains('stack') && x.classList.contains('card')));
     if (rows.length <= FOLD_AT) return;
-    if (hasContentBelow(g)) { g.classList.add('inscroll'); return; }
+    // One rule everywhere: a long list shows its first rows and a View all button. No scrolling inside a panel.
     rows.slice(FOLD_AT).forEach(x => x.classList.add('fold-hide'));
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'btn sm ghost block fold-btn'; b.dataset.act = 'foldgrp'; b.dataset.n = rows.length;

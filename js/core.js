@@ -609,8 +609,12 @@ const Suggest = {
   items(inp) { const src = this.sources[inp.dataset.suggest]; return src ? src() : []; },
   matches(inp, all) {
     const q = String(inp.value || '').trim().toLowerCase(), list = this.items(inp);
-    if (all || !q) return list;
-    return list.filter(x => x.v.toLowerCase().includes(q)).sort((a, b) => (b.v.toLowerCase().startsWith(q) - a.v.toLowerCase().startsWith(q)) || a.v.localeCompare(b.v));
+    const max = +inp.dataset.suggestMax || 0, cap = a => (max ? a.slice(0, max) : a);
+    if (all || !q) return cap(list);
+    // best matches first: the name starts with it, then a word in the name starts with it, then it appears anywhere
+    const rank = x => { const l = x.lc || x.v.toLowerCase(), i = l.indexOf(q); return i < 0 ? 9 : i === 0 ? 0 : (l[i - 1] === ' ' ? 1 : 2); };
+    const sc = new Map(), hits = list.filter(x => { const r = rank(x); if (r < 9) sc.set(x, r); return r < 9; });
+    return cap(hits.sort((a, b) => sc.get(a) - sc.get(b) || a.v.localeCompare(b.v)));
   },
   show(inp, all) {
     this.close(); if (!inp || inp.disabled || inp.readOnly) return;
@@ -619,7 +623,7 @@ const Suggest = {
     if (!list.length && !q) return;
     const pop = document.createElement('div'); pop.className = 'sg-pop'; pop.setAttribute('role', 'listbox');
     pop.innerHTML = list.map((x, i) => `<button type="button" class="sg-opt" role="option" data-i="${i}" data-v="${esc(x.v)}"><span class="sg-n">${hl(x.v)}</span>${x.sub ? `<span class="sg-u">${esc(x.sub)}</span>` : ''}</button>`).join('')
-      + (q && !exact ? `<div class="sg-new">${ico('plus', 'sm')}<span>${esc(t('New item - it will be added to stock'))}: <b>${esc(q)}</b></span></div>` : '');
+      + (q && !exact && !inp.dataset.suggestNoNew ? `<div class="sg-new">${ico('plus', 'sm')}<span>${esc(t('New item - it will be added to stock'))}: <b>${esc(q)}</b></span></div>` : '');
     document.body.appendChild(pop);
     this.pop = pop; this.cur = inp; this.idx = -1;
     inp.setAttribute('aria-expanded', 'true');
@@ -652,7 +656,12 @@ const Suggest = {
   },
   close() { if (this.pop) this.pop.remove(); if (this.cur) this.cur.removeAttribute('aria-expanded'); this.pop = null; this.cur = null; this.idx = -1; },
 };
-document.addEventListener('input', e => { const i = e.target; if (!Suggest.quiet && i && i.dataset && i.dataset.suggest && document.activeElement === i) Suggest.show(i, false); });
+let _sgT = null;
+document.addEventListener('input', e => {
+  const i = e.target; if (Suggest.quiet || !(i && i.dataset && i.dataset.suggest && document.activeElement === i)) return;
+  if (i.dataset.suggestMax) { clearTimeout(_sgT); _sgT = setTimeout(() => { if (document.activeElement === i) Suggest.show(i, false); }, 120); }   // a long list is searched once the typing pauses
+  else Suggest.show(i, false);
+});
 document.addEventListener('focusin', e => { const i = e.target; if (i && i.dataset && i.dataset.suggest) Suggest.show(i, false); });
 document.addEventListener('click', e => {
   const b = e.target.closest && e.target.closest('.sg-btn');
@@ -946,3 +955,83 @@ function homeHero({ name, sub, cards = [], strip = [] }) {
 
 // If the owner's own photo link does not load, the house photo takes its place.
 document.addEventListener('error', e => { const i = e.target; if (i && i.classList && i.classList.contains('hh-art') && !i.dataset.fb) { i.dataset.fb = '1'; i.src = '/img/home-hero.webp'; } }, true);
+
+
+/* ================= calendar =================
+ * One calendar for every date box in the app (the browser's own pop-up is different on every device and hard to use on a
+ * phone). The box keeps its normal value (YYYY-MM-DD) and its change events, so nothing that reads it needs to know.
+ * Phone: a sheet from the bottom. Computer: a card in the middle. Tap the month name to jump to a month or a year. */
+const DatePick = (() => {
+  let root = null, inp = null, v = null, mode = 'day';
+  const MN = () => (typeof MONTHS === 'function' ? MONTHS() : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+  const FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const p2 = n => String(n).padStart(2, '0'), key = (y, m, d) => `${y}-${p2(m + 1)}-${p2(d)}`;
+  const dim = (y, m) => new Date(y, m + 1, 0).getDate();
+  const tod = () => { const d = new Date(); return key(d.getFullYear(), d.getMonth(), d.getDate()); };
+  function ok(k) { return !(inp.min && k < inp.min) && !(inp.max && k > inp.max); }
+  function draw() {
+    const sel = inp.value, today_ = tod();
+    let head = '', body = '';
+    if (mode === 'day') {
+      head = `<button type="button" class="dp-nav" data-dp="prev" aria-label="Previous month">‹</button><button type="button" class="dp-title" data-dp="months">${FULL[v.m]} ${v.y}<i></i></button><button type="button" class="dp-nav" data-dp="next" aria-label="Next month">›</button>`;
+      const first = (new Date(v.y, v.m, 1).getDay() + 6) % 7, n = dim(v.y, v.m), pm = v.m ? v.m - 1 : 11, py = v.m ? v.y : v.y - 1, pn = dim(py, pm);
+      const cells = [];
+      for (let i = 0; i < 42; i++) {
+        const dn = i - first + 1; let y = v.y, m = v.m, d = dn, out = false;
+        if (dn < 1) { y = py; m = pm; d = pn + dn; out = true; } else if (dn > n) { y = v.m === 11 ? v.y + 1 : v.y; m = v.m === 11 ? 0 : v.m + 1; d = dn - n; out = true; }
+        const k = key(y, m, d), wk = i % 7 === 6;
+        cells.push(`<button type="button" class="dp-d ${out ? 'out' : ''} ${wk ? 'sun' : ''} ${k === sel ? 'sel' : ''} ${k === today_ ? 'now' : ''}" data-dp="day" data-k="${k}" ${ok(k) ? '' : 'disabled'}>${d}</button>`);
+      }
+      body = `<div class="dp-wd">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x, i) => `<span class="${i === 6 ? 'sun' : ''}">${x[0]}</span>`).join('')}</div><div class="dp-grid">${cells.join('')}</div>`;
+    } else if (mode === 'months') {
+      head = `<button type="button" class="dp-nav" data-dp="py" aria-label="Previous year">‹</button><button type="button" class="dp-title" data-dp="years">${v.y}<i></i></button><button type="button" class="dp-nav" data-dp="ny" aria-label="Next year">›</button>`;
+      body = `<div class="dp-pick">${MN().map((x, i) => `<button type="button" class="${i === v.m ? 'sel' : ''}" data-dp="month" data-m="${i}">${x}</button>`).join('')}</div>`;
+    } else {
+      const base = v.y - (v.y % 12);
+      head = `<button type="button" class="dp-nav" data-dp="pd" aria-label="Earlier years">‹</button><span class="dp-title static">${base} – ${base + 11}</span><button type="button" class="dp-nav" data-dp="nd" aria-label="Later years">›</button>`;
+      body = `<div class="dp-pick">${[...Array(12)].map((_, i) => `<button type="button" class="${base + i === v.y ? 'sel' : ''}" data-dp="year" data-y="${base + i}">${base + i}</button>`).join('')}</div>`;
+    }
+    const lab = inp.getAttribute('aria-label') || (inp.id && (document.querySelector(`label[for="${inp.id}"]`) || {}).textContent) || '';
+    root.querySelector('.dp').innerHTML = `<div class="dp-grab"></div>${lab ? `<div class="dp-lab">${String(lab).replace(/[<>&]/g, '').replace(/\*/g, '').trim()}</div>` : ''}<div class="dp-h">${head}</div>${body}
+      <div class="dp-f"><button type="button" class="dp-link" data-dp="today" ${ok(today_) ? '' : 'disabled'}>${typeof t === 'function' ? t('Today') : 'Today'}</button>${inp.required ? '' : `<button type="button" class="dp-link" data-dp="clear">${typeof t === 'function' ? t('Clear') : 'Clear'}</button>`}<span class="sp"></span><button type="button" class="dp-close" data-dp="close">${typeof t === 'function' ? t('Close') : 'Close'}</button></div>`;
+  }
+  function pick(k) {
+    inp.value = k;
+    inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true }));
+    close();
+  }
+  function close() { if (root) { root.remove(); root = null; } document.removeEventListener('keydown', onKey, true); const i = inp; inp = null; try { if (i && !matchMedia('(pointer:coarse)').matches) i.focus({ preventScroll: true }); } catch (e) { /* gone */ } }
+  function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+  function open(input) {
+    close(); inp = input; mode = 'day';
+    const cur = /^\d{4}-\d{2}-\d{2}$/.test(inp.value) ? inp.value : (inp.max && tod() > inp.max ? inp.max : inp.min && tod() < inp.min ? inp.min : tod());
+    v = { y: +cur.slice(0, 4), m: +cur.slice(5, 7) - 1 };
+    root = document.createElement('div'); root.className = 'dp-root'; root.innerHTML = '<div class="dp-scrim" data-dp="close"></div><div class="dp" role="dialog" aria-modal="true"></div>';
+    document.body.appendChild(root); draw();
+    root.addEventListener('click', e => {
+      const b = e.target.closest('[data-dp]'); if (!b || b.disabled) return; e.preventDefault(); e.stopPropagation();
+      const a = b.dataset.dp;
+      if (a === 'close') close();
+      else if (a === 'day') pick(b.dataset.k);
+      else if (a === 'today') pick(tod());
+      else if (a === 'clear') pick('');
+      else if (a === 'prev') { v.m = v.m ? v.m - 1 : 11; if (b && v.m === 11) v.y--; draw(); }
+      else if (a === 'next') { v.m = v.m === 11 ? 0 : v.m + 1; if (v.m === 0) v.y++; draw(); }
+      else if (a === 'months') { mode = 'months'; draw(); }
+      else if (a === 'years') { mode = 'years'; draw(); }
+      else if (a === 'month') { v.m = +b.dataset.m; mode = 'day'; draw(); }
+      else if (a === 'year') { v.y = +b.dataset.y; mode = 'months'; draw(); }
+      else if (a === 'py') { v.y--; draw(); } else if (a === 'ny') { v.y++; draw(); }
+      else if (a === 'pd') { v.y -= 12; draw(); } else if (a === 'nd') { v.y += 12; draw(); }
+    });
+    document.addEventListener('keydown', onKey, true);
+    const sel = root.querySelector('.dp-d.sel, .dp-d.now'); if (sel) sel.focus({ preventScroll: true });
+  }
+  // every date box: no native pop-up, our calendar instead
+  const isDate = el => el && el.tagName === 'INPUT' && el.type === 'date' && !el.dataset.native && !el.disabled;
+  const lock = e => { const el = e.target; if (isDate(el)) el.readOnly = true; };
+  document.addEventListener('mousedown', lock, true); document.addEventListener('touchstart', lock, { capture: true, passive: true });
+  document.addEventListener('click', e => { const el = e.target; if (!isDate(el)) return; el.readOnly = true; e.preventDefault(); e.stopPropagation(); open(el); }, true);
+  document.addEventListener('keydown', e => { const el = e.target; if (isDate(el) && (e.key === 'Enter' || e.key === ' ') && !root) { e.preventDefault(); el.readOnly = true; open(el); } }, true);
+  return { open, close };
+})();

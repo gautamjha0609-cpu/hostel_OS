@@ -215,11 +215,13 @@ async function saveList(path, list) {
   else { const top = clone(S()[keys[0]]); top[keys[1]] = list; await Store.replaceSettingsKey(keys[0], top); }
 }
 A.lsadd = async el => {
-  const inp = $('#ls_' + el.dataset.path.replace('.', '_')), v = inp.value.trim(); if (!v) return;
+  const inp = $('#ls_' + el.dataset.path.replace('.', '_')), v = inp.value.trim();
+  if (!v) { toast(t('Type a name first, then tap Add'), 'warn'); inp.focus(); return; }
   const list = [...(getPath(el.dataset.path) || [])];
   if (list.some(x => x.toLowerCase() === v.toLowerCase())) return toast('Already in the list', 'bad');
-  list.push(v); await saveList(el.dataset.path, list); render(); const n = $('#ls_' + el.dataset.path.replace('.', '_')); if (n) n.focus();
+  list.push(v); await saveList(el.dataset.path, list); render(); toast(t('Added: {n}', { n: v }), 'ok'); const n = $('#ls_' + el.dataset.path.replace('.', '_')); if (n) n.focus();
 };
+document.addEventListener('keydown', e => { const i = e.target; if (e.key === 'Enter' && i && i.id && i.id.startsWith('ls_') && i.closest('.li')) { e.preventDefault(); const b = i.closest('.li').querySelector('[data-act="lsadd"]'); if (b) A.lsadd(b); } });
 A.lsedit = el => { const list = [...(getPath(el.dataset.path) || [])], i = +el.dataset.i; formModal({ title: 'Rename', submit: 'Save', fields: [{ name: 'name', label: 'Name', value: list[i], required: true, maxlength: 60 }], onSubmit: async v => { const nm = String(v.name || '').trim(); if (!nm) return 'Enter a name'; if (list.some((x, k) => k !== i && String(x).toLowerCase() === nm.toLowerCase())) return 'That name is already on the list'; const old = list[i]; list[i] = nm; await saveList(el.dataset.path, list); if (el.dataset.path === 'units' && old !== nm) items().filter(x => x.unit === old).forEach(x => Store.patch(x.id, { unit: nm })); render(); toast('Saved'); } }); };
 A.lsdel = async el => { const list = [...(getPath(el.dataset.path) || [])]; if (el.dataset.path === 'units') { const n = items().filter(x => x.unit === list[+el.dataset.i]).length; if (n) return toast(t('"{u}" is used by {n} stock item(s), so it cannot be deleted. You can rename it instead.', { u: list[+el.dataset.i], n }), 'bad'); } list.splice(+el.dataset.i, 1); await saveList(el.dataset.path, list); render(); };
 
@@ -606,7 +608,7 @@ const SETTINGS_PAGES = {
       { name: 'skip', label: 'Residents can skip meals', type: 'checkbox', value: me.skip }, { name: 'tiffin', label: 'Residents can order tiffin (packed meal)', type: 'checkbox', value: me.tiffin },
       { name: 'learn', label: 'Learn real usage from purchases (recommended)', type: 'checkbox', value: me.learn, full: true },
     ], v => ({ meals: byTime(ms.map((m, i) => ({ ...m, l: v[`l${i}`] || m.l, time: v[`time${i}`], cutoff: v[`cut${i}`], prev: v[`prev${i}`], tCutoff: v[`tcut${i}`], tPrev: v[`tprev${i}`] }))), mess: { skip: v.skip, tiffin: v.tiffin, learn: v.learn } }),
-    `${btn('Add meal (e.g. Snacks)', 'addmeal', '', 'sm')}`)}`; },
+    `${btn('Add meal (e.g. Brunch, Snacks)', 'addmeal', '', 'sm')}<p class="hint" style="margin-top:8px">${esc(t('These are the default timings. To change one day only (e.g. Sunday breakfast at 10), open Mess & Menu > Weekly menu and tap the clock on that day.'))}</p>`)}`; },
   dishes: () => {
     const rows = [
       ...(can('kitchen') ? [li({ icon: 'utensils', ic: 'warn', t: t('Dishes & recipes'), d: t('{n} dishes', { n: dishes().length }), act: 'messtab', attrs: 'data-tab="dishes"' })] : []),

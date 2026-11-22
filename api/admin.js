@@ -152,6 +152,15 @@ async function addMembership({ user_id, org_id, hostel_id, role, ref_id, perms, 
  * "some" let the owner of org B reset the password of someone who is also a manager in org A,
  * and so log in as them there. A hostel-scoped manager covers only their own hostels, and
  * another manager's login is the owner's to reset, not a peer's. */
+// Every change the super admin makes to someone's login or profile is written into that hostel's activity log:
+// who did it, when, and what. (Same record the app's own "log" rows use, so it shows next to the owner's own activity.)
+async function superAudit(me, hostelId, resId, msg, meta = {}) {
+  if (!hostelId || !/^[0-9a-f-]{36}$/i.test(String(hostelId))) return;
+  try {
+    const now = new Date(), id = 'log-' + now.getTime().toString(36) + crypto.randomBytes(3).toString('hex');
+    await rest('docs', '', { method: 'POST', headers: { Prefer: 'return=minimal' }, body: { hostel_id: hostelId, id, kind: 'log', res_id: resId || null, room_id: null, day: now.toISOString().slice(0, 10), deleted: false, data: { id, kind: 'log', date: now.toISOString().slice(0, 10), ts: now.toISOString(), rule: 'super_admin', msg, actor: { id: me.id, name: 'Super admin', role: 'super' }, meta: { ...meta, resId: resId || null } } } });
+  } catch (e) { console.warn('audit not written:', e.message); }
+}
 async function assertCanManageUser(me, userId) {
   uuid(userId, 'user');
   if (me.isSuper) return;
@@ -291,6 +300,7 @@ const actions = {
     // auth first: if it fails nothing has changed, and the old ID still works.
     await sb(`/auth/v1/admin/users/${b.user_id}`, { method: 'PUT', body: { email: `${want}@${DOMAIN}`, email_confirm: true } });
     await rest('profiles', `?id=eq.${b.user_id}`, { method: 'PATCH', body: { username: want } });
+    await superAudit(me, b.hostel_id, b.res_id, `Login ID changed to ${want} by super admin`, { user_id: b.user_id });
     return { username: want };
   },
 
@@ -302,7 +312,54 @@ const actions = {
     if (pw.length < 6) throw new HttpError(400, 'Password must be at least 6 characters');
     if (WEAK_PASSWORDS.has(pw.toLowerCase())) throw new HttpError(400, 'Password is too common or weak');
     await sb(`/auth/v1/admin/users/${b.user_id}`, { method: 'PUT', body: { password: pw } });
+    if (me.isSuper) await superAudit(me, b.hostel_id, b.res_id, 'Password reset by super admin', { user_id: b.user_id });
     return { ok: true };
+  },
+
+  /* Super admin: "log in as" a resident (or any non-super login) in one tap.
+   * A one-time sign-in token is made for that account; the browser trades it for a normal session. Nothing about the
+   * person's password is read or changed, the token works once, and the act is written to the activity log. */
+  async impersonate(b, me) {
+    if (!me.isSuper) throw new HttpError(403, 'Super admin only');
+    const uid = uuid(b.user_id, 'user');
+    const [p] = await rest('profiles', `?id=eq.${uid}&select=username,active,is_super`);
+    if (!p) throw new HttpError(404, 'No such login');
+    if (p.is_super) throw new HttpError(403, 'A super admin login cannot be entered this way');
+    if (p.active === false) throw new HttpError(400, 'This login is switched off. Switch it on first.');
+    const u = await sb(`/auth/v1/admin/users/${uid}`);
+    if (!u || !u.email) throw new HttpError(404, 'This login has no sign-in address');
+    const link = await sb('/auth/v1/admin/generate_link', { method: 'POST', body: { type: 'magiclink', email: u.email } });
+    const token_hash = (link && (link.hashed_token || (link.properties && link.properties.hashed_token))) || '';
+    if (!token_hash) throw new HttpError(502, 'Could not create the sign-in token');
+    await superAudit(me, b.hostel_id, b.res_id, `Super admin signed in as @${p.username}`, { user_id: uid });
+    return { token_hash, username: p.username };
+  },
+
+  /* Super admin: edit a resident's personal details (never money, bed or documents here). Written straight into the
+   * resident record every screen reads, so owner, resident and reports see it at once; phone and name follow into the login. */
+  async resident_update(b, me) {
+    if (!me.isSuper) throw new HttpError(403, 'Super admin only');
+    const hostel_id = uuid(b.hostel_id, 'hostel'), res_id = String(b.res_id || '');
+    if (!/^[\w-]{1,64}$/.test(res_id)) throw new HttpError(400, 'Bad resident id');
+    const [row] = await rest('docs', `?hostel_id=eq.${hostel_id}&kind=eq.res&id=eq.${encodeURIComponent(res_id)}&select=data`);
+    if (!row) throw new HttpError(404, 'Resident not found');
+    const inb = b.patch || {}, out = {}, bad = m => { throw new HttpError(400, m); };
+    const clean = (k, n) => String(inb[k] == null ? '' : inb[k]).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+    if ('name' in inb) { const v = clean('name', 80); if (!/^[\p{L}\p{M}\s.\-'()]{2,80}$/u.test(v)) bad('Name can contain letters and spaces only'); out.name = v; }
+    for (const k of ['phone', 'guardianPhone']) if (k in inb) { const v = clean(k, 20); if (v) { const c = cleanPhone(v); if (!c) bad('Enter a 10-digit mobile number'); out[k] = c; } else out[k] = ''; }
+    if ('email' in inb) { const v = clean('email', 120).toLowerCase(); if (v && !isValidEmail(v)) bad('Enter a valid e-mail'); out.email = v; }
+    if ('idNo' in inb) { const v = clean('idNo', 20).replace(/\D/g, ''); if (v && v.length !== 12) bad('Aadhaar must be 12 digits'); out.idNo = v; }
+    for (const [k, n] of [['guardian', 80], ['address', 240], ['college', 120]]) if (k in inb) out[k] = clean(k, n);
+    if ('username' in inb) out.username = clean('username', 30);   // kept in step after a login-ID change
+    if ('status' in inb) { if (!['active', 'notice'].includes(inb.status)) bad('Status can be active or on notice here'); out.status = inb.status; }
+    const keys = Object.keys(out); if (!keys.length) throw new HttpError(400, 'Nothing to change');
+    const before = row.data || {}, changed = keys.filter(k => String(before[k] == null ? '' : before[k]) !== String(out[k]));
+    if (!changed.length) return { ok: true, changed: [] };
+    const data = { ...before, ...out };
+    await rest('docs', `?hostel_id=eq.${hostel_id}&kind=eq.res&id=eq.${encodeURIComponent(res_id)}`, { method: 'PATCH', body: { data, updated_at: new Date().toISOString() } });
+    if (data.userId && (out.phone || out.name)) await rest('profiles', `?id=eq.${data.userId}`, { method: 'PATCH', body: { ...(out.phone ? { phone: out.phone } : {}), ...(out.name ? { full_name: out.name } : {}) } }).catch(() => {});
+    await superAudit(me, hostel_id, res_id, `Super admin edited: ${changed.join(', ')}`, { changed: Object.fromEntries(changed.map(k => [k, { from: before[k] == null ? '' : before[k], to: out[k] }])) });
+    return { ok: true, changed };
   },
 
   async set_active(b, me) {
@@ -312,6 +369,7 @@ const actions = {
     // fails the account is already locked out rather than left half-enabled.
     await rest('profiles', `?id=eq.${b.user_id}`, { method: 'PATCH', body: { active: !!b.active } });
     await sb(`/auth/v1/admin/users/${b.user_id}`, { method: 'PUT', body: { ban_duration: b.active ? 'none' : '876000h' } });
+    if (me.isSuper) await superAudit(me, b.hostel_id, b.res_id, b.active ? 'Login switched on by super admin' : 'Login switched off by super admin', { user_id: b.user_id });
     return { ok: true };
   },
 
@@ -959,6 +1017,16 @@ const actions = {
       await assertAdmin(me, orgId, hostel_id);
     }
     return deliverResidentMail(b, me);
+  },
+
+  // A replaced paper is deleted for good (file in storage; the record that pointed at it is rewritten by the app).
+  async delete_doc_file(b, me) {
+    const hostel_id = optUuid(b.hostel_id, 'hostel'); if (!hostel_id) throw new HttpError(400, 'Hostel required');
+    const orgId = await resolveHostelOrg(hostel_id, b.org_id); await assertAdmin(me, orgId, hostel_id);
+    const path = String(b.path || '');
+    if (!path.startsWith(hostel_id + '/') || path.includes('..') || !/^[\w./-]{10,260}$/.test(path)) throw new HttpError(400, 'Not a document of this hostel');
+    try { await sb('/storage/v1/object/docs/' + path, { method: 'DELETE' }); } catch (e) { if (!/not.?found/i.test(String(e.message || e))) throw e; }
+    return { ok: true };
   },
 
   // Tells the owner / super admin exactly why e-mail is not going out: key present? sender domain verified? database key accepted?

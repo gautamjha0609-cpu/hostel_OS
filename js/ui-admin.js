@@ -323,13 +323,14 @@ PAGES['admin-hostel'] = {
       ${head(h.name, [h.city, t('{n} residents', { n: st.residents || 0 })].filter(Boolean).join(' · '), btn('Open this hostel', 'openhostel', `data-id="${id}"`, 'primary', 'building'))}
       <div class="narrow" style="max-width:760px">
         ${seg('admh', [['info', 'Details'], ['blocks', 'Blocks', (h.blocks || []).length],
-          ['mods', 'Modules', offN ? offN + ' off' : ''], ['users', 'Logins', mine_.own.length]], 'info')}
+          ['res', 'Residents', st.residents || ''], ['mods', 'Modules', offN ? offN + ' off' : ''], ['users', 'Logins', mine_.own.length]], 'info')}
         ${tab === 'info' ? hostelInfoCard(h, o, st) : ''}
         ${tab === 'blocks' ? blocksCard(h) : ''}
         ${tab === 'mods' ? group('Online payments', `<div class="li noic"><span class="body"><span class="t">${esc(modLabel('cashfree'))}</span><span class="d">${esc(t('Off by default. Switch on only for a hostel that has agreed to online UPI collection: its owner then sees the Cashfree settlement setup and residents can pay through the gateway.'))}</span></span><span class="end"><label class="sw"><input type="checkbox" data-hmod="cashfree" data-h="${id}" ${mine.cashfree === true ? 'checked' : ''} aria-label="${esc(modLabel('cashfree'))}"><span></span></label></span></div>`)
           + group('Police verification', `<div class="li noic"><span class="body"><span class="t">${esc(modLabel('pvPlatform'))}</span><span class="d">${esc(t('Off: the hostel has its own e-Mitra operator login. On: your team verifies this hostel from Police verification in this console. The owner only watches the status either way.'))}</span></span><span class="end"><label class="sw"><input type="checkbox" data-hmod="pvPlatform" data-h="${id}" ${mine.pvPlatform === true ? 'checked' : ''} aria-label="${esc(modLabel('pvPlatform'))}"><span></span></label></span></div>`)
           + groups.map(([title, keys]) => group(title, keys.map(row).join(''))).join('')
           + about('Core screens — Home, Approvals, Rooms, Residents, Payments and Settings — are always on. Switching a module off hides it for everyone in this hostel; nothing already recorded is deleted, and switching it back on brings it all back.') : ''}
+        ${tab === 'res' ? hostelResidentsCard(h) : ''}
         ${tab === 'users' ? hostelUsersCard(h, o, mine_) : ''}
       </div>`;
   },
@@ -376,6 +377,113 @@ function hostelInfoCard(h, o, st) {
  * reaches every hostel and is edited on the client page, while the rest belong here and are
  * created, changed and removed here.
  */
+/* ---- Residents of one hostel (super admin): list, profile, login control, log in as, activity trail ---- */
+adm.hres = {};   // hostel id -> { rows, loading, error }
+async function admHostelResidents(hid, force) {
+  const c = adm.hres[hid] || (adm.hres[hid] = {}); if (c.loading || (c.rows && !force)) return;
+  c.loading = true; c.error = '';
+  try {
+    const out = [];
+    for (let i = 0; i < 20; i++) { const b = await Backend.list('docs', `&hostel_id=eq.${hid}&kind=eq.res&deleted=eq.false&order=id&limit=500&offset=${i * 500}`); out.push(...b); if (b.length < 500) break; }
+    c.rows = out.map(x => ({ ...(x.data || {}), id: x.id }));
+  } catch (e) { c.error = e.message || 'Could not load'; }
+  c.loading = false; render();
+}
+function hostelResidentsCard(h) {
+  const c = adm.hres[h.id]; if (!c) { admHostelResidents(h.id); return `<div class="stack"><div class="skel"></div><div class="skel"></div></div>`; }
+  if (c.loading && !c.rows) return `<div class="stack"><div class="skel"></div><div class="skel"></div></div>`;
+  if (c.error) return `<div class="card">${empty('Could not load', c.error, btn('Try again', 'admresrefresh', `data-h="${h.id}"`))}</div>`;
+  const f = curFlt('ahr', 'active'), q = ui.q.ahr || '';
+  const rows = (c.rows || []).filter(r => (f === 'all' || (f === 'left' ? r.status === 'left' : r.status !== 'left' && r.status !== 'cancelled')) && needle('ahr', r.name, r.phone, r.username, r.roomNo));
+  const room = r => { const m = (Store.rooms || []).find(x => x.id === r.roomId); return r.roomNo || (m ? m.no : '') || ''; };
+  return `<div class="tool">${searchBox('ahr', 'Search name, mobile, user ID')}${chips('ahr', [['active', 'Living'], ['left', 'Left'], ['all', 'All']], 'active')}<span class="sp"></span>${btn('', 'admresrefresh', `data-h="${h.id}" aria-label="${esc(t('Refresh'))}"`, 'sm', 'sync')}</div>
+    ${group('', rows.slice(0, ui.lim.ahr || 60).map(r => li({ lead: avatar(r.name || '?'), t: r.name || '?', d: [room(r) ? `${t('Room')} ${room(r)}${r.bed ? '-' + r.bed : ''}` : '', r.phone || '', r.username ? '@' + r.username : t('No login yet'), r.status === 'left' ? t('Left') : r.status === 'notice' ? t('On notice') : ''].filter(Boolean).join(' · '), act: 'admres', attrs: `data-h="${h.id}" data-id="${esc(r.id)}"` })).join('') || `<div class="li noic"><span class="body muted">${esc(t('No residents'))}</span></div>`)}
+    ${rows.length > (ui.lim.ahr || 60) ? `<div style="text-align:center;margin-top:12px">${btn('Show more', 'more', 'data-key="ahr" data-per="60"', 'sm')}</div>` : ''}`;
+}
+A.admresrefresh = el => { delete adm.hres[el.dataset.h]; render(); };
+const admRes = (hid, id) => ((adm.hres[hid] || {}).rows || []).find(x => x.id === id);
+A.admres = async el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r) return;
+  const kv = (k, v) => v ? `<dt>${esc(t(k))}</dt><dd>${esc(v)}</dd>` : '';
+  const prof = r.userId ? admProf(r.userId) : {};
+  sheet(r.name, `<dl class="kv">${kv('Mobile', r.phone)}${kv('Email', r.email)}${kv('Room', r.roomNo || r.roomId ? `${r.roomNo || r.roomId}${r.bed ? '-' + r.bed : ''}` : '')}${kv('Staying since', r.checkIn ? fmtDate(r.checkIn) : '')}${kv('Rent', r.rent != null ? inr(r.rent) : '')}${kv('Guardian', [r.guardian, r.guardianPhone].filter(Boolean).join(' · '))}${kv('College / office', r.college)}${kv('Aadhaar / ID number', r.idNo)}${kv('Permanent address', r.address)}${kv('Status', r.status === 'left' ? t('Left') : r.status === 'notice' ? t('On notice') : t('Living'))}</dl>
+    ${group('Login', li({ icon: 'key', ic: r.userId ? 'ok' : 'mute', t: r.username ? '@' + r.username : t('No login yet'), d: r.userId ? t('The password cannot be read. Reset it to give a new one.') : t('Created when the resident is checked in.'), chev: false, end: r.userId && (admProf(r.userId).active === false) ? badge('Off', 'bad') : '' }))}
+    <div class="group-t">${esc(t('Recent changes by the platform'))}</div><div class="group" id="admResLog"><div class="li noic"><span class="body muted">${esc(t('Loading…'))}</span></div></div>`,
+  { foot: `<button class="btn" data-act="admresedit" data-h="${hid}" data-id="${esc(r.id)}">${ico('edit', 'sm')} ${esc(t('Edit details'))}</button>${r.userId ? `<button class="btn" data-act="admrescreds" data-h="${hid}" data-id="${esc(r.id)}">${ico('key', 'sm')} ${esc(t('Login & password'))}</button><button class="btn primary" data-act="admresas" data-h="${hid}" data-id="${esc(r.id)}">${ico('user', 'sm')} ${esc(t('Log in as'))}</button>` : ''}` });
+  try {
+    const rows = await Backend.list('docs', `&hostel_id=eq.${hid}&kind=eq.log&res_id=eq.${encodeURIComponent(r.id)}&deleted=eq.false&order=updated_at.desc&limit=15`);
+    const box = document.getElementById('admResLog'); if (!box) return;
+    box.innerHTML = rows.length ? rows.map(x => { const d = x.data || {}; return li({ icon: 'file', ic: 'info', t: d.msg || '', d: `${(d.actor || {}).name || ''} · ${d.ts ? fmtTs(d.ts) : ''}`, chev: false }); }).join('') : `<div class="li noic"><span class="body muted">${esc(t('No changes by the platform yet.'))}</span></div>`;
+  } catch (e) { const box = document.getElementById('admResLog'); if (box) box.innerHTML = `<div class="li noic"><span class="body muted">${esc(t('Could not load the activity record'))}</span></div>`; }
+};
+A.admresedit = el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r) return;
+  formModal({
+    title: `${t('Edit details')} · ${r.name}`, submit: 'Save', wide: true,
+    note: t('Saved at once for everyone: the owner, the resident and the reports see the new details straight away.'),
+    fields: [
+      { name: 'name', label: 'Full name', value: r.name, required: true, maxlength: 80 },
+      { name: 'phone', label: 'Mobile', type: 'tel', value: r.phone || '', maxlength: 10 },
+      { name: 'email', label: 'Email address', type: 'email', value: r.email || '', maxlength: 120 },
+      { name: 'guardian', label: 'Parent / guardian name', value: r.guardian || '', maxlength: 80 },
+      { name: 'guardianPhone', label: 'Guardian mobile', type: 'tel', value: r.guardianPhone || '', maxlength: 10 },
+      { name: 'college', label: 'College / office', value: r.college || '', maxlength: 120 },
+      { name: 'idNo', label: 'Aadhaar card number', value: r.idNo || '', maxlength: 12 },
+      { name: 'status', label: 'Stay status', type: 'select', value: r.status === 'notice' ? 'notice' : 'active', options: [{ v: 'active', l: t('Living') }, { v: 'notice', l: t('On notice') }], showIf: true },
+      { name: 'address', label: 'Permanent address', value: r.address || '', full: true, maxlength: 240 },
+    ],
+    onSubmit: async v => {
+      const patch = {}; for (const k of ['name', 'phone', 'email', 'guardian', 'guardianPhone', 'college', 'idNo', 'address']) patch[k] = v[k]; if (r.status !== 'left') patch.status = v.status;
+      const res = await Backend.admin('resident_update', { hostel_id: hid, res_id: r.id, patch });
+      Object.assign(r, patch); toast(res.changed && res.changed.length ? t('Saved: {c}', { c: res.changed.join(', ') }) : t('Nothing changed'), 'ok'); render();
+    }
+  });
+};
+// Login ID and password: both can be changed; a new password is shown once to copy or send.
+A.admrescreds = el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r || !r.userId) return;
+  const prof = admProf(r.userId), on = prof.active !== false;
+  sheet(t('Login & password'), `<dl class="kv"><dt>${esc(t('User ID'))}</dt><dd>@${esc(r.username || '')}</dd><dt>${esc(t('Login'))}</dt><dd>${esc(t(on ? 'On' : 'Off'))}</dd></dl>
+    <p class="hint">${esc(t('Passwords are never stored in a readable form. Make a new one and give it to the resident.'))}</p>`,
+  { foot: `<button class="btn" data-act="admresid" data-h="${hid}" data-id="${esc(r.id)}">${esc(t('Change user ID'))}</button><button class="btn" data-act="admrespw" data-h="${hid}" data-id="${esc(r.id)}">${esc(t('New password'))}</button><button class="btn ${on ? 'bad' : 'ok'}" data-act="admresactive" data-h="${hid}" data-id="${esc(r.id)}">${esc(t(on ? 'Switch off' : 'Switch on'))}</button>` });
+};
+const SHORT_PW = 'abcdefghjkmnpqrstuvwxyz23456789';
+const genPw = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), b => SHORT_PW[b % SHORT_PW.length]).join('');
+A.admrespw = el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r) return;
+  formModal({ title: `${t('New password')} · ${r.name}`, submit: 'Set password', note: t('A short password is suggested. Change it if you like (at least 8 characters).'), fields: [{ name: 'pw', label: 'New password', value: genPw(), required: true, plain: true, maxlength: 40 }],
+    onSubmit: async v => {
+      if (String(v.pw).length < 8) return 'Password must be at least 8 characters';
+      await Backend.admin('set_password', { user_id: r.userId, password: v.pw, hostel_id: hid, res_id: r.id });
+      closeModal(); toast('Password changed');
+      credsSheet(t('New login for {n}', { n: r.name.split(' ')[0] }), r.name, r.phone, r.username, v.pw, '');
+      return false;
+    } });
+};
+A.admresid = el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r) return;
+  formModal({ title: `${t('Change user ID')} · ${r.name}`, submit: 'Change', note: t('The resident must use the new ID from now on. 3 to 30 characters: lowercase letters and numbers, one dot between parts.'), fields: [{ name: 'u', label: 'New user ID', value: r.username || '', required: true, plain: true, maxlength: 30 }],
+    onSubmit: async v => {
+      const u = String(v.u).trim().toLowerCase();
+      const res = await Backend.admin('set_username', { user_id: r.userId, username: u, hostel_id: hid, res_id: r.id });
+      await Backend.admin('resident_update', { hostel_id: hid, res_id: r.id, patch: { username: res.username } }).catch(() => {});
+      r.username = res.username; const p = admProf(r.userId); if (p) p.username = res.username; toast(t('User ID is now @{u}', { u: res.username })); render();
+    } });
+};
+A.admresactive = async el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r) return;
+  const p = admProf(r.userId) || {}, on = p.active === false;
+  await Backend.admin('set_active', { user_id: r.userId, active: on, hostel_id: hid, res_id: r.id });
+  p.active = on; closeModal(); toast(on ? 'Login switched on' : 'Login switched off'); render();
+};
+A.admresas = el => {
+  const hid = el.dataset.h, r = admRes(hid, el.dataset.id); if (!r || !r.userId) return;
+  confirmBox(t('Sign in as {n}? You will see exactly what they see. A bar on top takes you back to the admin.', { n: r.name }), async () => {
+    const u = await Backend.impersonate(r.userId, hid, r.id);
+    toast(t('Signed in as @{u}', { u }));
+    setTimeout(() => location.assign('/'), 300);
+  }, 'Log in as', 'primary');
+};
 function hostelLogins(h) {
   const ms = adm.data.members.filter(m => m.org_id === h.org_id && m.role !== 'resident');
   return {

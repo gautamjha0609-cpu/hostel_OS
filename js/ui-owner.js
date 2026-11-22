@@ -848,7 +848,12 @@ async function uploadDocs(kind, id, files) {
     try {
       const doc = await Files.upload(f.file, kind, id, f.type);
       const cur = Store.get(id); if (!cur) return ok;
-      Store.patch(id, { docs: [...(cur.docs || []).filter(d => d.type !== doc.type), doc] }); ok++;
+      // A new Front / Back / Photo replaces the one on file: the old record is dropped and the old file is deleted for good.
+      // (An old plain "Aadhaar card" counts as the Front.)
+      const same = d => d.type === doc.type || (/ \(Front\)$/.test(doc.type) && d.type === doc.type.replace(/ \(Front\)$/, ''));
+      const old = (cur.docs || []).filter(same);
+      Store.patch(id, { docs: [...(cur.docs || []).filter(d => !same(d)), doc] }); ok++;
+      for (const o of old) if (o.path && o.path !== doc.path) Files.remove(o.path);
     } catch (e) { toast(`${t(f.type)}: ${e.message}`, 'bad'); }
   }
   if (ok < files.length) toast(t('{m} of {n} documents are still missing - open the resident and upload them again.', { m: files.length - ok, n: files.length }), 'bad');

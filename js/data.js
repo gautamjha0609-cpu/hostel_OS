@@ -183,6 +183,15 @@ const Cloud = {
       IDB.del('hostelos.session').catch(() => {});
     }
   },
+  // Super admin: sign in as another login. The server hands out a one-time token (no password is read or changed);
+  // the admin's own session is kept for this tab so "Back to admin" returns without a login.
+  async impersonate(userId, hostelId, resId) {
+    const r = await this.admin('impersonate', { user_id: userId, hostel_id: hostelId, res_id: resId });
+    const s = await this.http(`${CFG.SUPABASE_URL}/auth/v1/verify`, { method: 'POST', auth: false, body: { type: 'magiclink', token_hash: r.token_hash } });
+    try { sessionStorage.setItem('hostelos.imp', JSON.stringify({ session: this.session, as: r.username, back: location.pathname })); } catch (e) { throw new AppError('This browser blocks the tab storage needed to come back. Open the app in a normal window.'); }
+    this.saveSession(s);
+    return r.username;
+  },
   async login(username, password) {
     const s = await this.http(`${CFG.SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: 'POST', auth: false, body: { email: `${slug(username)}@${EMAIL_DOMAIN}`, password } });
     this.saveSession(s);
@@ -924,6 +933,12 @@ const Files = {
     if (r.status === 403 || /security|unauthori/i.test(msg)) throw new AppError('Only the owner or manager can upload documents');
     if (r.status === 415 || /mime/i.test(msg)) throw new AppError('Upload a photo (JPG, PNG or WebP).');
     throw new AppError(`Upload failed (${r.status}). Please try again.`);
+  },
+
+  // Permanently removes one stored file (a replaced paper). Never blocks the caller: a failure leaves the old file for the nightly sweep.
+  async remove(path) {
+    if (!CLOUD || !path) return false;
+    try { await Cloud.admin('delete_doc_file', { hostel_id: (Store.ctx || {}).hostelId, path }); this._urlCache.delete(path); return true; } catch (e) { console.warn('Old document not deleted yet:', e.message); return false; }
   },
 
   _urlCache: new Map(),
