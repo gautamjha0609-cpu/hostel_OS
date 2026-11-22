@@ -1031,7 +1031,13 @@ const DatePick = (() => {
   // every date box: no native pop-up, our calendar instead
   const isDate = el => el && el.tagName === 'INPUT' && el.type === 'date' && !el.dataset.native && !el.disabled;
   const lock = e => { const el = e.target; if (isDate(el)) el.readOnly = true; };
-  document.addEventListener('mousedown', lock, true); document.addEventListener('touchstart', lock, { capture: true, passive: true });
+  document.addEventListener('mousedown', lock, true);
+  // On a phone the browser opens its OWN date wheel/calendar the moment a date box is touched (readOnly does not stop that on iPhone),
+  // which then sat on top of ours. Stopping the touch itself stops the native one; ours opens when the finger lifts without moving.
+  let tch = null;
+  document.addEventListener('touchstart', e => { const el = e.target; if (!isDate(el)) { tch = null; return; } el.readOnly = true; tch = { el, x: e.touches[0].clientX, y: e.touches[0].clientY, moved: false }; if (e.cancelable) e.preventDefault(); }, { capture: true, passive: false });
+  document.addEventListener('touchmove', e => { if (tch && e.touches[0] && (Math.abs(e.touches[0].clientX - tch.x) > 8 || Math.abs(e.touches[0].clientY - tch.y) > 8)) tch.moved = true; }, { capture: true, passive: true });
+  document.addEventListener('touchend', e => { const t0 = tch; tch = null; if (!t0 || t0.moved || !isDate(t0.el)) return; if (e.cancelable) e.preventDefault(); open(t0.el); }, { capture: true, passive: false });
   document.addEventListener('click', e => { const el = e.target; if (!isDate(el)) return; el.readOnly = true; e.preventDefault(); e.stopPropagation(); open(el); }, true);
   document.addEventListener('keydown', e => { const el = e.target; if (isDate(el) && (e.key === 'Enter' || e.key === ' ') && !root) { e.preventDefault(); el.readOnly = true; open(el); } }, true);
   return { open, close };

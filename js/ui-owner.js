@@ -2235,7 +2235,7 @@ PAGES.payments = {
           lead: avatar(x.r.name), t: `<button class="linkish" data-act="go" data-to="residents/${x.r.id}">${esc(x.r.name)}</button>`,
           s: `${esc(roomName(x.r.roomId))} · ${openInv(x.r.id).map(i => esc(t(INV_TYPES[i.type] || i.type))).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`,
           tags: x.od ? badge('Overdue', 'bad') : '', amt: inr(x.due), mc: x.od ? 'bad-t' : '',
-          acts: `${btn('Send bill', 'sendbill', `data-res="${x.r.id}"`, 'sm', 'wa')}${btn('Cash', 'pay', `data-res="${x.r.id}"`, 'sm primary', 'rupee')}`
+          acts: `${btn('Send bill', 'sendbill', `data-res="${x.r.id}"`, 'sm', 'wa')}${btn('Receive', 'pay', `data-res="${x.r.id}"`, 'sm primary', 'rupee')}`
         })).join('')}</div>` : `<div class="card">${empty('No dues ', 'Everyone has paid.')}</div>`}`;
     } else if (tab === 'claims') {
       const list = Store.all('claim').slice().sort((a, b) => (b.status === 'pending') - (a.status === 'pending') || (b.ts > a.ts ? 1 : -1)).slice(0, 80);
@@ -2438,6 +2438,10 @@ A.pay = el => {
       showField(form, 'pen', pen > 0 && !isAdv);
       if (ch === 'pen' && pen > 0 && !isAdv) setAmount(form, form.elements.pen.checked ? amountFor(v.res) : round2(resDue(v.res) - pen));
       showField(form, 'ref', v.mode !== 'cash');
+      // UPI: a "Show QR" link at the end of the Paid by label opens the QR for this resident and amount
+      const mw = $('[data-fw="mode"]', form), lab = mw && $('label.f', mw), has = mw && $('.payqr', mw);
+      if (lab && v.mode === 'upi' && !has) lab.insertAdjacentHTML('beforeend', `<button type="button" class="payqr" data-act="payqr">${ico('qr', 'xs')} ${esc(t('Show QR'))}</button>`);
+      else if (has && v.mode !== 'upi') has.remove();
     },
     preview: v => {
       if (!v.res || !(v.amount > 0)) return '';
@@ -2477,6 +2481,21 @@ A.pay = el => {
       return false;
     },
   });
+};
+A.payqr = el => {
+  const form = el.closest('form'); const r = resById(form && form.elements.res && form.elements.res.value);
+  if (!r) return toast(t('Choose the resident first'), 'bad');
+  const amt = parseFloat(form.elements.amount && form.elements.amount.value) || 0;
+  if (!(amt > 0)) return toast(t('Enter the amount first'), 'bad');
+  const bk = payBuckets(r), pay = S().pay || {};
+  const list = bk.length > 1 ? bk.filter(b => b.upi).map(b => ({ label: t(b.label), upi: b.upi, amt: b.total })) : [{ label: '', upi: (bk[0] || {}).upi || pay.upiId, amt }];
+  if (!list.length || !list[0].upi) return toast(t('No UPI ID is set. Add it in Settings → Payments.'), 'bad');
+  const note = `${r.name.split(' ')[0]} Rm ${roomName(r.roomId)} ${fmtYM(ymOf(today()))}`;
+  $('.qrpop') && $('.qrpop').remove();
+  const d = document.createElement('div'); d.className = 'qrpop';
+  d.innerHTML = `<div class="qrpop-s" data-qp="x"></div><div class="qrpop-c" role="dialog" aria-modal="true"><b class="qrpop-t">${esc(t('Scan to pay'))}</b>${list.map(x => `<div class="qrpop-i">${x.label ? `<small>${esc(x.label)}</small>` : ''}<div class="qr">${qrSvg(upiUri(x.amt, note, x.upi), 6)}</div><div class="qrpop-a">${inr(x.amt)}</div><div class="qrpop-u">${esc(pay.payee || hostelName())} · ${esc(x.upi)}</div></div>`).join('')}<p class="hint" style="text-align:center">${esc(r.name)} · ${esc(t('Room'))} ${esc(roomName(r.roomId))}</p><button type="button" class="btn block" data-qp="x">${esc(t('Close'))}</button></div>`;
+  d.addEventListener('click', e => { if (e.target.closest('[data-qp]')) { e.stopPropagation(); d.remove(); } });
+  document.body.appendChild(d);
 };
 /* The bill goes to ONE resident on WhatsApp together with a clean payment card: the QR first, then the amount and the details.
  * A wa.me link can only carry text, so the card is copied and the resident's own chat opens with the message typed in. */
